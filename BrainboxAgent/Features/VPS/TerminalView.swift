@@ -113,7 +113,7 @@ struct TerminalView: View {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 Button {
                     if let current {
-                        UIPasteboard.general.string = current.transcript
+                        Clipboard.copy(current.transcript)
                         model.toasts.show("Transcript copied")
                     }
                 } label: { Image(systemName: "doc.on.doc") }

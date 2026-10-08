@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import UniformTypeIdentifiers
 import BrainboxCore
 
 // MARK: - Card
@@ -450,5 +452,20 @@ extension View {
             .scrollContentBackground(.hidden)
             .background(ScreenBackground())
             .toolbarBackground(BB.Palette.background.opacity(0.9), for: .navigationBar)
+    }
+}
+
+// MARK: - Clipboard
+
+/// Copies text without syncing it to other devices (no Universal Clipboard)
+/// and lets it expire, since copied output can contain server details.
+enum Clipboard {
+    static let lifetime: TimeInterval = 600
+
+    static func copy(_ text: String) {
+        UIPasteboard.general.setItems(
+            [[UTType.utf8PlainText.identifier: text]],
+            options: [.localOnly: true, .expirationDate: Date().addingTimeInterval(lifetime)]
+        )
     }
 }

@@ -108,7 +108,7 @@ struct FileEditorView: View {
                     Button { preview.toggle() } label: { Label(preview ? "Edit" : "Preview", systemImage: preview ? "pencil" : "eye") }
                 }
                 Button {
-                    UIPasteboard.general.string = text
+                    Clipboard.copy(text)
                     model.toasts.show("Copied")
                 } label: { Label("Copy all", systemImage: "doc.on.doc") }
                 Button { Task { await load() } } label: { Label("Reload from server", systemImage: "arrow.clockwise") }

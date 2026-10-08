@@ -47,6 +47,7 @@ jobs:
 
       - name: Toolchain info
         run: |
+          echo "::notice title=Toolchain::$(xcodebuild -version | tr '\n' ' ') · $(sw_vers -productVersion)"
           xcodebuild -version
           swift --version
           sw_vers
@@ -82,6 +83,9 @@ jobs:
             -scheme BrainboxAgent \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath build/TestResults.xcresult \
+            -test-timeouts-enabled YES \
+            -default-test-execution-time-allowance 120 \
+            -maximum-test-execution-time-allowance 300 \
             CODE_SIGNING_ALLOWED=NO \
             > build/xcodebuild-test.log 2>&1 || STATUS=$?
           grep -E "error:|Test Suite .*(passed|failed)|Test Case .*failed|Executed [0-9]+ test|\*\* TEST" build/xcodebuild-test.log || true

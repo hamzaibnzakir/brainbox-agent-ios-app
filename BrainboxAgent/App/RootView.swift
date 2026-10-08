@@ -4,19 +4,21 @@ import BrainboxCore
 
 struct RootView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.scenePhase) private var scenePhase
     @State private var keyboardVisible = false
 
     var body: some View {
         @Bindable var model = model
-        ZStack(alignment: .bottom) {
-            TabView(selection: $model.selectedTab) {
-                HomeView().tabRoot().tag(AppTab.home)
-                AgentView().tabRoot().tag(AppTab.agent)
-                VPSView().tabRoot().tag(AppTab.vps)
-                FilesView().tabRoot().tag(AppTab.files)
-                SettingsView().tabRoot().tag(AppTab.settings)
-            }
-
+        TabView(selection: $model.selectedTab) {
+            HomeView().tabRoot().tag(AppTab.home)
+            AgentView().tabRoot().tag(AppTab.agent)
+            VPSView().tabRoot().tag(AppTab.vps)
+            FilesView().tabRoot().tag(AppTab.files)
+            SettingsView().tabRoot().tag(AppTab.settings)
+        }
+        // The custom bar takes real layout space (not an overlay), so content
+        // like the chat composer always sits above it.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             if !keyboardVisible {
                 BBTabBar(selection: $model.selectedTab, agentBusy: model.agentStatus.isBusy)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -37,6 +39,14 @@ struct RootView: View {
                     .zIndex(20)
             }
         }
+        .overlay {
+            // Privacy cover: the app-switcher snapshot never shows chats,
+            // terminal output or file contents while protection is on.
+            if scenePhase != .active && model.settings.biometricsEnabled && !model.gate.isLocked {
+                PrivacyCover().transition(.opacity).zIndex(30)
+            }
+        }
+        .animation(Motion.fade, value: scenePhase)
         .animation(Motion.snappy, value: keyboardVisible)
         .animation(Motion.gentle, value: model.gate.isLocked)
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in keyboardVisible = true }
@@ -51,7 +61,6 @@ private struct TabRootModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .toolbar(.hidden, for: .tabBar)
-            .safeAreaInset(edge: .bottom, spacing: 0) { Color.clear.frame(height: BBTabBar.reservedHeight) }
             // Replays on every tab switch: quick rise + de-blur (anime.js-like page enter).
             .opacity(shown ? 1 : 0)
             .offset(y: shown || reduceMotion ? 0 : 10)
@@ -125,6 +134,18 @@ struct BBTabBar: View {
         }
         .padding(.horizontal, 14)
         .padding(.bottom, 4)
+    }
+}
+
+struct PrivacyCover: View {
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial)
+            BB.Palette.background.opacity(0.85)
+            AgentOrb(mode: .offline, size: 72)
+        }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 }
 

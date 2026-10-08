@@ -68,7 +68,7 @@ struct CodeBlockView: View {
                 }
                 Spacer()
                 Button {
-                    UIPasteboard.general.string = code
+                    Clipboard.copy(code)
                     onCopy?(code)
                     withAnimation(Motion.pop) { copied = true }
                     Task { @MainActor in

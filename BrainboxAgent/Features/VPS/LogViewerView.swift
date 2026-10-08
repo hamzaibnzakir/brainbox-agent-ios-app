@@ -33,7 +33,7 @@ struct LogViewerView: View {
                             .listRowSeparator(.hidden)
                             .contextMenu {
                                 Button {
-                                    UIPasteboard.general.string = "\(WireCoding.formatDate(entry.timestamp)) \(entry.level.shortLabel) [\(entry.source)] \(entry.message)"
+                                    Clipboard.copy("\(WireCoding.formatDate(entry.timestamp)) \(entry.level.shortLabel) [\(entry.source)] \(entry.message)")
                                     model.toasts.show("Copied")
                                 } label: { Label("Copy line", systemImage: "doc.on.doc") }
                             }
@@ -74,7 +74,7 @@ struct LogViewerView: View {
                 .accessibilityLabel(paused ? "Resume" : "Pause")
                 Menu {
                     Button {
-                        UIPasteboard.general.string = visible.map { "\(WireCoding.formatDate($0.timestamp)) \($0.level.shortLabel) [\($0.source)] \($0.message)" }.joined(separator: "\n")
+                        Clipboard.copy(visible.map { "\(WireCoding.formatDate($0.timestamp)) \($0.level.shortLabel) [\($0.source)] \($0.message)" }.joined(separator: "\n"))
                         model.toasts.show("Copied \(visible.count) lines")
                     } label: { Label("Copy visible lines", systemImage: "doc.on.doc") }
                     Button(role: .destructive) {

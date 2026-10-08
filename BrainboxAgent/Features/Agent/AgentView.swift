@@ -177,7 +177,7 @@ struct AgentView: View {
     }
 
     private func copy(_ text: String) {
-        UIPasteboard.general.string = text
+        Clipboard.copy(text)
         model.toasts.show("Copied")
     }
 }
