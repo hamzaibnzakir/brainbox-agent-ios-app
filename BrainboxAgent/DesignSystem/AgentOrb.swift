@@ -68,14 +68,16 @@ struct AgentOrb: View {
         }
     }
 
-    private func draw(in context: inout GraphicsContext, size: CGSize, time t: TimeInterval) {
+    private func draw(in context: inout GraphicsContext, size: CGSize, time seconds: TimeInterval) {
+        // Keep every term in CGFloat so the math type-checks unambiguously.
+        let t = CGFloat(seconds.truncatingRemainder(dividingBy: 10_000))
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
         let radius = min(size.width, size.height) / 2
         let busy = mode == .thinking || mode == .streaming || mode == .tool
 
         // Ambient breathing (sine, 3.2s period). Busy states breathe faster.
-        let period = busy ? 1.4 : 3.2
-        let breath = (sin(t * 2 * .pi / period) + 1) / 2
+        let period: CGFloat = busy ? 1.4 : 3.2
+        let breath: CGFloat = (sin(t * 2 * .pi / period) + 1) / 2
         let coreRadius = radius * (0.56 + 0.04 * breath)
 
         // Glow (secondary layer)
@@ -88,7 +90,9 @@ struct AgentOrb: View {
 
         // Core: radial gradient whose highlight drifts on a slow orbit,
         // which reads as a liquid, living surface.
-        let drift = CGPoint(x: center.x + cos(t * 0.7) * coreRadius * 0.28, y: center.y + sin(t * 0.9) * coreRadius * 0.28 - coreRadius * 0.15)
+        let dx: CGFloat = cos(t * 0.7) * coreRadius * 0.28
+        let dy: CGFloat = sin(t * 0.9) * coreRadius * 0.28 - coreRadius * 0.15
+        let drift = CGPoint(x: center.x + dx, y: center.y + dy)
         let core = Path(ellipseIn: CGRect(x: center.x - coreRadius, y: center.y - coreRadius, width: coreRadius * 2, height: coreRadius * 2))
         context.fill(core, with: .radialGradient(
             Gradient(colors: [Color.white.opacity(mode == .offline ? 0.25 : 0.9), tint.core, tint.edge]),
@@ -104,28 +108,28 @@ struct AgentOrb: View {
         switch mode {
         case .thinking:
             // Comet arc: a gradient-faded arc orbiting at constant speed.
-            let start = Angle(radians: t * 3.2)
+            let start = Double(t * 3.2)
             for i in 0..<14 {
-                let a0 = start.radians - Double(i) * 0.09
+                let a0 = start - Double(i) * 0.09
                 var p = Path()
                 p.addArc(center: center, radius: ringRadius, startAngle: .radians(a0 - 0.09), endAngle: .radians(a0), clockwise: false)
                 context.stroke(p, with: .color(tint.core.opacity(1 - Double(i) / 14)), style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
             }
         case .streaming:
             for i in 0..<3 {
-                let angle = t * 2.4 + Double(i) * (2 * .pi / 3)
+                let angle: CGFloat = t * 2.4 + CGFloat(i) * (2 * .pi / 3)
                 let p = CGPoint(x: center.x + cos(angle) * ringRadius, y: center.y + sin(angle) * ringRadius)
-                let r = radius * (0.075 + 0.02 * sin(t * 4 + Double(i)))
+                let r: CGFloat = radius * (0.075 + 0.02 * sin(t * 4 + CGFloat(i)))
                 context.fill(Path(ellipseIn: CGRect(x: p.x - r, y: p.y - r, width: r * 2, height: r * 2)), with: .color(tint.core))
             }
         case .tool:
             var ring = context
             ring.translateBy(x: center.x, y: center.y)
-            ring.rotate(by: .radians(t * 1.1))
+            ring.rotate(by: .radians(Double(t) * 1.1))
             ring.translateBy(x: -center.x, y: -center.y)
             ring.stroke(Path(ellipseIn: ringRect), with: .color(tint.core.opacity(0.8)), style: StrokeStyle(lineWidth: 1.6, lineCap: .round, dash: [3, 5]))
         case .ready:
-            context.stroke(Path(ellipseIn: ringRect), with: .color(tint.core.opacity(0.10 + 0.12 * breath)), lineWidth: 1)
+            context.stroke(Path(ellipseIn: ringRect), with: .color(tint.core.opacity(Double(0.10 + 0.12 * breath))), lineWidth: 1)
         case .offline, .error:
             context.stroke(Path(ellipseIn: ringRect), with: .color(Color.white.opacity(0.08)), style: StrokeStyle(lineWidth: 1, dash: [2, 4]))
         }
