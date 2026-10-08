@@ -6,6 +6,7 @@ import BrainboxCore
 /// ever sent to the server that could delete or rotate real logs.
 struct LogViewerView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.tabIsActive) private var isActive
     @State private var entries: [LogEntry] = []
     @State private var filter = LogFilter()
     @State private var paused = false
@@ -83,7 +84,9 @@ struct LogViewerView: View {
                 } label: { Image(systemName: "ellipsis.circle") }
             }
         }
-        .task(id: streamID) { await stream() }
+        .task(id: "\(streamID)-\(isActive)") {
+            if isActive { await stream() }
+        }
     }
 
     private var controls: some View {

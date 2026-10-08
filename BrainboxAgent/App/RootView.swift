@@ -7,23 +7,31 @@ struct RootView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var keyboardVisible = false
 
+    @State private var visited: Set<AppTab> = []
+
     var body: some View {
         @Bindable var model = model
-        TabView(selection: $model.selectedTab) {
-            HomeView().tabRoot().tag(AppTab.home)
-            AgentView().tabRoot().tag(AppTab.agent)
-            VPSView().tabRoot().tag(AppTab.vps)
-            FilesView().tabRoot().tag(AppTab.files)
-            SettingsView().tabRoot().tag(AppTab.settings)
-        }
-        // The custom bar takes real layout space (not an overlay), so content
-        // like the chat composer always sits above it.
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        VStack(spacing: 0) {
+            // Custom container instead of TabView: the bar is a real layout
+            // sibling (content always ends above it), tabs keep their state,
+            // are mounted lazily, and only the visible tab runs live streams.
+            ZStack {
+                ForEach(AppTab.allCases) { tab in
+                    if visited.contains(tab) || tab == model.selectedTab {
+                        TabPage(isActive: tab == model.selectedTab) { page(for: tab) }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
             if !keyboardVisible {
                 BBTabBar(selection: $model.selectedTab, agentBusy: model.agentStatus.isBusy)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
+        .background(ScreenBackground())
+        .onAppear { visited.insert(model.selectedTab) }
+        .onChange(of: model.selectedTab) { _, tab in visited.insert(tab) }
         .overlay(alignment: .top) {
             if let message = model.toasts.message {
                 ToastView(text: message)
@@ -54,24 +62,52 @@ struct RootView: View {
     }
 }
 
-private struct TabRootModifier: ViewModifier {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var shown = false
-
-    func body(content: Content) -> some View {
-        content
-            .toolbar(.hidden, for: .tabBar)
-            // Replays on every tab switch: quick rise + de-blur (anime.js-like page enter).
-            .opacity(shown ? 1 : 0)
-            .offset(y: shown || reduceMotion ? 0 : 10)
-            .blur(radius: shown || reduceMotion ? 0 : 3)
-            .onAppear { withAnimation(Motion.adaptive(Motion.standard, reduceMotion: reduceMotion)) { shown = true } }
-            .onDisappear { shown = false }
+extension RootView {
+    @ViewBuilder
+    func page(for tab: AppTab) -> some View {
+        switch tab {
+        case .home: HomeView()
+        case .agent: AgentView()
+        case .vps: VPSView()
+        case .files: FilesView()
+        case .settings: SettingsView()
+        }
     }
 }
 
-private extension View {
-    func tabRoot() -> some View { modifier(TabRootModifier()) }
+private struct TabActiveKey: EnvironmentKey {
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// False while a tab is mounted but not on screen; screens use it to
+    /// pause live streams (metrics, logs) they don't need.
+    var tabIsActive: Bool {
+        get { self[TabActiveKey.self] }
+        set { self[TabActiveKey.self] = newValue }
+    }
+}
+
+/// Shows/hides a tab with the brand page transition: the incoming page
+/// rises 10pt and de-blurs while the outgoing one fades (anime.js-style
+/// crossfade, done with springs).
+private struct TabPage<Content: View>: View {
+    let isActive: Bool
+    @ViewBuilder var content: Content
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        content
+            .environment(\.tabIsActive, isActive)
+            .opacity(isActive ? 1 : 0)
+            .offset(y: isActive || reduceMotion ? 0 : 10)
+            .blur(radius: isActive || reduceMotion ? 0 : 3)
+            .scaleEffect(isActive || reduceMotion ? 1 : 0.99)
+            .allowsHitTesting(isActive)
+            .accessibilityHidden(!isActive)
+            .zIndex(isActive ? 1 : 0)
+            .animation(isActive ? Motion.adaptive(Motion.standard, reduceMotion: reduceMotion) : Motion.exit, value: isActive)
+    }
 }
 
 // MARK: - Tab bar

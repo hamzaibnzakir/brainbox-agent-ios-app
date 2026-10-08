@@ -3,6 +3,7 @@ import BrainboxCore
 
 struct HomeView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.tabIsActive) private var isActive
     @State private var metrics: ServerMetrics?
     @State private var info: ServerInfo?
     @State private var cpuHistory: [Double] = []
@@ -26,7 +27,9 @@ struct HomeView: View {
             .refreshable { await refreshServer() }
             .bbScreen()
             .toolbar(.hidden, for: .navigationBar)
-            .task(id: model.settings.providerKind) { await streamServer() }
+            .task(id: "\(model.settings.providerKind.rawValue)-\(isActive)") {
+                if isActive { await streamServer() }
+            }
         }
     }
 

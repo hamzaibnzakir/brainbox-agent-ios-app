@@ -3,6 +3,7 @@ import BrainboxCore
 
 struct VPSView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.tabIsActive) private var isActive
     @State private var info: ServerInfo?
     @State private var metrics: ServerMetrics?
     @State private var services: [ServiceStatus] = []
@@ -48,7 +49,9 @@ struct VPSView: View {
             .navigationTitle("VPS")
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(isPresented: $openTerminal) { TerminalView() }
-            .task(id: model.settings.providerKind) { await run() }
+            .task(id: "\(model.settings.providerKind.rawValue)-\(isActive)") {
+                if isActive { await run() }
+            }
             .confirmationDialog(
                 pendingAction.map { "\($0.0.rawValue.capitalized) \($0.1.name)?" } ?? "",
                 isPresented: Binding(get: { pendingAction != nil }, set: { if !$0 { pendingAction = nil } }),
