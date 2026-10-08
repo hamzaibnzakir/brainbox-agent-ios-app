@@ -52,6 +52,7 @@ final class AppModel {
 
     init(environment: LaunchEnvironment = .current) {
         self.environment = environment
+        if environment.isUITesting { Motion.ambientEnabled = false }
         let defaults: UserDefaults
         if environment.usesEphemeralStorage {
             let suiteName = "brainbox.tests.\(UUID().uuidString)"

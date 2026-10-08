@@ -95,7 +95,7 @@ struct StatusDot: View {
 
     var body: some View {
         ZStack {
-            if pulsing && !reduceMotion && tone != .idle {
+            if pulsing && Motion.ambient(reduceMotion: reduceMotion) && tone != .idle {
                 Circle()
                     .stroke(tone.color.opacity(0.6), lineWidth: 1)
                     .scaleEffect(pulse ? 2.4 : 1)
@@ -105,7 +105,7 @@ struct StatusDot: View {
         }
         .frame(width: size, height: size)
         .onAppear {
-            guard pulsing, !reduceMotion else { return }
+            guard pulsing, Motion.ambient(reduceMotion: reduceMotion) else { return }
             withAnimation(.easeOut(duration: 1.8).repeatForever(autoreverses: false)) { pulse = true }
         }
         .animation(Motion.standard, value: tone.color)
@@ -299,7 +299,7 @@ struct EmptyStateView: View {
             Image(systemName: systemImage)
                 .font(.system(size: 28, weight: .light))
                 .foregroundStyle(BB.Palette.textTertiary)
-                .symbolEffect(.pulse, options: .repeating.speed(0.4))
+                .symbolEffect(.pulse, options: .repeating.speed(0.4), isActive: Motion.ambientEnabled)
             Text(title).font(BB.Font.headline).foregroundStyle(BB.Palette.textPrimary)
             Text(message).font(BB.Font.callout).foregroundStyle(BB.Palette.textSecondary).multilineTextAlignment(.center)
         }

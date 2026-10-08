@@ -148,7 +148,7 @@ struct ThinkingLine: View {
                         .frame(width: 5, height: 5)
                         .scaleEffect(phase ? 1 : 0.5)
                         .opacity(phase ? 1 : 0.35)
-                        .animation(reduceMotion ? nil : .easeInOut(duration: 0.5).repeatForever().delay(Double(i) * 0.15), value: phase)
+                        .animation(Motion.ambient(reduceMotion: reduceMotion) ? .easeInOut(duration: 0.5).repeatForever().delay(Double(i) * 0.15) : nil, value: phase)
                 }
             }
         }

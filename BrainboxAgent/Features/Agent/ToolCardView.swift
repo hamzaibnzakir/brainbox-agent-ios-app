@@ -19,7 +19,7 @@ struct ToolStatusIcon: View {
                     .stroke(BB.Palette.signal, style: StrokeStyle(lineWidth: size * 0.11, lineCap: .round))
                     .rotationEffect(.degrees(spin ? 360 : 0))
                     .onAppear {
-                        guard !reduceMotion else { return }
+                        guard Motion.ambient(reduceMotion: reduceMotion) else { return }
                         withAnimation(.linear(duration: 0.9).repeatForever(autoreverses: false)) { spin = true }
                     }
                     .transition(.opacity)
@@ -176,7 +176,7 @@ struct ToolCardView: View {
         .animation(Motion.standard, value: call.status)
         .animation(Motion.standard, value: isExpanded)
         .onAppear {
-            guard !reduceMotion else { return }
+            guard Motion.ambient(reduceMotion: reduceMotion) else { return }
             withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: true)) { glow = true }
         }
     }

@@ -37,10 +37,10 @@ struct AgentOrb: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: reduceMotion || mode == .offline || mode == .error)) { timeline in
+        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !Motion.ambient(reduceMotion: reduceMotion) || mode == .offline || mode == .error)) { timeline in
             let t = timeline.date.timeIntervalSinceReferenceDate
             Canvas { context, canvasSize in
-                draw(in: &context, size: canvasSize, time: reduceMotion ? 0 : t)
+                draw(in: &context, size: canvasSize, time: Motion.ambient(reduceMotion: reduceMotion) ? t : 0)
             }
         }
         .frame(width: size, height: size)

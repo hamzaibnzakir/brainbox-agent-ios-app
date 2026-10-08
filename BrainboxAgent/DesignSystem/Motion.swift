@@ -22,6 +22,14 @@ enum Motion {
     static let fade = Animation.easeOut(duration: 0.22)
     static let breathe = Animation.easeInOut(duration: 3.2).repeatForever(autoreverses: true)
 
+    /// Ambient (never-ending) loops: orb, pulses, shimmer, glows. Turned off
+    /// for UI tests so XCUITest can see an idle app; users always get them
+    /// unless Reduce Motion is on.
+    static var ambientEnabled = true
+
+    /// True when looping ambient motion should run.
+    static func ambient(reduceMotion: Bool) -> Bool { ambientEnabled && !reduceMotion }
+
     static let staggerStep: Double = 0.035
     static let staggerBudget: Double = 0.36
 
@@ -174,7 +182,7 @@ private struct ShimmerModifier: ViewModifier {
     func body(content: Content) -> some View {
         content
             .overlay {
-                if active && !reduceMotion {
+                if active && Motion.ambient(reduceMotion: reduceMotion) {
                     GeometryReader { proxy in
                         LinearGradient(
                             colors: [.clear, Color.white.opacity(0.28), .clear],
@@ -229,7 +237,7 @@ struct StreamingCaret: View {
             .opacity(on ? 1 : 0.15)
             .shadow(color: BB.Palette.signalGlow, radius: on ? 6 : 0)
             .onAppear {
-                guard !reduceMotion else { on = true; return }
+                guard Motion.ambient(reduceMotion: reduceMotion) else { on = true; return }
                 withAnimation(.easeInOut(duration: 0.55).repeatForever(autoreverses: true)) { on = true }
             }
             .accessibilityHidden(true)
