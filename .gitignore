@@ -1,0 +1,33 @@
+# Xcode / build output
+*.xcodeproj/
+*.xcworkspace/
+!Packages/**/*.xcworkspace
+DerivedData/
+build/
+.build/
+.swiftpm/
+*.ipa
+*.xcarchive
+*.dSYM.zip
+*.xcresult
+
+# Never commit secrets or signing material
+.env
+.env.*
+!.env.example
+*.p12
+*.pfx
+*.cer
+*.certSigningRequest
+*.mobileprovision
+*.provisionprofile
+*.key
+*.pem
+id_rsa*
+id_ed25519*
+secrets/
+ExportOptions.local.plist
+
+# OS
+.DS_Store
+Thumbs.db
