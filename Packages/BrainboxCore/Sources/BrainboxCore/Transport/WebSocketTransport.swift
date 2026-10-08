@@ -25,7 +25,9 @@ public final class URLSessionWebSocketTransport: NSObject, WebSocketTransport, @
     public init(connectTimeout: TimeInterval = 15) {
         let configuration = URLSessionConfiguration.default
         configuration.timeoutIntervalForRequest = connectTimeout
+        #if !canImport(FoundationNetworking)
         configuration.waitsForConnectivity = false
+        #endif
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil

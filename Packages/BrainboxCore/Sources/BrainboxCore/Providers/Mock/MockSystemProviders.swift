@@ -12,7 +12,8 @@ public final class MockVPSProvider: VPSProvider, @unchecked Sendable {
 
     private let state: Locked<State>
     private let latency: TimeInterval
-    private let bootedAt = Date().addingTimeInterval(-(12 * 86_400 + 3 * 3_600 + 41 * 60))
+    private static let simulatedUptime: TimeInterval = 1_049_460 // 12d 3h 41m
+    private let bootedAt = Date().addingTimeInterval(-MockVPSProvider.simulatedUptime)
 
     public init(latency: TimeInterval = 0.25) {
         self.latency = latency
