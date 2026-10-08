@@ -30,6 +30,9 @@ public enum ChatReducer {
                 message.toolCalls[index] = call
             } else {
                 message.toolCalls.append(call)
+                // Anchor the tool in the text so the UI can render it inline,
+                // exactly where it happened in the reply.
+                message.content += MessageSegment.marker(for: call.id)
             }
             message.state = .streaming
         case .toolOutput(let id, let chunk):
@@ -73,4 +76,42 @@ public enum ChatReducer {
         guard let index = conversation.messages.firstIndex(where: { $0.id == assistantID }) else { return nil }
         return conversation.messages[..<index].last(where: { $0.role == .user })?.content
     }
+}
+
+/// A piece of an assistant message: text or an inline tool call.
+public enum MessageSegment: Hashable, Sendable {
+    case text(String)
+    case tool(id: String)
+
+    /// Record separator characters never appear in normal model output.
+    static let delimiter: Character = "\u{1E}"
+
+    public static func marker(for toolCallID: String) -> String {
+        "\n\(delimiter)tool:\(toolCallID)\(delimiter)\n"
+    }
+
+    /// Splits content into text and tool segments (empty text is dropped).
+    public static func split(_ content: String) -> [MessageSegment] {
+        var segments: [MessageSegment] = []
+        let parts = content.split(separator: delimiter, omittingEmptySubsequences: false)
+        for (index, part) in parts.enumerated() {
+            if index % 2 == 1, part.hasPrefix("tool:") {
+                segments.append(.tool(id: String(part.dropFirst(5))))
+            } else {
+                let text = String(part).trimmingCharacters(in: .newlines)
+                if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { segments.append(.text(text)) }
+            }
+        }
+        return segments
+    }
+
+    /// Content with tool markers removed (for copy, previews and search).
+    public static func plainText(_ content: String) -> String {
+        split(content).compactMap { if case .text(let t) = $0 { return t } else { return nil } }.joined(separator: "\n\n")
+    }
+}
+
+public extension Message {
+    var segments: [MessageSegment] { MessageSegment.split(content) }
+    var plainText: String { MessageSegment.plainText(content) }
 }

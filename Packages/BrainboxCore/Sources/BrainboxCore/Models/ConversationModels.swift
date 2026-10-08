@@ -77,9 +77,10 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
     public static let untitled = "New conversation"
 
     public var preview: String {
-        messages.last(where: { $0.role != .system })?.content
+        guard let last = messages.last(where: { $0.role != .system }) else { return "" }
+        return MessageSegment.plainText(last.content)
             .replacingOccurrences(of: "\n", with: " ")
-            .trimmingCharacters(in: .whitespaces) ?? ""
+            .trimmingCharacters(in: .whitespaces)
     }
 
     /// A short, deterministic title derived from the first user message.

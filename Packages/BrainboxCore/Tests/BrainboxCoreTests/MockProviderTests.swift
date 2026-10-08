@@ -22,7 +22,8 @@ final class MockAgentProviderTests: XCTestCase {
 
         var message = Message(role: .assistant, content: "", state: .streaming)
         events.forEach { ChatReducer.apply($0, to: &message) }
-        XCTAssertTrue(message.content.contains("mock agent"))
+        XCTAssertTrue(message.plainText.contains("mock agent"))
+        XCTAssertEqual(message.segments.filter { if case .tool = $0 { return true }; return false }.count, 2)
         XCTAssertEqual(message.toolCalls.count, 2)
         XCTAssertTrue(message.toolCalls.allSatisfy { $0.status == .succeeded })
         XCTAssertEqual(message.state, .complete)

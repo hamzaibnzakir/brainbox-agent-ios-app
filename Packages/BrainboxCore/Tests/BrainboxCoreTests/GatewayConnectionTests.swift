@@ -82,7 +82,8 @@ final class GatewayConnectionTests: XCTestCase {
         var message = Message(role: .assistant, content: "", state: .streaming)
         var title: String?
         for event in events { if let t = ChatReducer.apply(event, to: &message).title { title = t } }
-        XCTAssertEqual(message.content, "All good.")
+        XCTAssertEqual(message.plainText, "All good.")
+        XCTAssertEqual(message.segments, [.tool(id: "t1"), .text("All good.")])
         XCTAssertEqual(message.toolCalls.first?.liveOutput, "up 3 days\n")
         XCTAssertEqual(message.toolCalls.first?.status, .succeeded)
         XCTAssertEqual(message.state, .complete)

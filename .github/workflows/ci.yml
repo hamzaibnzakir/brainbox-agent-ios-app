@@ -26,10 +26,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Swift version
-        run: swift --version
+        run: |
+          swift --version
+          command -v python3 || (apt-get update -qq && apt-get install -y -qq python3 >/dev/null)
       - name: Build & test BrainboxCore
         working-directory: Packages/BrainboxCore
-        run: swift test --parallel
+        run: |
+          STATUS=0
+          swift test --parallel > core-test.log 2>&1 || STATUS=$?
+          tail -n 60 core-test.log
+          bash ../../scripts/ci/annotate-log.sh core-test.log "Core (Linux)"
+          exit $STATUS
 
   ios:
     name: iOS build, tests & unsigned IPA
@@ -44,9 +51,14 @@ jobs:
           swift --version
           sw_vers
 
-      - name: Core tests on macOS (includes Keychain-free suites)
+      - name: Core tests on macOS
         working-directory: Packages/BrainboxCore
-        run: swift test
+        run: |
+          STATUS=0
+          swift test > core-test.log 2>&1 || STATUS=$?
+          tail -n 60 core-test.log
+          bash ../../scripts/ci/annotate-log.sh core-test.log "Core (macOS)"
+          exit $STATUS
 
       - name: Install XcodeGen
         run: brew install xcodegen
@@ -74,11 +86,12 @@ jobs:
             > build/xcodebuild-test.log 2>&1 || STATUS=$?
           grep -E "error:|Test Suite .*(passed|failed)|Test Case .*failed|Executed [0-9]+ test|\*\* TEST" build/xcodebuild-test.log || true
           if [ "$STATUS" -ne 0 ]; then tail -n 120 build/xcodebuild-test.log; fi
+          bash scripts/ci/annotate-log.sh build/xcodebuild-test.log "iOS tests"
           exit $STATUS
 
       - name: Archive (unsigned, device)
         run: |
-          set -o pipefail
+          STATUS=0
           xcodebuild archive \
             -project BrainboxAgent.xcodeproj \
             -scheme BrainboxAgent \
@@ -86,7 +99,10 @@ jobs:
             -destination "generic/platform=iOS" \
             -archivePath build/BrainboxAgent.xcarchive \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            | tail -n 40
+            > build/archive.log 2>&1 || STATUS=$?
+          tail -n 40 build/archive.log
+          bash scripts/ci/annotate-log.sh build/archive.log "Archive"
+          exit $STATUS
 
       - name: Package unsigned IPA
         run: bash scripts/package-unsigned-ipa.sh build/BrainboxAgent.xcarchive build/BrainboxAgent-unsigned.ipa
