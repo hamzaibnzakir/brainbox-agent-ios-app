@@ -7,6 +7,7 @@ struct AgentView: View {
     @State private var draft = ""
     @State private var showHistory = false
     @State private var isAtBottom = true
+    @State private var lastAutoScroll = Date.distantPast
     @FocusState private var composerFocused: Bool
 
     private var chat: ChatStore { model.chat }
@@ -101,7 +102,9 @@ struct AgentView: View {
         if let conversation = chat.current, !conversation.messages.isEmpty {
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 22) {
+                    // Plain VStack: stable measured heights while text streams
+                    // (no lazy re-estimation jitter under the bottom anchor).
+                    VStack(alignment: .leading, spacing: 22) {
                         ForEach(conversation.messages) { message in
                             MessageRow(
                                 message: message,
@@ -151,7 +154,14 @@ struct AgentView: View {
                     withAnimation(Motion.standard) { proxy.scrollTo("bottom", anchor: .bottom) }
                 }
                 .onChange(of: conversation.messages.last?.content) { _, _ in
-                    if isAtBottom { proxy.scrollTo("bottom", anchor: .bottom) }
+                    // Follow the stream, throttled to ~12 fps so token bursts
+                    // don't trigger a scroll per token.
+                    guard isAtBottom, Date().timeIntervalSince(lastAutoScroll) > 0.08 else { return }
+                    lastAutoScroll = Date()
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                .onChange(of: chat.isStreaming) { _, streaming in
+                    if !streaming { withAnimation(Motion.standard) { proxy.scrollTo("bottom", anchor: .bottom) } }
                 }
                 .onChange(of: chat.currentID) { _, _ in
                     proxy.scrollTo("bottom", anchor: .bottom)

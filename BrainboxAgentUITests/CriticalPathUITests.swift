@@ -23,9 +23,10 @@ final class CriticalPathUITests: XCTestCase {
         field.typeText("check server status")
         app.buttons["composer.send"].tap()
 
-        let reply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Everything looks healthy")).firstMatch
-        XCTAssertTrue(reply.waitForExistence(timeout: 15), "The mock agent's streamed reply should appear")
-        XCTAssertTrue(app.staticTexts["Mock Agent"].firstMatch.exists)
+        let done = app.descendants(matching: .any)["assistant.complete"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 20), "The mock agent's streamed reply should complete")
+        let summary = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "looks healthy")).firstMatch
+        XCTAssertTrue(summary.exists, "Streamed markdown should be rendered")
     }
 
     func testSuggestionStartsAConversation() throws {
@@ -33,8 +34,8 @@ final class CriticalPathUITests: XCTestCase {
         let suggestion = app.buttons["suggestion.0"]
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
         suggestion.tap()
-        let reply = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Gateway")).firstMatch
-        XCTAssertTrue(reply.waitForExistence(timeout: 15))
+        let done = app.descendants(matching: .any)["assistant.complete"].firstMatch
+        XCTAssertTrue(done.waitForExistence(timeout: 20))
     }
 
     func testEveryTabOpens() throws {

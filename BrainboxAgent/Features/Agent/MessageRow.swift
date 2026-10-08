@@ -110,6 +110,16 @@ struct MessageRow: View {
         .animation(Motion.standard, value: message.segments.count)
         .animation(Motion.standard, value: message.state)
         .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(accessibilityState)
+    }
+
+    private var accessibilityState: String {
+        switch message.state {
+        case .complete: return "assistant.complete"
+        case .failed: return "assistant.failed"
+        case .cancelled: return "assistant.cancelled"
+        case .sending, .streaming: return "assistant.streaming"
+        }
     }
 
     private var actions: some View {
