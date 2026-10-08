@@ -5,10 +5,12 @@ watch it run tools, and manage the VPS it lives on: metrics, services,
 terminal, logs and files. Native SwiftUI, built and packaged entirely on
 GitHub so no Mac is required.
 
-> **Hermes is not connected yet.** The app ships with a clearly-labelled
-> **Mock** backend for development and a **Remote Agent** backend that speaks
-> the [Brainbox Agent Protocol](docs/AGENT_PROTOCOL.md). Hermes will plug in
-> behind a gateway — see [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md).
+> **Hermes: gateway built, awaiting verification.** The app ships with a
+> clearly-labelled **Mock** backend and a **Remote Agent** backend that speaks
+> the [Brainbox Agent Protocol](docs/AGENT_PROTOCOL.md). The
+> [Brainbox gateway](gateway/) bridges that protocol to Hermes; it refuses to
+> call Hermes until a read-only probe has confirmed the API on your VPS — see
+> [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md).
 
 ## Features
 
@@ -61,6 +63,7 @@ BrainboxAgent/            SwiftUI app (App, DesignSystem, Features, Resources)
 BrainboxAgentTests/       hosted unit tests
 BrainboxAgentUITests/     UI tests (mock providers)
 Packages/BrainboxCore/    models, protocols, transport, providers, core tests
+gateway/                  Python gateway (protocol server, Hermes adapters, probe, deploy files)
 project.yml               XcodeGen spec (the .xcodeproj is generated)
 .github/workflows/        ci.yml · signed-ipa.yml
 scripts/                  IPA packaging and CI helpers

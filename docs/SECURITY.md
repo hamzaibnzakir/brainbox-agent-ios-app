@@ -55,7 +55,25 @@ are listed in §3. Severity: **High** (fix before connecting a real server),
 7. Audit-log privileged actions (who/what/when, no secrets).
 8. Run Hermes credentials only on the server; the app never sees them.
 
-## 4. Re-review triggers
+## 4. Gateway (built 2026-10-08)
+
+| Control | Implementation |
+|---|---|
+| Bind | `127.0.0.1` by default; any non-localhost, non-Tailscale address is refused unless `BRAINBOX_ALLOW_PUBLIC_BIND=1` |
+| Token | Only its SHA-256 is stored; constant-time compare; 10 failures/min per IP then connections are dropped |
+| First frame | Must be `auth.hello` within 10 s, otherwise closed |
+| Files | Realpath sandbox (symlinks and `..` resolved), read-only roots, roots undeletable, 2 MB/binary guard, optimistic concurrency |
+| Services | Explicit allow-list; `hermes-gateway.service` intentionally excluded in the example config |
+| Logs | Read-only `journalctl` for allow-listed units; never deletes or rotates |
+| Terminal | Disabled by default; per-command process groups; 15 min timeout |
+| Hermes | Not called until `verified = true`; isolated worker per turn; stdin closed (no hanging approvals); dangerous-command auto-approval off; cancel kills only the worker |
+| Errors | Internal exceptions are logged server-side; clients get generic messages |
+| Data | Conversation history in `/var/lib/brainbox-gateway` (0700 dir, 0600 files) |
+
+**Open risk (High, needs your decision):** the gateway runs as root because
+Hermes does. Expose it only through Tailscale.
+
+## 5. Re-review triggers
 
 Re-run this review when: the gateway is built, Hermes is connected, the app
 gets a new capability (push notifications, file upload, background tasks),

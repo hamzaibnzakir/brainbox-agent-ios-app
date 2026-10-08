@@ -31,4 +31,5 @@ echo
 echo "Installed. Nothing is running yet. Next:"
 echo "  1. /opt/brainbox-gateway/venv/bin/brainbox-gateway check --config /etc/brainbox-gateway/gateway.toml"
 echo "  2. systemctl enable --now brainbox-gateway"
-echo "  3. expose privately: tailscale serve --bg --https=443 http://127.0.0.1:8765"
+echo "  3. expose privately (needs Tailscale; nginx already owns 443): tailscale serve --bg --https=8443 http://127.0.0.1:8765"
+echo "     app URL: wss://<this-machine>.<your-tailnet>.ts.net:8443/v1/agent"
