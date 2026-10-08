@@ -31,7 +31,7 @@ allow_dangerous_commands = false       # never auto-approve dangerous commands
 use_memory = true                      # app chats share Hermes' persistent memory
 request_timeout_seconds = 900
 max_iterations = 60
-verified = false                       # set true only after tools/probe_hermes.py --live passes
+verified = false                       # set true ONLY after the probe output has been manually reviewed
 
 [system]
 # Folders the app may browse/edit. Keep this list short.
@@ -47,6 +47,7 @@ log_units = ["hermes-gateway.service", "brainbox-gateway.service", "nginx.servic
 
 [terminal]
 # Off by default: with the gateway running as root this would be a root shell.
+# Keep it off until the first end-to-end connection test is complete.
 enabled = false
 shell = "/bin/bash"
 cwd = "/root"

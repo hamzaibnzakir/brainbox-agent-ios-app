@@ -102,8 +102,11 @@ set `hermes.verified = true` (and adjust callback handling if needed).
 2. `brainbox-gateway new-token` → paste the hash into the config, the token
    into the app (Settings → Connection).
 3. Start with `adapter = "echo"`, connect the app, confirm the link.
-4. After the probe passes: `adapter = "hermes"`, `verified = true`, restart
-   **brainbox-gateway** (not hermes-gateway).
+4. Only after the probe output has been **manually reviewed**: `adapter = "hermes"`,
+   `verified = true`, restart **brainbox-gateway** (not hermes-gateway).
+5. The terminal stays disabled (`[terminal] enabled = false`) until the first
+   end-to-end connection test is complete. Installing and starting the gateway
+   are always manual steps; nothing is installed or started automatically.
 
 Exposure options:
 
