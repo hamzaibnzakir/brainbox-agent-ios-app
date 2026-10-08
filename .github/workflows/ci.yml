@@ -1,0 +1,110 @@
+name: CI
+
+# Builds and tests everything on GitHub-hosted runners so no local Mac is
+# needed. Produces an UNSIGNED .ipa artifact on every push to main that can
+# be signed and installed with a sideloading tool (see docs/BUILD_AND_SIDELOAD.md).
+
+on:
+  push:
+    branches: [main, develop, "feature/**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  core-linux:
+    name: Core tests (Linux)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift version
+        run: swift --version
+      - name: Build & test BrainboxCore
+        working-directory: Packages/BrainboxCore
+        run: swift test --parallel
+
+  ios:
+    name: iOS build, tests & unsigned IPA
+    runs-on: macos-15
+    timeout-minutes: 60
+    if: ${{ hashFiles('project.yml') != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain info
+        run: |
+          xcodebuild -version
+          swift --version
+          sw_vers
+
+      - name: Core tests on macOS (includes Keychain-free suites)
+        working-directory: Packages/BrainboxCore
+        run: swift test
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          UDID=$(bash scripts/ci/select-simulator.sh)
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "Using simulator $UDID"
+
+      - name: Build & run unit + UI tests
+        run: |
+          mkdir -p build
+          STATUS=0
+          xcodebuild test \
+            -project BrainboxAgent.xcodeproj \
+            -scheme BrainboxAgent \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath build/TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO \
+            > build/xcodebuild-test.log 2>&1 || STATUS=$?
+          grep -E "error:|Test Suite .*(passed|failed)|Test Case .*failed|Executed [0-9]+ test|\*\* TEST" build/xcodebuild-test.log || true
+          if [ "$STATUS" -ne 0 ]; then tail -n 120 build/xcodebuild-test.log; fi
+          exit $STATUS
+
+      - name: Archive (unsigned, device)
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project BrainboxAgent.xcodeproj \
+            -scheme BrainboxAgent \
+            -configuration Release \
+            -destination "generic/platform=iOS" \
+            -archivePath build/BrainboxAgent.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            | tail -n 40
+
+      - name: Package unsigned IPA
+        run: bash scripts/package-unsigned-ipa.sh build/BrainboxAgent.xcarchive build/BrainboxAgent-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: BrainboxAgent-unsigned-ipa
+          path: build/BrainboxAgent-unsigned.ipa
+          retention-days: 30
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: |
+            build/TestResults.xcresult
+            build/xcodebuild-test.log
+          retention-days: 7
