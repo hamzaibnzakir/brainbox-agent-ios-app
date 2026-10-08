@@ -31,3 +31,4 @@ ExportOptions.local.plist
 # OS
 .DS_Store
 Thumbs.db
+BrainboxAgent/Info.plist

@@ -142,6 +142,28 @@ extension View {
     }
 }
 
+private struct ShakeOnAppear: ViewModifier {
+    @State private var trigger = 0
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func body(content: Content) -> some View {
+        content
+            .bbShake(trigger)
+            .onAppear {
+                guard !reduceMotion else { return }
+                Task { @MainActor in
+                    try? await Task.sleep(nanoseconds: 120_000_000)
+                    trigger += 1
+                }
+            }
+    }
+}
+
+extension View {
+    /// One firm shake when the view first appears (errors).
+    func bbShakeOnAppear() -> some View { modifier(ShakeOnAppear()) }
+}
+
 // MARK: - Shimmer
 
 private struct ShimmerModifier: ViewModifier {

@@ -173,6 +173,7 @@ final class ChatReducerTests: XCTestCase {
         ChatReducer.apply(.textDelta("partial"), to: &message)
         ChatReducer.apply(.failed(.webSocketDisconnected), to: &message)
         XCTAssertEqual(message.content, "partial")
+        XCTAssertEqual(message.state, .failed(.webSocketDisconnected))
     }
 
     func testSegmentsInterleaveTextAndTools() {
@@ -184,7 +185,6 @@ final class ChatReducerTests: XCTestCase {
         XCTAssertEqual(message.segments, [.text("Checking now."), .tool(id: "a"), .tool(id: "b"), .text("All healthy.")])
         XCTAssertEqual(message.plainText, "Checking now.\n\nAll healthy.")
         XCTAssertFalse(message.plainText.contains("tool:"))
-        XCTAssertEqual(message.state, .failed(.webSocketDisconnected))
     }
 
     func testRetryPromptFindsPrecedingUserMessage() {
