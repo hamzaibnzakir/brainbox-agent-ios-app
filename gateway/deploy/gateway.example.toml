@@ -1,0 +1,52 @@
+# Brainbox gateway config — copy to /etc/brainbox-gateway/gateway.toml (chmod 600).
+# Contains NO secrets: only a SHA-256 hash of the app's access token.
+
+[server]
+# Bind to localhost only and publish privately with `tailscale serve`
+# (TLS + tailnet-only). A Tailscale 100.x address also works.
+host = "127.0.0.1"
+port = 8765
+path = "/v1/agent"
+heartbeat_seconds = 20
+data_dir = "/var/lib/brainbox-gateway"
+
+[auth]
+# brainbox-gateway new-token   → prints the token (for the app) + this hash
+token_sha256 = "REPLACE_ME_run_brainbox-gateway_new-token"
+max_failures_per_minute = 10
+
+[agent]
+# Start with "echo" to test the app ↔ gateway link, then switch to "hermes".
+adapter = "echo"
+name = "Hermes"
+
+[hermes]
+mode = "library"                       # documented AIAgent API (preferred) | "cli"
+source_dir = "/opt/hermes-src"
+python = "/opt/hermes-src/venv/bin/python"
+hermes_bin = "/opt/hermes-src/venv/bin/hermes"
+hermes_home = "/root/.hermes"
+toolsets = []                          # [] = Hermes defaults
+allow_dangerous_commands = false       # never auto-approve dangerous commands
+use_memory = true                      # app chats share Hermes' persistent memory
+request_timeout_seconds = 900
+max_iterations = 60
+verified = false                       # set true only after tools/probe_hermes.py --live passes
+
+[system]
+# Folders the app may browse/edit. Keep this list short.
+file_roots = [
+  { path = "/root/.hermes/skills" },
+  { path = "/var/log/nginx", read_only = true },
+]
+# systemd units the app may start/stop/restart. hermes-gateway.service is
+# deliberately NOT listed: stopping it would also stop your Telegram bot.
+services = []
+# Units whose journald logs the app may read (read-only).
+log_units = ["hermes-gateway.service", "brainbox-gateway.service", "nginx.service"]
+
+[terminal]
+# Off by default: with the gateway running as root this would be a root shell.
+enabled = false
+shell = "/bin/bash"
+cwd = "/root"

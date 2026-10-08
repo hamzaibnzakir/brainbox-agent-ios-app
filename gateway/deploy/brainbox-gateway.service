@@ -1,0 +1,22 @@
+[Unit]
+Description=Brainbox Gateway (Brainbox Agent Protocol v1)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Runs as root only because Hermes (and its keys in /root/.hermes) runs as root.
+# See docs/HERMES_INTEGRATION.md for the trade-offs.
+User=root
+ExecStart=/opt/brainbox-gateway/venv/bin/brainbox-gateway serve --config /etc/brainbox-gateway/gateway.toml
+Restart=on-failure
+RestartSec=3
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=no
+StandardOutput=journal
+StandardError=journal
+# Independent from hermes-gateway.service: restarting one never restarts the other.
+
+[Install]
+WantedBy=multi-user.target

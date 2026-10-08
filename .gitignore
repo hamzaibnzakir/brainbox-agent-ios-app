@@ -32,3 +32,9 @@ ExportOptions.local.plist
 .DS_Store
 Thumbs.db
 BrainboxAgent/Info.plist
+
+# Python
+__pycache__/
+*.egg-info/
+.venv/
+gateway/.pytest_cache/

@@ -39,6 +39,28 @@ jobs:
           grep -E "Executed [0-9]+ tests?" core-test.log | tail -n 1 | sed 's/^/::notice title=Core test summary (Linux)::/' || true
           exit $STATUS
 
+  gateway:
+    name: Gateway tests (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        working-directory: gateway
+        run: pip install -q -e ".[test]"
+      - name: Test
+        working-directory: gateway
+        run: |
+          STATUS=0
+          python -m pytest -q > gateway-test.log 2>&1 || STATUS=$?
+          tail -n 40 gateway-test.log
+          bash ../scripts/ci/annotate-log.sh gateway-test.log "Gateway"
+          grep -E "[0-9]+ passed" gateway-test.log | tail -n 1 | sed 's/^/::notice title=Gateway test summary::/' || true
+          exit $STATUS
+
   ios:
     name: iOS build, tests & unsigned IPA
     runs-on: macos-15
@@ -53,6 +75,42 @@ jobs:
           swift --version
           sw_vers
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Start a real Brainbox gateway (echo adapter) for interop tests
+        run: |
+          python -m venv "$RUNNER_TEMP/gwvenv"
+          "$RUNNER_TEMP/gwvenv/bin/pip" install -q ./gateway
+          TOKEN=$(python -c 'import secrets; print(secrets.token_urlsafe(24))')
+          HASH=$(printf '%s' "$TOKEN" | shasum -a 256 | cut -d' ' -f1)
+          mkdir -p "$RUNNER_TEMP/bbroot" "$RUNNER_TEMP/bbdata"
+          cat > "$RUNNER_TEMP/gw.toml" <<EOF
+          [server]
+          host = "127.0.0.1"
+          port = 8765
+          data_dir = "$RUNNER_TEMP/bbdata"
+          [auth]
+          token_sha256 = "$HASH"
+          max_failures_per_minute = 20
+          [agent]
+          adapter = "echo"
+          name = "Echo"
+          [system]
+          file_roots = [ { path = "$RUNNER_TEMP/bbroot" } ]
+          [terminal]
+          enabled = true
+          cwd = "$RUNNER_TEMP"
+          EOF
+          nohup "$RUNNER_TEMP/gwvenv/bin/brainbox-gateway" serve --config "$RUNNER_TEMP/gw.toml" > "$RUNNER_TEMP/gw.log" 2>&1 &
+          for i in $(seq 1 20); do nc -z 127.0.0.1 8765 && break; sleep 0.5; done
+          nc -z 127.0.0.1 8765 || { cat "$RUNNER_TEMP/gw.log"; exit 1; }
+          echo "::add-mask::$TOKEN"
+          echo "BRAINBOX_LIVE_GATEWAY_URL=ws://127.0.0.1:8765/v1/agent" >> "$GITHUB_ENV"
+          echo "BRAINBOX_LIVE_GATEWAY_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo "BRAINBOX_LIVE_FILE_ROOT=$RUNNER_TEMP/bbroot" >> "$GITHUB_ENV"
+
       - name: Core tests on macOS
         working-directory: Packages/BrainboxCore
         run: |
@@ -60,6 +118,10 @@ jobs:
           swift test > core-test.log 2>&1 || STATUS=$?
           tail -n 60 core-test.log
           bash ../../scripts/ci/annotate-log.sh core-test.log "Core (macOS)"
+          grep -E "Executed [0-9]+ tests?" core-test.log | tail -n 1 | sed 's/^/::notice title=Core test summary (macOS)::/' || true
+          LIVE=$(grep -cE "LiveGatewayTests.*passed" core-test.log || true)
+          LIVE_SKIP=$(grep -cE "LiveGatewayTests.*skipped" core-test.log || true)
+          echo "::notice title=Live gateway interop::$LIVE passed, $LIVE_SKIP skipped (Swift client ↔ Python gateway)"
           exit $STATUS
 
       - name: Install XcodeGen
