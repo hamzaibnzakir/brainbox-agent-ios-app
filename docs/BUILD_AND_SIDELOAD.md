@@ -18,7 +18,7 @@ Workflow **CI** (`.github/workflows/ci.yml`) runs on every push to `main`:
 | Job | Runner | Does |
 |---|---|---|
 | Core tests (Linux) | `ubuntu-latest`, `swift:6.0` container | builds `BrainboxCore`, runs its test-suite |
-| iOS build, tests & unsigned IPA | `macos-15` | core tests on macOS → `xcodegen generate` → app unit tests + UI tests on an iPhone simulator → Release archive with signing disabled → **`BrainboxAgent-unsigned.ipa`** artifact (kept 30 days) |
+| iOS build, tests & unsigned IPA | `macos-15` (Xcode 16.4 at the time of writing) | core tests on macOS → `xcodegen generate` → app unit tests + UI tests on an iPhone simulator → Release archive with signing disabled → **`BrainboxAgent-unsigned.ipa`** artifact (kept 30 days) |
 
 The repository is public, so GitHub-hosted macOS minutes are free for it. (On a
 private repo macOS minutes are billed at a higher multiplier — check your

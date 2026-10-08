@@ -36,6 +36,7 @@ jobs:
           swift test --parallel > core-test.log 2>&1 || STATUS=$?
           tail -n 60 core-test.log
           bash ../../scripts/ci/annotate-log.sh core-test.log "Core (Linux)"
+          grep -E "Executed [0-9]+ tests?" core-test.log | tail -n 1 | sed 's/^/::notice title=Core test summary (Linux)::/' || true
           exit $STATUS
 
   ios:
@@ -91,6 +92,8 @@ jobs:
           grep -E "error:|Test Suite .*(passed|failed)|Test Case .*failed|Executed [0-9]+ test|\*\* TEST" build/xcodebuild-test.log || true
           if [ "$STATUS" -ne 0 ]; then tail -n 120 build/xcodebuild-test.log; fi
           bash scripts/ci/annotate-log.sh build/xcodebuild-test.log "iOS tests"
+          grep -E "Executed [0-9]+ tests?" build/xcodebuild-test.log | tail -n 4 | sed 's/^/::notice title=iOS test summary::/' || true
+          grep -E "Test Case .* skipped|Test skipped" build/xcodebuild-test.log | head -n 5 | sed 's/^/::notice title=Skipped::/' || true
           exit $STATUS
 
       - name: Archive (unsigned, device)
