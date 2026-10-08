@@ -35,7 +35,6 @@ jobs:
     name: iOS build, tests & unsigned IPA
     runs-on: macos-15
     timeout-minutes: 60
-    if: ${{ hashFiles('project.yml') != '' }}
     steps:
       - uses: actions/checkout@v4
 
