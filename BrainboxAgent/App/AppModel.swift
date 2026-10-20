@@ -144,7 +144,7 @@ final class AppModel {
         case .mock:
             suite = .mock(fast: environment.isUITesting)
         case .hermes:
-            suite = .hermesPending()
+            suite = ProviderSuite(agent: UnavailableAgentProvider(reason: "Add your Hermes URL and token in Settings → Connection."), vps: nil, terminal: nil, files: nil, logs: nil)
         case .remote:
             if let url = settings.validatedBackendURL {
                 let credentials = self.credentials

@@ -7,10 +7,12 @@ public enum ChatReducer {
         public var title: String?
         public var status: AgentStatus?
         public var finished: Bool = false
-        public init(title: String? = nil, status: AgentStatus? = nil, finished: Bool = false) {
+        public var approvalRequested: Bool = false
+        public init(title: String? = nil, status: AgentStatus? = nil, finished: Bool = false, approvalRequested: Bool = false) {
             self.title = title
             self.status = status
             self.finished = finished
+            self.approvalRequested = approvalRequested
         }
     }
 
@@ -51,12 +53,30 @@ public enum ChatReducer {
             }
         case .conversationTitle(let title):
             effects.title = title
+        case .runStarted(let runID, _):
+            message.runID = runID
+        case .reasoning(let text):
+            guard !text.isEmpty else { break }
+            let combined = (message.reasoning.map { $0 + "\n" } ?? "") + text
+            message.reasoning = String(combined.suffix(8_000))
+        case .approvalRequested(let approval):
+            message.pendingApproval = approval
+            effects.approvalRequested = true
+        case .approvalResolved(let choice):
+            if let pending = message.pendingApproval {
+                message.resolvedApprovals = (message.resolvedApprovals ?? []) + [ResolvedApproval(command: pending.command, choice: choice)]
+            }
+            message.pendingApproval = nil
+        case .notice:
+            break
         case .completed:
             message.state = .complete
+            message.pendingApproval = nil
             finishRunningTools(in: &message, as: .succeeded)
             effects.finished = true
         case .failed(let error):
             message.state = error == .cancelled ? .cancelled : .failed(error)
+            message.pendingApproval = nil
             finishRunningTools(in: &message, as: error == .cancelled ? .cancelled : .failed)
             effects.finished = true
         }
