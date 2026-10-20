@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+from urllib.parse import urlsplit
 import sys
 import time
 from collections import defaultdict, deque
@@ -164,6 +165,10 @@ def validate(cfg: ProxyConfig) -> None:
             raise ValueError(f"device {d.name!r}: token_sha256 must be a 64-char hex SHA-256")
     if not (cfg.hermes_key_file or cfg.hermes_env_file):
         raise ValueError("set proxy.hermes_key_file or proxy.hermes_env_file (where API_SERVER_KEY lives)")
+    upstream = urlsplit(cfg.hermes_url)
+    if upstream.scheme not in ("http", "https") or upstream.hostname not in ("127.0.0.1", "::1", "localhost"):
+        raise ValueError("proxy.hermes_url must point at the Hermes API Server on loopback "
+                         "(e.g. http://127.0.0.1:8642) — the server key must never cross the network")
     if cfg.host not in ("127.0.0.1", "::1", "localhost") and not cfg.host.startswith("100."):
         log.warning("hermes-proxy is binding %s — prefer 127.0.0.1 behind `tailscale serve`", cfg.host)
 
@@ -485,3 +490,11 @@ def serve(cfg: ProxyConfig) -> None:
     proxy = HermesProxy(cfg)
     log.info("hermes-proxy listening on http://%s:%d%s → %s", cfg.host, cfg.port, cfg.prefix, cfg.hermes_url)
     web.run_app(proxy.app(), host=cfg.host, port=cfg.port, access_log=None, print=None)
+
+
+def insecure_permissions(path: str) -> bool:
+    """True if a config/key file is readable or writable by group/others."""
+    try:
+        return bool(os.stat(path).st_mode & 0o077)
+    except OSError:
+        return False

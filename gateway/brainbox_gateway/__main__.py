@@ -54,6 +54,12 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.cmd == "hermes-proxy-check":
             key = hermes_proxy.resolve_hermes_key(pcfg)
+            loose = [f for f in (args.config, pcfg.hermes_key_file, pcfg.hermes_env_file)
+                     if f and hermes_proxy.insecure_permissions(f)]
+            for f in loose:
+                print(f"error: {f} is readable by group/others — run: chmod 600 {f}", file=sys.stderr)
+            if loose:
+                return 1
             print(f"OK · listen={pcfg.host}:{pcfg.port}{pcfg.prefix} upstream={pcfg.hermes_url} devices={len(pcfg.devices)} "
                   f"hermes_key={'found' if key else 'MISSING'} multiplex={pcfg.multiplex_profiles} "
                   f"profile_admin={pcfg.profile_admin_enabled}")

@@ -137,6 +137,11 @@ jobs:
             -exportPath build/export
           ls -la build/export
 
+      - name: Verify signed IPA
+        run: |
+          IPA=$(ls build/export/*.ipa | head -n 1)
+          bash scripts/ci/verify-ipa.sh "$IPA" expect-signed
+
       - name: Upload signed IPA
         uses: actions/upload-artifact@v4
         with:

@@ -317,3 +317,22 @@ def test_env_parsing_handles_quotes_comments_and_export(tmp_path):
 def test_split_profile():
     assert hp.split_profile("/p/research/v1/runs") == ("research", "/v1/runs")
     assert hp.split_profile("/v1/runs") == (None, "/v1/runs")
+
+
+def test_upstream_must_be_loopback():
+    dev = [{"name": "a", "token_sha256": "a" * 64}]
+    for bad in ("http://10.0.0.5:8642", "https://hermes.example.com", "ftp://127.0.0.1"):
+        with pytest.raises(ValueError):
+            hp.config_from_dict({"proxy": {"hermes_env_file": "/x", "hermes_url": bad}, "devices": dev})
+    cfg = hp.config_from_dict({"proxy": {"hermes_env_file": "/x", "hermes_url": "http://localhost:8642"}, "devices": dev})
+    assert cfg.hermes_url == "http://localhost:8642"
+
+
+def test_insecure_permissions(tmp_path):
+    f = tmp_path / "k"
+    f.write_text("x")
+    f.chmod(0o600)
+    assert not hp.insecure_permissions(str(f))
+    f.chmod(0o644)
+    assert hp.insecure_permissions(str(f))
+    assert not hp.insecure_permissions(str(tmp_path / "missing"))
