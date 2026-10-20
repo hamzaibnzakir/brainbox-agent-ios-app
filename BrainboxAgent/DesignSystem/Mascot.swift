@@ -232,8 +232,8 @@ struct MascotRenderer {
     }
 }
 
-/// Mascots arranged around a title, Grok Bot splash style: each drifts on
-/// its own slow orbit and idles on its own schedule.
+/// Mascots arranged around a title: each drifts on its own slow orbit and
+/// idles on its own schedule.
 struct MascotConstellation: View {
     struct Member: Identifiable {
         var id: UUID
@@ -248,23 +248,42 @@ struct MascotConstellation: View {
     @Environment(\.accessibilityReduceMotion) private var system
     @Environment(\.bbForceReduceMotion) private var forced
 
+    /// Position of member `index` of `count` at time `t` (pure, cheap to type-check).
+    static func offset(index: Int, count: Int, time t: Double, radius: CGFloat) -> CGSize {
+        let i = Double(index)
+        let n = Double(max(count, 1))
+        let base: Double = i / n * 2.0 * Double.pi - Double.pi / 2.0
+        let drift: Double = sin(t * 0.25 + i) * 0.08
+        let angle: Double = base + drift
+        let wobble: Double = sin(t * 0.6 + i * 1.7) * 6.0
+        let r = Double(radius)
+        let x: Double = cos(angle) * r
+        let y: Double = sin(angle) * r * 0.62 + wobble
+        return CGSize(width: x, height: y)
+    }
+
     var body: some View {
-        let reduce = system || forced
-        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: reduce || !Motion.ambientEnabled)) { timeline in
-            let t = reduce ? 0 : timeline.date.timeIntervalSinceReferenceDate
-            ZStack {
-                ForEach(Array(members.enumerated()), id: \.element.id) { index, member in
-                    let base = Double(index) / Double(max(members.count, 1)) * 2 * .pi - .pi / 2
-                    let drift = sin(t * 0.25 + Double(index)) * 0.08
-                    let angle = base + drift
-                    let wobble = CGFloat(sin(t * 0.6 + Double(index) * 1.7)) * 6
-                    MascotView(style: member.style, mood: member.mood, size: mascotSize, seed: member.id)
-                        .offset(x: CGFloat(cos(angle)) * radius, y: CGFloat(sin(angle)) * radius * 0.62 + wobble)
-                        .onTapGesture { onTap?(member.id) }
-                        .accessibilityAddTraits(onTap == nil ? [] : .isButton)
-                }
+        let reduce: Bool = system || forced
+        let paused: Bool = reduce || !Motion.ambientEnabled
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: paused)) { timeline in
+            constellation(time: reduce ? 0 : timeline.date.timeIntervalSinceReferenceDate)
+        }
+    }
+
+    private func constellation(time: Double) -> some View {
+        let indexed: [(offset: Int, element: Member)] = Array(members.enumerated())
+        return ZStack {
+            ForEach(indexed, id: \.element.id) { pair in
+                memberView(pair.element, offset: Self.offset(index: pair.offset, count: members.count, time: time, radius: radius))
             }
         }
+    }
+
+    private func memberView(_ member: Member, offset: CGSize) -> some View {
+        MascotView(style: member.style, mood: member.mood, size: mascotSize, seed: member.id)
+            .offset(offset)
+            .onTapGesture { onTap?(member.id) }
+            .accessibilityAddTraits(onTap == nil ? [] : .isButton)
     }
 }
 

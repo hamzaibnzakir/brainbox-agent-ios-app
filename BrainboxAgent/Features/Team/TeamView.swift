@@ -90,7 +90,7 @@ struct TeamView: View {
         }
     }
 
-    // MARK: Hero (Grok Bot splash style)
+    // MARK: Hero
 
     private var hero: some View {
         ZStack {

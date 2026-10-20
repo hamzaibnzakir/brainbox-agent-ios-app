@@ -56,7 +56,7 @@ struct ReducedMotionReader<Content: View>: View {
     var body: some View { content(system || forced) }
 }
 
-// MARK: - Connected pulse (Grok "connected" sheet)
+// MARK: - Connected pulse
 
 /// Two or three concentric glow rings expanding from a centred icon:
 /// scale 1 → 1.6, opacity 0.5 → 0, ~1.8 s loop.
@@ -310,7 +310,7 @@ struct TypewriterText: View {
     }
 }
 
-// MARK: - Depth orbit (Grok "connect tools" carousel)
+// MARK: - Depth orbit
 
 /// Items travel an ellipse; foreground items scale up, sharpen and reach
 /// full opacity, receding ones shrink, fade and blur (depth of field).
