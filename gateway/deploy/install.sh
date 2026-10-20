@@ -16,7 +16,7 @@ install -d -m 700 /etc/brainbox-gateway /var/lib/brainbox-gateway
 rsync -a --delete --exclude tests --exclude '__pycache__' "$HERE/" /opt/brainbox-gateway/src/
 [ -d /opt/brainbox-gateway/venv ] || "$PY" -m venv /opt/brainbox-gateway/venv
 /opt/brainbox-gateway/venv/bin/pip install -q --upgrade pip
-/opt/brainbox-gateway/venv/bin/pip install -q /opt/brainbox-gateway/src
+/opt/brainbox-gateway/venv/bin/pip install -q "/opt/brainbox-gateway/src[proxy]"
 
 if [ ! -f /etc/brainbox-gateway/gateway.toml ]; then
   install -m 600 "$HERE/deploy/gateway.example.toml" /etc/brainbox-gateway/gateway.toml
@@ -25,7 +25,13 @@ if [ ! -f /etc/brainbox-gateway/gateway.toml ]; then
   echo "  /opt/brainbox-gateway/venv/bin/brainbox-gateway new-token"
   echo "and paste the hash into [auth] token_sha256."
 fi
+if [ ! -f /etc/brainbox-gateway/hermes-proxy.toml ]; then
+  install -m 600 "$HERE/deploy/hermes-proxy.example.toml" /etc/brainbox-gateway/hermes-proxy.toml
+  echo "Created /etc/brainbox-gateway/hermes-proxy.toml (Hermes API proxy) — add a device with:"
+  echo "  /opt/brainbox-gateway/venv/bin/brainbox-gateway new-device --name \"My iPhone\""
+fi
 install -m 644 "$HERE/deploy/brainbox-gateway.service" /etc/systemd/system/brainbox-gateway.service
+install -m 644 "$HERE/deploy/brainbox-hermes-proxy.service" /etc/systemd/system/brainbox-hermes-proxy.service
 systemctl daemon-reload
 echo
 echo "Installed. Nothing is running yet. Next:"
@@ -33,3 +39,10 @@ echo "  1. /opt/brainbox-gateway/venv/bin/brainbox-gateway check --config /etc/b
 echo "  2. systemctl enable --now brainbox-gateway"
 echo "  3. expose privately (needs Tailscale; nginx already owns 443): tailscale serve --bg --https=8443 http://127.0.0.1:8765"
 echo "     app URL: wss://<this-machine>.<your-tailnet>.ts.net:8443/v1/agent"
+echo
+echo "Hermes API proxy (for the Hermes backend in the app) — see docs/HERMES_API_DEPLOYMENT.md:"
+echo "  a. enable the Hermes API Server deliberately (loopback, strong key) — documented, not automatic"
+echo "  b. brainbox-gateway hermes-proxy-check --config /etc/brainbox-gateway/hermes-proxy.toml"
+echo "  c. systemctl enable --now brainbox-hermes-proxy"
+echo "  d. tailscale serve --bg --https=8444 http://127.0.0.1:8766"
+echo "     app URL: https://<this-machine>.<your-tailnet>.ts.net:8444/hermes"
