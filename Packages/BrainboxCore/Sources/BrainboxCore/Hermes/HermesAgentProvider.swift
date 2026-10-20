@@ -58,7 +58,8 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
     private struct State {
         var report: HermesCompatibilityReport?
         var runs: [UUID: String] = [:]          // requestID → runID
-        var createdSessions: Set<String> = []
+        var runClients: [String: HermesAPIClient] = [:] // runID → profile-routed client
+        var createdSessions: Set<String> = []   // "profile|session"
         var heartbeat: Task<Void, Never>?
         var activeRequests = 0
     }
@@ -159,8 +160,9 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         HermesSessionSource.appSessionPrefix + conversationID.uuidString.lowercased().replacingOccurrences(of: "-", with: "")
     }
 
-    private func ensureSession(id: String, title: String?) async throws {
-        if state.withLock({ $0.createdSessions.contains(id) }) { return }
+    private func ensureSession(id: String, title: String?, client: HermesAPIClient) async throws {
+        let key = "\(client.configuration.profile ?? "default")|\(id)"
+        if state.withLock({ $0.createdSessions.contains(key) }) { return }
         do {
             _ = try await client.createSession(id: id, title: title)
         } catch AgentError.remote(let code, _) where code == "session_exists" {
@@ -173,7 +175,7 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
                 // Already there — fine.
             }
         }
-        state.withLock { _ = $0.createdSessions.insert(id) }
+        state.withLock { _ = $0.createdSessions.insert(key) }
     }
 
     // MARK: Sending
@@ -199,11 +201,12 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         status.send(.thinking)
 
         let options = request.options
+        let client = self.client.with(profile: options?.profile)
         let sessionID = options?.sessionID ?? Self.sessionID(for: request.conversationID)
         let runID: String
         do {
             if options?.sessionID == nil {
-                try await ensureSession(id: sessionID, title: options?.title ?? Conversation.suggestedTitle(from: request.content))
+                try await ensureSession(id: sessionID, title: options?.title ?? Conversation.suggestedTitle(from: request.content), client: client)
             }
             let accepted = try await client.createRun(input: request.content, options: .init(
                 sessionID: sessionID,
@@ -218,7 +221,7 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
             return
         }
 
-        state.withLock { $0.runs[request.requestID] = runID }
+        state.withLock { $0.runs[request.requestID] = runID; $0.runClients[runID] = client }
         continuation.yield(.runStarted(runID: runID, sessionID: sessionID))
         publish(RunActivity(runID: runID, sessionID: sessionID, conversationID: request.conversationID,
                             teammateID: options?.teammateID, title: Conversation.suggestedTitle(from: request.content), state: .running))
@@ -247,7 +250,10 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
             continuation.yield(.notice("Live stream interrupted — following the run by status."))
             await poll(runID: runID, mapper: &mapper, continuation: continuation, context: context)
         }
-        state.withLock { _ = $0.runs.removeValue(forKey: request.requestID) }
+        state.withLock { s in
+            _ = s.runs.removeValue(forKey: request.requestID)
+            _ = s.runClients.removeValue(forKey: runID)
+        }
         continuation.finish()
     }
 
@@ -260,7 +266,7 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         while !mapper.finished {
             if Task.isCancelled { continuation.yield(.failed(.cancelled)); return }
             do {
-                let status = try await client.runStatus(id: runID)
+                let status = try await client(forRun: runID).runStatus(id: runID)
                 failures = 0
                 for mapped in mapper.reconcile(status) { continuation.yield(mapped) }
                 publish(RunActivity(runID: runID, sessionID: status.sessionID ?? context.sessionID, conversationID: context.conversationID, state: status.status))
@@ -321,20 +327,25 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
     }
 
     public func stop(runID: String) async throws {
-        try await client.stopRun(id: runID)
+        try await client(forRun: runID).stopRun(id: runID)
+    }
+
+    /// The profile-routed client a run was created with (default otherwise).
+    public func client(forRun runID: String) -> HermesAPIClient {
+        state.withLock { $0.runClients[runID] } ?? client
     }
 
     public func steer(runID: String, text: String) async throws {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        try await client.steerRun(id: runID, text: trimmed)
+        try await client(forRun: runID).steerRun(id: runID, text: trimmed)
     }
 
     public func respond(to approval: AgentApproval, choice: HermesApprovalChoice) async throws {
         guard approval.choices.contains(choice.rawValue) || choice == .deny else {
             throw AgentError.permissionDenied(detail: "Hermes did not offer “\(choice.title)” for this action.")
         }
-        try await client.respondToApproval(runID: approval.runID, choice: choice, requestID: approval.requestID)
+        try await client(forRun: approval.runID).respondToApproval(runID: approval.runID, choice: choice, requestID: approval.requestID)
     }
 
     // MARK: History & tools

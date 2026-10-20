@@ -47,6 +47,15 @@ public final class HermesAPIClient: @unchecked Sendable {
         self.tokenProvider = tokenProvider
     }
 
+    /// Same server, token and transport, routed to another Hermes profile.
+    public func with(profile: String?) -> HermesAPIClient {
+        let normalized = (profile?.isEmpty ?? true) || profile == "default" ? nil : profile
+        guard normalized != configuration.profile else { return self }
+        var config = configuration
+        config.profile = normalized
+        return HermesAPIClient(configuration: config, transport: transport, tokenProvider: tokenProvider)
+    }
+
     // MARK: URL building
 
     func url(_ path: String, query: [String: String] = [:]) -> URL {

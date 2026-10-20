@@ -82,19 +82,92 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertNil(store.conversations.first { $0.id == id })
     }
 
-    func testHermesPendingProviderFailsClearly() async throws {
-        let (store, _) = makeStore(provider: HermesProvider())
-        store.send("hi")
-        try await waitUntilIdle(store)
-        guard case .failed(.notImplemented) = store.current?.messages.last?.state else {
-            return XCTFail("Hermes must report pending integration")
+    func testHermesRunCarriesTeammateInstructionsAndSurfacesApproval() async throws {
+        let transport = MockHTTPTransport()
+        transport.on("POST /hermes/api/sessions") { _ in MockHTTPTransport.json(#"{"session":{"id":"ios_x","source":"api_server"}}"#, status: 201) }
+        transport.on("POST /hermes/v1/runs") { _ in MockHTTPTransport.json(#"{"run_id":"run_7","status":"started"}"#, status: 202) }
+        transport.on("POST /hermes/v1/runs/run_7/approval") { _ in MockHTTPTransport.json(#"{"run_id":"run_7","choice":"deny","resolved":1}"#) }
+        transport.onStream("GET /hermes/v1/runs/run_7/events") { _ in
+            MockHTTPTransport.sse([
+                "data: {\"event\":\"approval.request\",\"command\":\"rm -rf /tmp/cache\",\"choices\":[\"once\",\"deny\"]}\n\n",
+                "data: {\"event\":\"approval.responded\",\"choice\":\"deny\"}\n\n",
+                "data: {\"event\":\"run.completed\",\"output\":\"I did not delete anything.\"}\n\n"
+            ], delay: 0.15)
         }
+        let client = HermesAPIClient(configuration: HermesConfiguration(baseURL: URL(string: "https://vps.example.ts.net/hermes")!, pollInterval: 0.01),
+                                     transport: transport, tokenProvider: { "device-token-0123456789" })
+        let provider = HermesAgentProvider(client: client, pause: { _ in })
+        let (store, persistence) = makeStore(provider: provider)
+        let teammate = Teammate(name: "Ops", role: "SRE", instructions: "Be careful.", mascot: MascotStyle(shape: .orb, hue: 0.1))
+        store.requestOptions = { _ in AgentRequestOptions(instructions: teammate.runInstructions, teammateID: teammate.id) }
+        store.activeTeammateID = { teammate.id }
+
+        store.send("clear the cache")
+        // The approval reaches the message while the run is blocked.
+        let deadline = Date().addingTimeInterval(3)
+        while store.pendingApprovals.isEmpty && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        let pending = try XCTUnwrap(store.pendingApprovals.first)
+        XCTAssertEqual(pending.approval.command, "rm -rf /tmp/cache")
+        XCTAssertEqual(store.approvalSignal, 1)
+        try await store.respond(to: pending.approval, choice: .deny)
+
+        try await waitUntilIdle(store)
+        let conversation = try XCTUnwrap(store.current)
+        XCTAssertEqual(conversation.teammateID, teammate.id)
+        XCTAssertEqual(conversation.backendSessionID, HermesAgentProvider.sessionID(for: conversation.id))
+        let reply = try XCTUnwrap(conversation.messages.last)
+        XCTAssertEqual(reply.state, .complete)
+        XCTAssertEqual(reply.runID, "run_7")
+        XCTAssertNil(reply.pendingApproval)
+        XCTAssertEqual(reply.resolvedApprovals?.first?.choice, "deny")
+        XCTAssertEqual(reply.plainText, "I did not delete anything.")
+
+        let runBody = try JSONDecoder().decode(JSONValue.self, from: transport.requests(matching: "POST /hermes/v1/runs")[0].body ?? Data())
+        XCTAssertEqual(runBody["instructions"]?.stringValue, teammate.runInstructions)
+        XCTAssertEqual(try persistence.loadAll().first?.backendSessionID, conversation.backendSessionID)
+    }
+
+    func testInterruptedHermesReplyResumesByPolling() async throws {
+        let transport = MockHTTPTransport()
+        transport.on("GET /hermes/v1/runs/run_old") { _ in
+            MockHTTPTransport.json(#"{"object":"hermes.run","run_id":"run_old","status":"completed","output":"Partial answer, now finished."}"#)
+        }
+        let client = HermesAPIClient(configuration: HermesConfiguration(baseURL: URL(string: "https://vps.example.ts.net/hermes")!, pollInterval: 0.01),
+                                     transport: transport, tokenProvider: { "device-token-0123456789" })
+        let provider = HermesAgentProvider(client: client, pause: { _ in })
+        let conversationID = UUID()
+        let saved = Conversation(id: conversationID, title: "Long task", providerKind: .hermes, messages: [
+            Message(role: .user, content: "do the long thing"),
+            Message(role: .assistant, content: "Partial answer", state: .streaming, runID: "run_old")
+        ])
+        let persistence = InMemoryConversationStore([saved])
+        let store = ChatStore(store: persistence, provider: { provider }, isOnline: { true })
+        XCTAssertEqual(store.current?.messages.last?.state, .failed(.webSocketDisconnected), "Interrupted on relaunch")
+        store.resumeInterruptedRuns()
+        let deadline = Date().addingTimeInterval(3)
+        while store.current?.messages.last?.state != .complete && Date() < deadline { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(store.current?.messages.last?.state, .complete)
+        XCTAssertEqual(store.current?.messages.last?.plainText, "Partial answer, now finished.")
+    }
+
+    func testConversationsAreGroupedByTeammate() {
+        let (store, _) = makeStore()
+        let a = UUID(), b = UUID()
+        var current = a
+        store.activeTeammateID = { current }
+        store.newConversation()
+        store.send("hello a")
+        current = b
+        store.newConversation()
+        XCTAssertEqual(store.conversations(for: b).count, 1)
+        XCTAssertEqual(store.conversations(for: a).count, 1)
+        XCTAssertNotEqual(store.conversations(for: a).first?.id, store.conversations(for: b).first?.id)
     }
 }
 
 @MainActor
 final class SettingsAndSecurityTests: XCTestCase {
-    func testSettingsPersistAndNeverBootIntoHermes() {
+    func testSettingsPersistIncludingHermes() {
         let suite = "bb.test.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
@@ -104,12 +177,15 @@ final class SettingsAndSecurityTests: XCTestCase {
         settings.backendURL = "wss://gw.tail0000.ts.net/v1/agent"
         settings.sessionTimeout = nil
         settings.providerKind = .hermes
+        settings.hermesURL = "https://vps.tail0000.ts.net:8444/hermes"
 
         let reloaded = AppSettings(defaults: defaults)
         XCTAssertEqual(reloaded.backendURL, "wss://gw.tail0000.ts.net/v1/agent")
         XCTAssertNil(reloaded.sessionTimeout)
-        XCTAssertEqual(reloaded.providerKind, .mock, "Pending Hermes provider is never restored on launch")
+        XCTAssertEqual(reloaded.providerKind, .hermes)
         XCTAssertNotNil(reloaded.validatedBackendURL)
+        XCTAssertNotNil(reloaded.validatedHermesURL)
+        XCTAssertNil(defaults.string(forKey: "hermes.token"), "Secrets never go to UserDefaults")
         XCTAssertNil(defaults.string(forKey: "gateway.token"), "Secrets never go to UserDefaults")
     }
 
@@ -150,12 +226,46 @@ final class SettingsAndSecurityTests: XCTestCase {
         model.rebuildSuite()
         XCTAssertNotNil(model.suite.files, "Configured remote exposes gateway-backed providers")
 
+        model.switchProvider(to: .hermes)
+        XCTAssertFalse(model.isHermes, "Without URL + token Hermes stays unconfigured, never guessed")
+        model.settings.hermesURL = "https://vps.tail0000.ts.net:8444/hermes"
+        try model.saveHermesToken("device-token-abcdefghijklmnop")
+        model.rebuildSuite()
+        XCTAssertTrue(model.isHermes)
+        XCTAssertEqual(model.agentDescriptor.kind, .hermes)
+        XCTAssertNil(model.suite.vps, "Hermes exposes the agent only; server controls stay with the gateway")
+
         model.switchProvider(to: .mock)
         XCTAssertEqual(model.agentDescriptor.kind, .mock)
+    }
+
+    func testTeammateRequestOptionsRouteProfileAndInstructions() throws {
+        let workspace = HermesWorkspace(teammateURL: nil, runsURL: nil)
+        var mate = Teammate(name: "Researcher", role: "research analyst", instructions: "Cite sources.", model: "m-2",
+                            profile: "research", mascot: MascotStyle(shape: .hexagon, hue: 0.6))
+        try workspace.save(mate)
+        workspace.activeTeammateID = mate.id
+        let options = try XCTUnwrap(workspace.requestOptions(for: nil))
+        XCTAssertEqual(options.profile, "research")
+        XCTAssertEqual(options.model, "m-2")
+        XCTAssertTrue(options.instructions?.contains("Cite sources.") ?? false)
+        mate.name = ""
+        XCTAssertThrowsError(try workspace.save(mate))
+        workspace.delete(Teammate.mainAssistantID)
+        XCTAssertNotNil(workspace.teammate(Teammate.mainAssistantID), "The main assistant can't be deleted")
     }
 }
 
 final class DesignSystemTests: XCTestCase {
+    func testEveryMotionTokenHasAReducedVariant() {
+        for token in MotionToken.allCases {
+            XCTAssertEqual(Motion.animation(token, reduceMotion: true), Motion.reducedCrossfade, "\(token) must crossfade under Reduce Motion")
+        }
+        XCTAssertEqual(Motion.animation(.bouncy, reduceMotion: false), Motion.bouncy)
+        XCTAssertNotEqual(Motion.animation(.bouncy, reduceMotion: false), Motion.reducedCrossfade)
+        XCTAssertEqual(Motion.cappedStagger(100), Motion.cappedStagger(Motion.maxStaggeredItems - 1))
+    }
+
     func testMotionStaggerStaysWithinBudget() {
         XCTAssertEqual(Motion.stagger(0), 0)
         XCTAssertEqual(Motion.stagger(2), 0.07, accuracy: 0.0001)

@@ -8,7 +8,10 @@ struct AgentView: View {
     @State private var showHistory = false
     @State private var isAtBottom = true
     @State private var lastAutoScroll = Date.distantPast
+    @State private var reviewing: AgentApproval?
+    @State private var hop = 0
     @FocusState private var composerFocused: Bool
+    @Namespace private var teammatePill
 
     private var chat: ChatStore { model.chat }
 
@@ -16,6 +19,9 @@ struct AgentView: View {
         NavigationStack {
             VStack(spacing: 0) {
                 header
+                if model.isHermes && model.hermes.visibleTeammates.count > 1 {
+                    teammateStrip
+                }
                 if let banner = bannerError {
                     ErrorBanner(error: banner, retry: { model.reconnect() })
                         .padding(.horizontal, BB.Space.gutter)
@@ -29,12 +35,20 @@ struct AgentView: View {
                     isOnline: model.network.isOnline,
                     focused: $composerFocused,
                     onSend: send,
-                    onStop: { chat.stop() }
+                    onStop: { chat.stop() },
+                    canSteer: chat.canSteer,
+                    onSteer: steer,
+                    placeholder: model.isHermes ? "Message \(currentTeammate.name)…" : "Message the agent…"
                 )
             }
             .animation(Motion.standard, value: bannerError)
             .background(ScreenBackground())
             .toolbar(.hidden, for: .navigationBar)
+            .sheet(item: $reviewing) { approval in
+                ApprovalSheet(approval: approval, teammate: currentTeammate)
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+            }
             .sheet(isPresented: $showHistory) {
                 ConversationListView()
                     .presentationDetents([.medium, .large])
@@ -56,7 +70,11 @@ struct AgentView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            AgentOrb(mode: OrbMode(status: model.agentStatus, connection: model.connectionState), size: 38)
+            if model.isHermes {
+                MascotView(style: currentTeammate.mascot, mood: currentMood, size: 40, seed: currentTeammate.id, hopTrigger: hop)
+            } else {
+                AgentOrb(mode: OrbMode(status: model.agentStatus, connection: model.connectionState), size: 38)
+            }
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.current?.title ?? "New conversation")
                     .font(BB.Font.headline)
@@ -90,9 +108,77 @@ struct AgentView: View {
 
     private var statusLine: String {
         if model.connectionState.isConnected {
-            return "\(model.agentDescriptor.name) · \(model.agentStatus.label)"
+            let name = model.isHermes ? currentTeammate.name : model.agentDescriptor.name
+            return "\(name) · \(model.agentStatus.label)"
         }
         return model.connectionState.label
+    }
+
+    // MARK: Teammates
+
+    private var currentTeammate: Teammate {
+        model.hermes.teammate(chat.current?.teammateID) ?? model.hermes.activeTeammate
+    }
+
+    private var currentMood: MascotMood {
+        MascotMood.derive(status: model.agentStatus, connected: model.connectionState.isConnected,
+                          latest: chat.current?.messages.last(where: { $0.role == .assistant }),
+                          isActiveTeammate: chat.isStreaming)
+    }
+
+    private var teammateStrip: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(model.hermes.visibleTeammates) { mate in
+                    let selected = mate.id == currentTeammate.id
+                    Button {
+                        guard !selected else { return }
+                        model.selectTeammate(mate.id)
+                        hop += 1
+                        withAnimation(Motion.smooth) {
+                            if let existing = chat.conversations(for: mate.id).first { chat.select(existing.id) } else { chat.newConversation() }
+                        }
+                    } label: {
+                        HStack(spacing: 6) {
+                            MascotView(style: mate.mascot, mood: .idle, size: 22, seed: mate.id)
+                            Text(mate.name).font(BB.Font.subhead).lineLimit(1)
+                        }
+                        .foregroundStyle(selected ? BB.Palette.textPrimary : BB.Palette.textSecondary)
+                        .padding(.horizontal, 10)
+                        .frame(height: 34)
+                        .background {
+                            if selected {
+                                Capsule().fill(BB.Palette.surfaceHigh)
+                                    .overlay(Capsule().strokeBorder(BB.Palette.signal.opacity(0.55)))
+                                    .matchedGeometryEffect(id: "pill", in: teammatePill)
+                            }
+                        }
+                    }
+                    .buttonStyle(.pressable)
+                    .disabled(chat.isStreaming)
+                    .accessibilityIdentifier("strip.\(mate.name)")
+                }
+            }
+            .padding(.horizontal, BB.Space.gutter)
+        }
+        .padding(.bottom, 6)
+        .sensoryFeedback(.selection, trigger: currentTeammate.id)
+        .animation(Motion.smooth, value: currentTeammate.id)
+    }
+
+    private func steer() {
+        let text = draft
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        draft = ""
+        Task {
+            do {
+                try await chat.steer(text)
+                model.toasts.show("Steering sent")
+            } catch {
+                draft = text
+                model.toasts.show(error.asAgentError.title)
+            }
+        }
     }
 
     // MARK: Messages
@@ -108,10 +194,11 @@ struct AgentView: View {
                         ForEach(conversation.messages) { message in
                             MessageRow(
                                 message: message,
-                                agentName: model.agentDescriptor.name,
+                                agentName: model.isHermes ? currentTeammate.name : model.agentDescriptor.name,
                                 isLatest: message.id == conversation.messages.last?.id,
                                 onRetry: { chat.retry(message.id) },
-                                onCopy: copy
+                                onCopy: copy,
+                                onReviewApproval: { reviewing = $0 }
                             )
                             .id(message.id)
                             .transition(message.role == .user
@@ -262,12 +349,16 @@ struct Composer: View {
     var focused: FocusState<Bool>.Binding
     var onSend: () -> Void
     var onStop: () -> Void
+    var canSteer: Bool = false
+    var onSteer: () -> Void = {}
+    var placeholder: String = "Message the agent…"
 
     private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isOnline }
+    private var steering: Bool { isStreaming && canSteer }
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            TextField(isOnline ? "Message the agent…" : "Offline — reconnecting…", text: $text, axis: .vertical)
+            TextField(isOnline ? (steering ? "Steer while it works…" : placeholder) : "Offline — reconnecting…", text: $text, axis: .vertical)
                 .font(BB.Font.body)
                 .foregroundStyle(BB.Palette.textPrimary)
                 .lineLimit(1...6)
@@ -276,6 +367,21 @@ struct Composer: View {
                 .padding(.horizontal, 14)
                 .padding(.vertical, 11)
                 .accessibilityIdentifier("composer.field")
+
+            if steering && canSend {
+                Button(action: onSteer) {
+                    Image(systemName: "arrow.turn.down.right")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(BB.Palette.onSignal)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(BB.Palette.auraGradient))
+                }
+                .buttonStyle(.pressable)
+                .padding(.vertical, 5)
+                .transition(.scale(scale: 0.6).combined(with: .opacity))
+                .accessibilityLabel("Send steering note")
+                .accessibilityIdentifier("composer.steer")
+            }
 
             Button {
                 if isStreaming { onStop() } else if canSend { onSend() }
@@ -302,6 +408,7 @@ struct Composer: View {
         )
         .animation(Motion.snappy, value: canSend)
         .animation(Motion.snappy, value: isStreaming)
+        .bbAuraBorder(isStreaming, cornerRadius: 24)
         .animation(Motion.standard, value: focused.wrappedValue)
         .padding(.horizontal, BB.Space.gutter)
         .padding(.top, 6)

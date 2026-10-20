@@ -39,7 +39,7 @@ final class CriticalPathUITests: XCTestCase {
     }
 
     func testEveryTabOpens() throws {
-        for (tab, marker) in [("tab.home", "Brainbox Agent"), ("tab.vps", "Services"), ("tab.files", "Files"), ("tab.settings", "Settings")] {
+        for (tab, marker) in [("tab.team", "Your AI team"), ("tab.tasks", "Tasks"), ("tab.vps", "Services"), ("tab.settings", "Settings")] {
             let button = app.buttons[tab]
             XCTAssertTrue(button.waitForExistence(timeout: 5), "\(tab) missing")
             button.tap()
@@ -61,7 +61,10 @@ final class CriticalPathUITests: XCTestCase {
     }
 
     func testOpenConfigFileInEditor() throws {
-        app.buttons["tab.files"].tap()
+        app.buttons["tab.vps"].tap()
+        let files = app.buttons["vps.files"]
+        XCTAssertTrue(files.waitForExistence(timeout: 8))
+        files.tap()
         let root = app.descendants(matching: .any)["file.brainbox./etc/brainbox"].firstMatch
         XCTAssertTrue(root.waitForExistence(timeout: 8))
         root.tap()
@@ -69,5 +72,22 @@ final class CriticalPathUITests: XCTestCase {
         XCTAssertTrue(file.waitForExistence(timeout: 8))
         file.tap()
         XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "yaml")).firstMatch.waitForExistence(timeout: 8))
+    }
+
+    func testTeamScreenOpensTeammateEditor() throws {
+        app.buttons["tab.team"].tap()
+        let add = app.buttons["team.new"]
+        XCTAssertTrue(add.waitForExistence(timeout: 8))
+        add.tap()
+        XCTAssertTrue(app.textFields["editor.name"].waitForExistence(timeout: 8))
+    }
+
+    func testMotionLabIsReachableInDebug() throws {
+        app.buttons["tab.settings"].tap()
+        let developer = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH[c] %@", "Developer")).firstMatch
+        XCTAssertTrue(developer.waitForExistence(timeout: 8))
+        developer.tap()
+        let lab = app.descendants(matching: .any)["dev.motionlab"].firstMatch
+        XCTAssertTrue(lab.waitForExistence(timeout: 8))
     }
 }

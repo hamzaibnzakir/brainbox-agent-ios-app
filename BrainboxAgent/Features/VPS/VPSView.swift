@@ -14,6 +14,7 @@ struct VPSView: View {
     @State private var busyService: String?
     @State private var pendingAction: (ServiceAction, ServiceStatus)?
     @State private var openTerminal = false
+    @State private var showFiles = false
     @State private var authMessage: String?
 
     var body: some View {
@@ -23,7 +24,9 @@ struct VPSView: View {
                     header.bbEntrance(index: 0)
                     if model.suite.vps == nil {
                         BBCard {
-                            EmptyStateView(systemImage: "server.rack", title: "No server connected", message: "The current backend doesn't expose VPS controls. Switch to Mock or connect the Brainbox gateway in Settings.")
+                            EmptyStateView(systemImage: "server.rack", title: "No server controls", message: model.isHermes
+                                ? "Hermes runs its tools on your VPS during a run — ask your teammate in Chat. Server metrics, services, terminal and files come from the Brainbox gateway backend (Settings → Agent → Remote Agent)."
+                                : "The current backend doesn't expose VPS controls. Switch to Mock or connect the Brainbox gateway in Settings.")
                         }
                     } else {
                         if let error {
@@ -46,9 +49,14 @@ struct VPSView: View {
             }
             .refreshable { await load() }
             .bbScreen()
-            .navigationTitle("VPS")
+            .navigationTitle("Server")
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(isPresented: $openTerminal) { TerminalView() }
+            .sheet(isPresented: $showFiles) {
+                FilesView()
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
             .task(id: "\(model.settings.providerKind.rawValue)-\(isActive)") {
                 if isActive { await run() }
             }
@@ -160,6 +168,8 @@ struct VPSView: View {
                 }
             }
             .accessibilityIdentifier("vps.terminal")
+            toolButton("Files", "folder", enabled: model.suite.files != nil) { showFiles = true }
+                .accessibilityIdentifier("vps.files")
             NavigationLink { LogViewerView() } label: { toolLabel("Logs", "text.alignleft") }
                 .buttonStyle(.pressable)
                 .disabled(model.suite.logs == nil)

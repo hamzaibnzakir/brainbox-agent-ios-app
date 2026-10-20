@@ -18,6 +18,13 @@ final class ChatStore {
     @ObservationIgnored var isOnline: () -> Bool
     /// Called when a reply finishes (used for haptics / notifications).
     @ObservationIgnored var onReplyFinished: ((Message) -> Void)?
+    /// Backend routing for a conversation (teammate instructions, session).
+    @ObservationIgnored var requestOptions: (Conversation?) -> AgentRequestOptions? = { _ in nil }
+    /// Teammate new conversations are created for.
+    @ObservationIgnored var activeTeammateID: () -> UUID? = { nil }
+    /// Bumped whenever an approval request arrives (drives haptics/sheet).
+    private(set) var approvalSignal = 0
+    @ObservationIgnored private var resumeTasks: [UUID: Task<Void, Never>] = [:]
 
     init(store: ConversationStore, provider: @escaping () -> AgentProvider, isOnline: @escaping () -> Bool) {
         self.store = store
@@ -59,14 +66,110 @@ final class ChatStore {
 
     func newConversation() {
         stopIfNeeded()
+        let teammate = activeTeammateID()
         // Reuse an existing empty conversation instead of piling them up.
-        if let empty = conversations.first(where: { $0.messages.isEmpty }) {
+        if let empty = conversations.first(where: { $0.messages.isEmpty && $0.teammateID == teammate }) {
             currentID = empty.id
             return
         }
-        let conversation = Conversation(providerKind: provider().descriptor.kind)
+        let conversation = Conversation(providerKind: provider().descriptor.kind, teammateID: teammate)
         conversations.insert(conversation, at: 0)
         currentID = conversation.id
+    }
+
+    /// Conversations that belong to a teammate (untagged ones belong to the main assistant).
+    func conversations(for teammateID: UUID) -> [Conversation] {
+        conversations.filter { ($0.teammateID ?? Teammate.mainAssistantID) == teammateID }
+    }
+
+    /// The teammate's latest assistant message (drives its mascot mood).
+    func latestReply(for teammateID: UUID) -> Message? {
+        conversations(for: teammateID).first?.messages.last(where: { $0.role == .assistant })
+    }
+
+    /// Adds a conversation continued from a backend session fork (e.g. a
+    /// Telegram chat). The original session is never written to.
+    func importConversation(title: String, sessionID: String, origin: String, teammateID: UUID?, messages: [Message]) {
+        stopIfNeeded()
+        let conversation = Conversation(title: title, providerKind: provider().descriptor.kind, messages: messages,
+                                        backendSessionID: sessionID, teammateID: teammateID, origin: origin)
+        conversations.insert(conversation, at: 0)
+        currentID = conversation.id
+        persist(conversation.id)
+    }
+
+    /// Opens the local conversation bound to a backend session, if any.
+    @discardableResult
+    func openConversation(boundTo sessionID: String) -> Bool {
+        guard let match = conversations.first(where: { $0.backendSessionID == sessionID }) else { return false }
+        select(match.id)
+        return true
+    }
+
+    // MARK: Run controls (server-side run backends)
+
+    private var runController: RunControllingProvider? { provider() as? RunControllingProvider }
+
+    var canSteer: Bool {
+        guard let runController, activeRunID != nil else { return false }
+        return runController.compatibility?.supports(.steer) ?? false
+    }
+
+    var activeRunID: String? {
+        guard let requestID = activeRequestID else { return nil }
+        if let id = runController?.runID(for: requestID) { return id }
+        guard let conversation = current, let messageID = activeMessageID else { return nil }
+        return conversation.messages.first { $0.id == messageID }?.runID
+    }
+
+    func steer(_ text: String) async throws {
+        guard let runController, let runID = activeRunID else { return }
+        try await runController.steer(runID: runID, text: text)
+    }
+
+    func respond(to approval: AgentApproval, choice: HermesApprovalChoice) async throws {
+        guard let runController else { throw AgentError.providerUnavailable(detail: "Approvals need the Hermes backend.") }
+        try await runController.respond(to: approval, choice: choice)
+    }
+
+    /// Pending approvals across all conversations (Tasks + Team badges).
+    var pendingApprovals: [(conversationID: UUID, approval: AgentApproval)] {
+        var result: [(conversationID: UUID, approval: AgentApproval)] = []
+        for conversation in conversations {
+            for message in conversation.messages {
+                if let approval = message.pendingApproval { result.append((conversationID: conversation.id, approval: approval)) }
+            }
+        }
+        return result
+    }
+
+    /// After a relaunch or reconnect: re-attach to replies whose run may
+    /// still be going on the server, by polling the run's status.
+    func resumeInterruptedRuns() {
+        guard let runController else { return }
+        let cutoff = Date().addingTimeInterval(-24 * 3600)
+        for conversation in conversations {
+            guard let message = conversation.messages.last, message.role == .assistant, let runID = message.runID,
+                  message.createdAt > cutoff, message.id != activeMessageID, resumeTasks[message.id] == nil else { continue }
+            guard case .failed(let error) = message.state, error == .webSocketDisconnected || error == .offline else { continue }
+            let conversationID = conversation.id
+            let messageID = message.id
+            mutateMessage(conversationID, messageID) { $0.state = .streaming }
+            let stream = runController.resume(runID: runID, alreadyStreamed: message.plainText)
+            resumeTasks[messageID] = Task { [weak self] in
+                do {
+                    for try await event in stream {
+                        guard let self else { return }
+                        self.apply(event, conversationID: conversationID, messageID: messageID)
+                    }
+                } catch {
+                    self?.apply(.failed(error.asAgentError), conversationID: conversationID, messageID: messageID)
+                }
+                guard let self else { return }
+                self.resumeTasks[messageID] = nil
+                self.persist(conversationID)
+            }
+        }
     }
 
     func select(_ id: UUID) {
@@ -125,7 +228,8 @@ final class ChatStore {
             return
         }
 
-        let request = AgentRequest(conversationID: conversationID, responseMessageID: assistant.id, content: text)
+        let request = AgentRequest(conversationID: conversationID, responseMessageID: assistant.id, content: text,
+                                   options: requestOptions(conversations.first { $0.id == conversationID }))
         activeRequestID = request.requestID
         activeMessageID = assistant.id
         persist(conversationID)
@@ -195,6 +299,13 @@ final class ChatStore {
         }
         if let title = effects.title {
             mutateConversation(conversationID) { $0.title = title }
+        }
+        if case .runStarted(_, let sessionID) = event, let sessionID {
+            mutateConversation(conversationID) { if $0.backendSessionID == nil { $0.backendSessionID = sessionID } }
+        }
+        if effects.approvalRequested {
+            approvalSignal += 1
+            persist(conversationID)
         }
         return effects
     }

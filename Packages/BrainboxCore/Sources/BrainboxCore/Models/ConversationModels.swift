@@ -325,14 +325,17 @@ public struct AgentRequestOptions: Codable, Hashable, Sendable {
     public var provider: String?
     public var teammateID: UUID?
     public var title: String?
+    /// Hermes profile to run on (`/p/<profile>/`); nil = the default profile.
+    public var profile: String?
 
-    public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil, teammateID: UUID? = nil, title: String? = nil) {
+    public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil, teammateID: UUID? = nil, title: String? = nil, profile: String? = nil) {
         self.sessionID = sessionID
         self.instructions = instructions
         self.model = model
         self.provider = provider
         self.teammateID = teammateID
         self.title = title
+        self.profile = profile
     }
 }
 

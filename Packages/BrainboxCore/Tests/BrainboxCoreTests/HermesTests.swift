@@ -538,3 +538,39 @@ final class TeammateTests: XCTestCase {
         XCTAssertNil(conversation.messages.first?.runID)
     }
 }
+
+final class HermesURLValidatorTests: XCTestCase {
+    func testAcceptsHTTPSAndPrivateHTTPOnly() {
+        XCTAssertEqual(HermesURLValidator.validate("https://vps.tail1234.ts.net:8444/hermes"), .valid(URL(string: "https://vps.tail1234.ts.net:8444/hermes")!))
+        if case .invalid = HermesURLValidator.validate("http://100.101.102.103:8642") { XCTFail("tailscale http must be allowed") }
+        if case .valid = HermesURLValidator.validate("http://example.com:8642") { XCTFail("public http must be refused") }
+        if case .valid = HermesURLValidator.validate("wss://vps.ts.net") { XCTFail("ws schemes are not Hermes URLs") }
+        if case .valid = HermesURLValidator.validate("https://user:pw@vps.ts.net") { XCTFail("credentials in URL must be refused") }
+        if case .valid = HermesURLValidator.validate("https://vps.ts.net/hermes?key=x") { XCTFail("query must be refused") }
+        if case .valid = HermesURLValidator.validate("  ") { XCTFail("empty must be refused") }
+    }
+}
+
+final class HermesProfileRoutingTests: XCTestCase {
+    func testTeammateOnAProfileRunsAndStopsThere() async throws {
+        let transport = MockHTTPTransport()
+        transport.on("POST /hermes/p/research/api/sessions") { _ in MockHTTPTransport.json(#"{"session":{"id":"ios_x"}}"#, status: 201) }
+        transport.on("POST /hermes/p/research/v1/runs") { _ in MockHTTPTransport.json(#"{"run_id":"run_p","status":"started"}"#, status: 202) }
+        transport.on("POST /hermes/p/research/v1/runs/run_p/stop") { _ in MockHTTPTransport.json(#"{"run_id":"run_p","status":"stopping"}"#) }
+        transport.onStream("GET /hermes/p/research/v1/runs/run_p/events") { _ in
+            MockHTTPTransport.sse([HermesFixtures.event(#"{"event":"message.delta","delta":"x"}"#)], delay: 0.05)
+        }
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let request = AgentRequest(conversationID: UUID(), content: "hi", options: AgentRequestOptions(profile: "research"))
+        let stream = provider.send(request)
+        var iterator = stream.makeAsyncIterator()
+        var sawRun = false
+        while let event = try await iterator.next() {
+            if case .runStarted = event { sawRun = true; break }
+        }
+        XCTAssertTrue(sawRun)
+        try await provider.stop(runID: "run_p")
+        XCTAssertEqual(transport.requests(matching: "POST /hermes/p/research/v1/runs/run_p/stop").count, 1)
+        XCTAssertTrue(transport.requests(matching: "POST /hermes/v1/runs").isEmpty)
+    }
+}

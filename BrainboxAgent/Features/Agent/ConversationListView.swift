@@ -39,7 +39,7 @@ struct ConversationListView: View {
                             Spacer()
                             VStack(alignment: .trailing, spacing: 4) {
                                 Text(conversation.updatedAt, style: .date).font(BB.Font.caption).foregroundStyle(BB.Palette.textTertiary)
-                                Text(conversation.providerKind == .mock ? "MOCK" : conversation.providerKind.rawValue.uppercased())
+                                Text(conversation.origin.map { $0.uppercased() + " COPY" } ?? (conversation.providerKind == .mock ? "MOCK" : conversation.providerKind.rawValue.uppercased()))
                                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                                     .foregroundStyle(BB.Palette.textTertiary)
                             }
@@ -72,6 +72,14 @@ struct ConversationListView: View {
             .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if model.isHermes {
+                    ToolbarItem(placement: .topBarLeading) {
+                        NavigationLink { SessionsBrowserView() } label: {
+                            Label("All sessions", systemImage: "tray.full")
+                        }
+                        .accessibilityIdentifier("history.sessions")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         model.chat.newConversation()

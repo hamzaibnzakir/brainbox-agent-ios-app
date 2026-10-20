@@ -8,6 +8,7 @@ struct MessageRow: View {
     var isLatest: Bool
     var onRetry: () -> Void
     var onCopy: (String) -> Void
+    var onReviewApproval: (AgentApproval) -> Void = { _ in }
 
     var body: some View {
         switch message.role {
@@ -73,6 +74,10 @@ struct MessageRow: View {
                     .transition(.bbRise)
             }
 
+            if let reasoning = message.reasoning, !reasoning.isEmpty {
+                ReasoningDisclosure(text: reasoning).transition(.bbRise)
+            }
+
             ForEach(Array(message.segments.enumerated()), id: \.offset) { index, segment in
                 switch segment {
                 case .text(let text):
@@ -86,7 +91,21 @@ struct MessageRow: View {
                 }
             }
 
-            if message.state == .streaming {
+            if let approval = message.pendingApproval {
+                InlineApprovalCard(approval: approval) { onReviewApproval(approval) }
+                    .transition(.bbRise)
+            }
+
+            if let resolved = message.resolvedApprovals, !resolved.isEmpty {
+                ForEach(Array(resolved.enumerated()), id: \.offset) { _, item in
+                    Label("\(item.choice == "deny" ? "Denied" : "Approved (\(item.choice))"): \(item.command)", systemImage: item.choice == "deny" ? "hand.raised" : "checkmark.shield")
+                        .font(BB.Font.caption)
+                        .foregroundStyle(BB.Palette.textTertiary)
+                        .lineLimit(1)
+                }
+            }
+
+            if message.state == .streaming && message.pendingApproval == nil {
                 StreamingCaret().transition(.opacity)
             }
 
@@ -109,6 +128,7 @@ struct MessageRow: View {
         }
         .animation(Motion.standard, value: message.segments.count)
         .animation(Motion.standard, value: message.state)
+        .animation(Motion.smooth, value: message.pendingApproval)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(accessibilityState)
     }
