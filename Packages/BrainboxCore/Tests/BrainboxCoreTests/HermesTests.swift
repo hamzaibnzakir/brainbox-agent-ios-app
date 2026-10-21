@@ -615,7 +615,7 @@ final class TestGate: @unchecked Sendable {
     }
 }
 
-func waitFor(_ condition: () -> Bool, timeout: TimeInterval = 3) async {
+func pollUntil(_ condition: () -> Bool, timeout: TimeInterval = 3) async {
     let deadline = Date().addingTimeInterval(timeout)
     while !condition() && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
 }
@@ -752,7 +752,7 @@ final class HermesEarlyStopTests: XCTestCase {
         let request = AgentRequest(conversationID: UUID(), content: "count to 300")
         let collector = Task { try await self.collect(provider.send(request)) }
 
-        await waitFor { gate.arrivals == 1 }
+        await pollUntil { gate.arrivals == 1 }
         await provider.cancel(requestID: request.requestID)
         XCTAssertTrue(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").isEmpty, "no run id yet")
         gate.open()
@@ -770,7 +770,7 @@ final class HermesEarlyStopTests: XCTestCase {
         let request = AgentRequest(conversationID: UUID(), content: "hi")
         let collector = Task { try await self.collect(provider.send(request)) }
 
-        await waitFor { gate.arrivals == 1 }
+        await pollUntil { gate.arrivals == 1 }
         await provider.cancel(requestID: request.requestID)
         gate.open()
 
@@ -790,13 +790,13 @@ final class HermesEarlyStopTests: XCTestCase {
             return events
         }
 
-        await waitFor { gate.arrivals == 1 }
+        await pollUntil { gate.arrivals == 1 }
         // What ChatStore.stop() does: ask to cancel, then stop consuming.
         await provider.cancel(requestID: request.requestID)
         consumer.cancel()
         gate.open()
 
-        await waitFor { !transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").isEmpty }
+        await pollUntil { !transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").isEmpty }
         XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").count, 1,
                        "the run Hermes created must still be stopped")
         _ = await consumer.value
@@ -814,7 +814,7 @@ final class HermesEarlyStopTests: XCTestCase {
         let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
         let request = AgentRequest(conversationID: UUID(), content: "go")
         let collector = Task { try await self.collect(provider.send(request)) }
-        await waitFor { provider.runID(for: request.requestID) != nil }
+        await pollUntil { provider.runID(for: request.requestID) != nil }
         await provider.cancel(requestID: request.requestID)
         XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").count, 1)
         _ = try await collector.value
