@@ -30,6 +30,15 @@ public struct Message: Identifiable, Codable, Hashable, Sendable {
     public var toolCalls: [ToolCall]
     /// The request that produced (assistant) or carried (user) this message.
     public var requestID: UUID?
+    /// Server-side run that produced this reply (Hermes `run_id`), so an
+    /// interrupted reply can be recovered after reconnecting or relaunching.
+    public var runID: String?
+    /// An approval the agent is waiting on right now.
+    public var pendingApproval: AgentApproval?
+    /// Approvals already answered during this reply (audit trail in the UI).
+    public var resolvedApprovals: [ResolvedApproval]?
+    /// Reasoning summary the backend chose to expose, if any.
+    public var reasoning: String?
 
     public init(
         id: UUID = UUID(),
@@ -38,7 +47,11 @@ public struct Message: Identifiable, Codable, Hashable, Sendable {
         createdAt: Date = Date(),
         state: MessageState = .complete,
         toolCalls: [ToolCall] = [],
-        requestID: UUID? = nil
+        requestID: UUID? = nil,
+        runID: String? = nil,
+        pendingApproval: AgentApproval? = nil,
+        resolvedApprovals: [ResolvedApproval]? = nil,
+        reasoning: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -47,6 +60,46 @@ public struct Message: Identifiable, Codable, Hashable, Sendable {
         self.state = state
         self.toolCalls = toolCalls
         self.requestID = requestID
+        self.runID = runID
+        self.pendingApproval = pendingApproval
+        self.resolvedApprovals = resolvedApprovals
+        self.reasoning = reasoning
+    }
+}
+
+/// A human decision the agent is blocked on (e.g. a dangerous command).
+public struct AgentApproval: Codable, Hashable, Sendable, Identifiable {
+    public var id: String
+    public var runID: String
+    /// The exact action, as reported (and redacted) by the backend.
+    public var command: String
+    public var description: String?
+    /// Choices the backend accepts, e.g. ["once", "session", "always", "deny"].
+    public var choices: [String]
+    public var requestID: String?
+    public var requestedAt: Date
+
+    public init(id: String = UUID().uuidString, runID: String, command: String, description: String? = nil,
+                choices: [String], requestID: String? = nil, requestedAt: Date = Date()) {
+        self.id = id
+        self.runID = runID
+        self.command = command
+        self.description = description
+        self.choices = choices
+        self.requestID = requestID
+        self.requestedAt = requestedAt
+    }
+}
+
+public struct ResolvedApproval: Codable, Hashable, Sendable {
+    public var command: String
+    public var choice: String
+    public var resolvedAt: Date
+
+    public init(command: String, choice: String, resolvedAt: Date = Date()) {
+        self.command = command
+        self.choice = choice
+        self.resolvedAt = resolvedAt
     }
 }
 
@@ -57,6 +110,25 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
     public var updatedAt: Date
     public var providerKind: ProviderKind
     public var messages: [Message]
+    /// Backend session this conversation is bound to (Hermes `session_id`).
+    public var backendSessionID: String?
+    /// The AI teammate this conversation belongs to.
+    public var teammateID: UUID?
+    /// Where the conversation started (e.g. "ios", or "telegram" for a copy
+    /// of a Telegram conversation). Purely informational.
+    public var origin: String?
+    /// Stored flag behind `carriesHistory`. Optional so conversations saved
+    /// by older builds (which lack the key) still decode.
+    public var carriedHistory: Bool?
+
+    /// True for a copy of a conversation from another source (e.g. Telegram).
+    /// Hermes never stores caller-supplied history, so every run for such a
+    /// conversation re-sends its transcript as `conversation_history`; the
+    /// original session is only ever read.
+    public var carriesHistory: Bool {
+        get { carriedHistory ?? false }
+        set { carriedHistory = newValue ? true : nil }
+    }
 
     public init(
         id: UUID = UUID(),
@@ -64,7 +136,11 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         providerKind: ProviderKind,
-        messages: [Message] = []
+        messages: [Message] = [],
+        backendSessionID: String? = nil,
+        teammateID: UUID? = nil,
+        origin: String? = nil,
+        carriesHistory: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -72,6 +148,10 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
         self.providerKind = providerKind
         self.messages = messages
+        self.backendSessionID = backendSessionID
+        self.teammateID = teammateID
+        self.origin = origin
+        self.carriedHistory = carriesHistory ? true : nil
     }
 
     public static let untitled = "New conversation"
@@ -238,12 +318,55 @@ public struct AgentRequest: Codable, Hashable, Sendable {
     /// Client-side id for the assistant message the response streams into.
     public var responseMessageID: UUID
     public var content: String
+    /// Backend-specific routing (session, teammate instructions, model).
+    public var options: AgentRequestOptions?
 
-    public init(requestID: UUID = UUID(), conversationID: UUID, responseMessageID: UUID = UUID(), content: String) {
+    public init(requestID: UUID = UUID(), conversationID: UUID, responseMessageID: UUID = UUID(), content: String, options: AgentRequestOptions? = nil) {
         self.requestID = requestID
         self.conversationID = conversationID
         self.responseMessageID = responseMessageID
         self.content = content
+        self.options = options
+    }
+}
+
+/// One prior turn sent with a request when the backend must not load the
+/// history itself (see `Conversation.carriesHistory`).
+public struct HistoryTurn: Codable, Hashable, Sendable {
+    public var role: String
+    public var content: String
+
+    public init(role: String, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
+public struct AgentRequestOptions: Codable, Hashable, Sendable {
+    /// Existing backend session to continue. For Hermes this is always one
+    /// of the app's own `ios_` sessions; other sessions are never written to.
+    public var sessionID: String?
+    /// Extra instructions layered on top of the agent's own system prompt.
+    public var instructions: String?
+    public var model: String?
+    public var provider: String?
+    public var teammateID: UUID?
+    public var title: String?
+    /// Hermes profile to run on (`/p/<profile>/`); nil = the default profile.
+    public var profile: String?
+    /// Prior turns to send with the run instead of letting the backend load
+    /// its own history (copied conversations only).
+    public var conversationHistory: [HistoryTurn]?
+
+    public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil, teammateID: UUID? = nil, title: String? = nil, profile: String? = nil, conversationHistory: [HistoryTurn]? = nil) {
+        self.sessionID = sessionID
+        self.instructions = instructions
+        self.model = model
+        self.provider = provider
+        self.teammateID = teammateID
+        self.title = title
+        self.profile = profile
+        self.conversationHistory = conversationHistory
     }
 }
 
@@ -258,6 +381,15 @@ public enum AgentEvent: Hashable, Sendable {
     case toolOutput(toolCallID: String, chunk: String)
     case toolFinished(toolCallID: String, result: ToolResult, status: ToolStatus)
     case conversationTitle(String)
+    /// The backend accepted the turn as a server-side run.
+    case runStarted(runID: String, sessionID: String?)
+    /// Reasoning text the backend chose to expose.
+    case reasoning(String)
+    /// The agent is blocked until a human decides.
+    case approvalRequested(AgentApproval)
+    case approvalResolved(choice: String)
+    /// A short informational line (e.g. "Steering accepted").
+    case notice(String)
     case completed
     case failed(AgentError)
 }

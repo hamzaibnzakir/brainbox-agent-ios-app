@@ -173,6 +173,9 @@ struct ToolCardView: View {
                 .strokeBorder(call.status == .running ? BB.Palette.signal.opacity(glow ? 0.55 : 0.15) : BB.Palette.stroke, lineWidth: 1)
         )
         .shadow(color: call.status == .running ? BB.Palette.signalGlow.opacity(glow ? 0.6 : 0.1) : .clear, radius: 10)
+        .bbAuraBorder(call.status == .running)
+        .modifier(ShakeEffect(animatableData: call.status == .failed && !reduceMotion ? 3 : 0))
+        .animation(.easeInOut(duration: 0.36), value: call.status == .failed)
         .animation(Motion.standard, value: call.status)
         .animation(Motion.standard, value: isExpanded)
         .onAppear {

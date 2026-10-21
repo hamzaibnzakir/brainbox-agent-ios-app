@@ -50,6 +50,9 @@ final class AppSettings {
         static let notifyDisconnect = "bb.notify.disconnect"
         static let confirmSensitive = "bb.confirmSensitive"
         static let onboarded = "bb.onboarded"
+        static let hermesURL = "bb.hermes.url"
+        static let launchSeen = "bb.launch.seen"
+        static let lastTeammate = "bb.teammate.active"
     }
 
     private let defaults: UserDefaults
@@ -65,6 +68,11 @@ final class AppSettings {
     var notifyOnDisconnect: Bool { didSet { defaults.set(notifyOnDisconnect, forKey: Key.notifyDisconnect) } }
     /// Ask "are you sure?" before destructive actions (in addition to Face ID).
     var confirmSensitiveActions: Bool { didSet { defaults.set(confirmSensitiveActions, forKey: Key.confirmSensitive) } }
+    /// Hermes API base URL (Brainbox proxy, e.g. https://vps.tailnet.ts.net:8444/hermes).
+    var hermesURL: String { didSet { defaults.set(hermesURL, forKey: Key.hermesURL) } }
+    /// The full launch sequence plays once; later launches get a short fade.
+    var hasSeenLaunch: Bool { didSet { defaults.set(hasSeenLaunch, forKey: Key.launchSeen) } }
+    var lastTeammateID: String { didSet { defaults.set(lastTeammateID, forKey: Key.lastTeammate) } }
 
     init(defaults: UserDefaults, isTesting: Bool = false) {
         self.defaults = defaults
@@ -78,8 +86,9 @@ final class AppSettings {
         notifyOnTaskComplete = defaults.object(forKey: Key.notifyComplete) as? Bool ?? false
         notifyOnDisconnect = defaults.object(forKey: Key.notifyDisconnect) as? Bool ?? false
         confirmSensitiveActions = defaults.object(forKey: Key.confirmSensitive) as? Bool ?? true
-        // Hermes is pending: never boot into it.
-        if providerKind == .hermes { providerKind = .mock }
+        hermesURL = defaults.string(forKey: Key.hermesURL) ?? ""
+        hasSeenLaunch = isTesting ? true : defaults.bool(forKey: Key.launchSeen)
+        lastTeammateID = defaults.string(forKey: Key.lastTeammate) ?? ""
     }
 
     var policy: SecurityPolicy {
@@ -91,8 +100,13 @@ final class AppSettings {
         return nil
     }
 
+    var validatedHermesURL: URL? {
+        if case .valid(let url) = HermesURLValidator.validate(hermesURL) { return url }
+        return nil
+    }
+
     func resetAll() {
-        for key in [Key.provider, Key.backendURL, Key.appearance, Key.biometrics, Key.sessionTimeout, Key.haptics, Key.notifyComplete, Key.notifyDisconnect, Key.confirmSensitive, Key.onboarded] {
+        for key in [Key.provider, Key.backendURL, Key.appearance, Key.biometrics, Key.sessionTimeout, Key.haptics, Key.notifyComplete, Key.notifyDisconnect, Key.confirmSensitive, Key.onboarded, Key.hermesURL, Key.launchSeen, Key.lastTeammate] {
             defaults.removeObject(forKey: key)
         }
     }

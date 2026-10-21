@@ -8,34 +8,47 @@ enum BB {
     // MARK: Colour tokens
 
     enum Palette {
-        static let background = Color.adaptive(light: 0xF4F4EF, dark: 0x0A0B0D)
-        static let backgroundRaised = Color.adaptive(light: 0xFAFAF7, dark: 0x0F1114)
-        static let surface = Color.adaptive(light: 0xFFFFFF, dark: 0x15181D)
-        static let surfaceHigh = Color.adaptive(light: 0xEDEDE6, dark: 0x1C2027)
-        static let surfaceSunken = Color.adaptive(light: 0xE7E7E0, dark: 0x0C0E11)
-        static let stroke = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.08)
-        static let strokeStrong = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.14, darkAlpha: 0.16)
+        // Near-black OLED canvas (dark) / warm paper (light).
+        static let background = Color.adaptive(light: 0xF5F4F0, dark: 0x050505)
+        static let backgroundRaised = Color.adaptive(light: 0xFAF9F6, dark: 0x0A0A0B)
+        static let surface = Color.adaptive(light: 0xFFFFFF, dark: 0x141414)
+        static let surfaceHigh = Color.adaptive(light: 0xEDECE7, dark: 0x1C1C1E)
+        static let surfaceSunken = Color.adaptive(light: 0xE7E6E0, dark: 0x0B0B0C)
+        static let stroke = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.07)
+        static let strokeStrong = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.14, darkAlpha: 0.14)
 
-        static let textPrimary = Color.adaptive(light: 0x0D0F12, dark: 0xF3F4F0)
-        static let textSecondary = Color.adaptive(light: 0x575D66, dark: 0x9CA2AA)
-        static let textTertiary = Color.adaptive(light: 0x8F959D, dark: 0x5F656E)
+        static let textPrimary = Color.adaptive(light: 0x0D0E10, dark: 0xEDEDED)
+        static let textSecondary = Color.adaptive(light: 0x5A5D63, dark: 0x8A8A8A)
+        static let textTertiary = Color.adaptive(light: 0x8F9298, dark: 0x5C5C60)
 
-        /// The signal colour. Used sparingly: live state, primary action.
-        static let signal = Color(hex: 0xC8F04B)
-        static let signalText = Color.adaptive(light: 0x4A7000, dark: 0xC8F04B)
-        static let onSignal = Color(hex: 0x0A0B0D)
-        static let signalGlow = Color(hex: 0xC8F04B).opacity(0.35)
+        /// The aura: one warm sunset accent, reserved for live AI states
+        /// (thinking, streaming, running, connected) and the primary action.
+        static let signal = Color(hex: 0xFF6A3D)
+        static let signalText = Color.adaptive(light: 0xC2410C, dark: 0xFF8A63)
+        static let onSignal = Color(hex: 0x0B0604)
+        static let signalGlow = Color(hex: 0xFF6A3D).opacity(0.38)
 
-        static let ion = Color.adaptive(light: 0x4C5BDB, dark: 0x8C98FF)
-        static let success = Color.adaptive(light: 0x16A34A, dark: 0x5BE49B)
-        static let warning = Color.adaptive(light: 0xC27803, dark: 0xF5B54A)
+        /// Aura gradient stops: orange → magenta → violet.
+        static let auraOrange = Color(hex: 0xFF6A3D)
+        static let auraMagenta = Color(hex: 0xFF3D8B)
+        static let auraViolet = Color(hex: 0x8B5CF6)
+        static var auraGradient: LinearGradient {
+            LinearGradient(colors: [auraOrange, auraMagenta, auraViolet], startPoint: .topLeading, endPoint: .bottomTrailing)
+        }
+        static var auraAngular: AngularGradient {
+            AngularGradient(colors: [auraOrange, auraMagenta, auraViolet, auraOrange], center: .center)
+        }
+
+        static let ion = Color.adaptive(light: 0x4C5BDB, dark: 0x9AA4FF)
+        static let success = Color.adaptive(light: 0x16A34A, dark: 0x4ADE80)
+        static let warning = Color.adaptive(light: 0xB45309, dark: 0xFBBF24)
         static let danger = Color.adaptive(light: 0xD92D3F, dark: 0xFF5D6C)
 
-        static let userBubble = Color.adaptive(light: 0x14171C, dark: 0xF1F2EC)
-        static let onUserBubble = Color.adaptive(light: 0xF3F4F0, dark: 0x0D0F12)
+        static let userBubble = Color.adaptive(light: 0x14151A, dark: 0x1F1F22)
+        static let onUserBubble = Color.adaptive(light: 0xF3F3F0, dark: 0xEDEDED)
 
-        static let codeBackground = Color.adaptive(light: 0xF0F0EA, dark: 0x0D0F12)
-        static let terminalBackground = Color(hex: 0x07080A)
+        static let codeBackground = Color.adaptive(light: 0xF0EFEA, dark: 0x0B0B0C)
+        static let terminalBackground = Color(hex: 0x050505)
         static let terminalText = Color(hex: 0xD9DED3)
     }
 

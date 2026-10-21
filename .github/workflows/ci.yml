@@ -176,6 +176,9 @@ jobs:
       - name: Package unsigned IPA
         run: bash scripts/package-unsigned-ipa.sh build/BrainboxAgent.xcarchive build/BrainboxAgent-unsigned.ipa
 
+      - name: Verify IPA structure and metadata
+        run: bash scripts/ci/verify-ipa.sh build/BrainboxAgent-unsigned.ipa expect-unsigned
+
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:

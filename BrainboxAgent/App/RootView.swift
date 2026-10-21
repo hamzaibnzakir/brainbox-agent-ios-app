@@ -8,6 +8,8 @@ struct RootView: View {
     @State private var keyboardVisible = false
 
     @State private var visited: Set<AppTab> = []
+    @State private var showLaunch = true
+    @State private var presentedApproval: AgentApproval?
 
     var body: some View {
         @Bindable var model = model
@@ -25,7 +27,8 @@ struct RootView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             if !keyboardVisible {
-                BBTabBar(selection: $model.selectedTab, agentBusy: model.agentStatus.isBusy)
+                BBTabBar(selection: $model.selectedTab, agentBusy: model.agentStatus.isBusy,
+                         badges: [.tasks: model.chat.pendingApprovals.count])
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
@@ -39,6 +42,25 @@ struct RootView: View {
                     .transition(.bbDropIn)
                     .zIndex(10)
             }
+        }
+        .overlay {
+            if showLaunch && !model.environment.isUITesting && !model.environment.isUnitTesting {
+                LaunchOverlay(full: !model.settings.hasSeenLaunch) {
+                    showLaunch = false
+                    model.settings.hasSeenLaunch = true
+                }
+                .zIndex(40)
+            }
+        }
+        .onChange(of: model.chat.approvalSignal) { _, _ in
+            // A run is blocked on a decision: surface it wherever the user is.
+            guard presentedApproval == nil, let latest = model.chat.pendingApprovals.last else { return }
+            presentedApproval = latest.approval
+        }
+        .sheet(item: $presentedApproval) { approval in
+            ApprovalSheet(approval: approval, teammate: teammateFor(approval))
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
         .overlay {
             if model.gate.isLocked {
@@ -63,13 +85,18 @@ struct RootView: View {
 }
 
 extension RootView {
+    func teammateFor(_ approval: AgentApproval) -> Teammate? {
+        let conversation = model.chat.conversations.first { c in c.messages.contains { $0.pendingApproval?.id == approval.id } }
+        return model.hermes.teammate(conversation?.teammateID) ?? model.hermes.activeTeammate
+    }
+
     @ViewBuilder
     func page(for tab: AppTab) -> some View {
         switch tab {
-        case .home: HomeView()
+        case .team: TeamView()
         case .agent: AgentView()
+        case .tasks: TasksView()
         case .vps: VPSView()
-        case .files: FilesView()
         case .settings: SettingsView()
         }
     }
@@ -117,6 +144,7 @@ struct BBTabBar: View {
 
     @Binding var selection: AppTab
     var agentBusy: Bool
+    var badges: [AppTab: Int] = [:]
     @Namespace private var pill
     @State private var bounce: [AppTab: Int] = [:]
 
@@ -136,6 +164,16 @@ struct BBTabBar: View {
                                 .symbolEffect(.bounce.down, value: bounce[tab, default: 0])
                             if tab == .agent && agentBusy {
                                 StatusDot(tone: .busy, size: 6).offset(x: 6, y: -2)
+                            }
+                            if let count = badges[tab], count > 0 {
+                                Text("\(count)")
+                                    .font(.system(size: 9, weight: .bold, design: .rounded))
+                                    .foregroundStyle(.black)
+                                    .padding(.horizontal, 4)
+                                    .frame(minWidth: 15, minHeight: 15)
+                                    .background(Capsule().fill(BB.Palette.warning))
+                                    .offset(x: 10, y: -6)
+                                    .transition(.scale.combined(with: .opacity))
                             }
                         }
                         Text(tab.title)
@@ -161,6 +199,7 @@ struct BBTabBar: View {
             }
         }
         .padding(6)
+        .sensoryFeedback(.selection, trigger: selection)
         .background {
             RoundedRectangle(cornerRadius: 22, style: .continuous)
                 .fill(.ultraThinMaterial)

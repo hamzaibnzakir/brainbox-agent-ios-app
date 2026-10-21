@@ -1,0 +1,42 @@
+# Brainbox Hermes proxy — /etc/brainbox-gateway/hermes-proxy.toml (mode 600)
+# The iPhone talks to THIS, never to Hermes directly. The Hermes API key
+# stays on the server; each phone gets its own revocable device token.
+
+[proxy]
+host = "127.0.0.1"              # keep loopback; publish privately with `tailscale serve`
+port = 8766
+path_prefix = "/hermes"         # app URL ends with /hermes
+hermes_url = "http://127.0.0.1:8642"   # Hermes API Server (loopback only)
+# Where API_SERVER_KEY lives. Use ONE of:
+hermes_env_file = "/root/.hermes/.env"
+# hermes_key_file = "/etc/brainbox-gateway/hermes-api.key"   # file containing only the key
+audit_log = "/var/lib/brainbox-gateway/hermes-proxy-audit.log"
+max_auth_failures_per_minute = 10
+max_requests_per_minute = 300
+
+# One entry per phone. Generate with:
+#   /opt/brainbox-gateway/venv/bin/brainbox-gateway new-device --name "David's iPhone"
+# Revoke a phone by deleting its entry and restarting brainbox-hermes-proxy.
+[[devices]]
+name = "David's iPhone"
+token_sha256 = "REPLACE_WITH_64_HEX_CHARS_FROM_new-device_REPLACE_WITH_64_HEX_CHA"
+admin = false                   # true + profiles.admin_enabled lets this phone create Hermes profiles
+
+[profiles]
+hermes_home = "/root/.hermes"
+hermes_bin = "/opt/hermes-src/venv/bin/hermes"
+# Forward /p/<profile>/... only if you enabled gateway.multiplex_profiles in
+# Hermes AND gave each profile its own API_SERVER_KEY in its .env.
+multiplex = false
+# Allow admin devices to run `hermes profile create <validated-name>`.
+admin_enabled = false
+
+[jobs]
+# Where scheduled-job results may be delivered when the app creates or edits
+# a job. "local" keeps results in Hermes. Add "telegram" only if you want app-
+# created jobs to post through your existing Hermes Telegram gateway.
+allowed_deliver = ["local"]
+
+# Session safety (always on, not configurable): through this proxy the app can
+# only create, change, fork or run in its own `ios_` sessions. Telegram and all
+# other sessions are read-only (GET). X-Hermes-Session-* headers are dropped.

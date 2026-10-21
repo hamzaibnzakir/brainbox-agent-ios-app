@@ -2,25 +2,25 @@ import SwiftUI
 import BrainboxCore
 
 enum AppTab: String, CaseIterable, Identifiable {
-    case home, agent, vps, files, settings
+    case team, agent, tasks, vps, settings
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .home: return "Home"
-        case .agent: return "Agent"
-        case .vps: return "VPS"
-        case .files: return "Files"
+        case .team: return "Team"
+        case .agent: return "Chat"
+        case .tasks: return "Tasks"
+        case .vps: return "Server"
         case .settings: return "Settings"
         }
     }
 
     var symbol: String {
         switch self {
-        case .home: return "square.grid.2x2"
-        case .agent: return "sparkles"
+        case .team: return "person.2.crop.square.stack"
+        case .agent: return "bubble.left.and.text.bubble.right"
+        case .tasks: return "checklist"
         case .vps: return "server.rack"
-        case .files: return "folder"
         case .settings: return "slider.horizontal.3"
         }
     }
@@ -37,6 +37,7 @@ final class AppModel {
     let network = NetworkMonitor()
     let toasts = ToastCenter()
     let chat: ChatStore
+    let hermes: HermesWorkspace
     @ObservationIgnored let credentials: CredentialStore
 
     private(set) var suite: ProviderSuite
@@ -44,6 +45,7 @@ final class AppModel {
     private(set) var agentStatus: AgentStatus = .offline
     private(set) var connectionError: AgentError?
     private(set) var hasToken = false
+    private(set) var hasHermesToken = false
     var selectedTab: AppTab = .agent
 
     @ObservationIgnored private var observers: [Task<Void, Never>] = []
@@ -78,6 +80,14 @@ final class AppModel {
             ? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("bb-snapshot-\(UUID().uuidString).json")
             : JSONFileCache<ServerSnapshot>.defaultURL(named: "server-snapshot"))
 
+        let workspace = HermesWorkspace(
+            teammateURL: environment.usesEphemeralStorage ? nil : JSONFileCache<[Teammate]>.defaultURL(named: "teammates"),
+            runsURL: environment.usesEphemeralStorage ? nil : JSONFileCache<[RunRecord]>.defaultURL(named: "hermes-runs"))
+        if let saved = UUID(uuidString: settings.lastTeammateID), workspace.teammate(saved) != nil {
+            workspace.activeTeammateID = saved
+        }
+        self.hermes = workspace
+
         let initialSuite = ProviderSuite.mock(fast: environment.isUITesting)
         self.suite = initialSuite
         self.chat = ChatStore(store: conversationStore, provider: { initialSuite.agent }, isOnline: { true })
@@ -86,8 +96,13 @@ final class AppModel {
         chat.provider = { [unowned self] in self.suite.agent }
         chat.isOnline = { [unowned self] in self.network.isOnline }
         chat.onReplyFinished = { [weak self] message in self?.replyFinished(message) }
+        chat.requestOptions = { [unowned self] conversation in
+            self.settings.providerKind == .hermes ? self.hermes.requestOptions(for: conversation) : nil
+        }
+        chat.activeTeammateID = { [unowned self] in self.hermes.activeTeammateID }
         network.onReconnect = { [weak self] in self?.handleNetworkReturn() }
         hasToken = ((try? credentials.read(.gatewayToken)) ?? nil) != nil
+        hasHermesToken = ((try? credentials.read(.hermesToken)) ?? nil) != nil
     }
 
     // MARK: Lifecycle
@@ -104,6 +119,7 @@ final class AppModel {
         case .active:
             gate.noteForegrounded()
             gateway?.reconnectNow()
+            if isHermes, !connectionState.isConnected { Task { await connect() } }
         default:
             break
         }
@@ -111,7 +127,7 @@ final class AppModel {
 
     private func handleNetworkReturn() {
         gateway?.reconnectNow()
-        if settings.providerKind == .mock, !connectionState.isConnected {
+        if settings.providerKind != .remote, !connectionState.isConnected {
             Task { await connect() }
         }
     }
@@ -144,7 +160,16 @@ final class AppModel {
         case .mock:
             suite = .mock(fast: environment.isUITesting)
         case .hermes:
-            suite = .hermesPending()
+            if let url = settings.validatedHermesURL, hasHermesToken {
+                let credentials = self.credentials
+                let client = HermesAPIClient(
+                    configuration: HermesConfiguration(baseURL: url),
+                    transport: URLSessionHTTPTransport(),
+                    tokenProvider: { (try? credentials.read(.hermesToken)) ?? nil })
+                suite = .hermes(client: client)
+            } else {
+                suite = ProviderSuite(agent: UnavailableAgentProvider(reason: "Add your Hermes URL and device token in Settings → Hermes."), vps: nil, terminal: nil, files: nil, logs: nil)
+            }
         case .remote:
             if let url = settings.validatedBackendURL {
                 let credentials = self.credentials
@@ -159,14 +184,22 @@ final class AppModel {
                 suite = ProviderSuite(agent: UnavailableAgentProvider(reason: "Add your gateway URL and access token in Settings → Connection."), vps: nil, terminal: nil, files: nil, logs: nil)
             }
         }
+        hermes.attach(suite.agent as? HermesAgentProvider)
         observe(suite.agent)
         Task { await connect() }
     }
+
+    var hermesProvider: HermesAgentProvider? { suite.agent as? HermesAgentProvider }
+    var isHermes: Bool { hermesProvider != nil }
 
     func connect() async {
         connectionError = nil
         do {
             try await suite.agent.connect()
+            if isHermes {
+                await hermes.refreshAfterConnect()
+                chat.resumeInterruptedRuns()
+            }
         } catch {
             let agentError = error.asAgentError
             // Retryable failures are already being retried by the gateway.
@@ -228,12 +261,34 @@ final class AppModel {
         (try? credentials.read(.gatewayToken)) ?? nil
     }
 
+    func saveHermesToken(_ token: String) throws {
+        try credentials.write(token.trimmingCharacters(in: .whitespacesAndNewlines), for: .hermesToken)
+        hasHermesToken = true
+    }
+
+    func deleteHermesToken() throws {
+        try credentials.delete(.hermesToken)
+        hasHermesToken = false
+    }
+
+    func readHermesToken() -> String? {
+        (try? credentials.read(.hermesToken)) ?? nil
+    }
+
+    func selectTeammate(_ id: UUID) {
+        hermes.activeTeammateID = id
+        settings.lastTeammateID = id.uuidString
+    }
+
     /// Wipes local data. Never touches anything on the server.
     func eraseLocalData() {
         chat.deleteAll()
         snapshotCache.clear()
         try? credentials.delete(.gatewayToken)
+        try? credentials.delete(.hermesToken)
         hasToken = false
+        hasHermesToken = false
+        hermes.clearFinishedRuns()
     }
 }
 
