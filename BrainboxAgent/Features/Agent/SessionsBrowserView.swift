@@ -227,8 +227,8 @@ struct SessionTranscriptView: View {
     @State private var messages: [HermesMessage] = []
     @State private var loading = true
     @State private var error: AgentError?
-    @State private var forking = false
-    @State private var confirmFork = false
+    @State private var copying = false
+    @State private var confirmCopy = false
 
     var body: some View {
         ScrollView {
@@ -249,13 +249,13 @@ struct SessionTranscriptView: View {
         .safeAreaInset(edge: .bottom) { continueBar }
         .task { await load() }
         .refreshable { await load() }
-        .confirmationDialog("Continue in the app?", isPresented: $confirmFork, titleVisibility: .visible) {
-            Button("Create a separate copy") { Task { await fork() } }
+        .confirmationDialog("Continue in the app?", isPresented: $confirmCopy, titleVisibility: .visible) {
+            Button("Create a separate copy") { continueAsCopy() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text(session.sourceKind == .telegram
-                 ? "Hermes copies this conversation into a new app session. The Telegram chat is not changed, and nothing you send in the app is delivered to Telegram."
-                 : "Hermes copies this conversation into a new app session. The original is not changed.")
+                 ? "Creates a separate iPhone chat with a copy of this transcript. Telegram is not changed and nothing is sent there."
+                 : "Creates a separate iPhone chat with a copy of this transcript. The original is not changed.")
         }
     }
 
@@ -276,15 +276,15 @@ struct SessionTranscriptView: View {
 
     @ViewBuilder
     private var continueBar: some View {
-        if model.hermes.report?.supports(.sessionFork) == true || session.sourceKind == .ios {
+        if session.sourceKind == .ios || !messages.isEmpty {
             Button {
-                if session.sourceKind == .ios, model.chat.openConversation(boundTo: session.id) {
-                    model.selectedTab = .agent
+                if session.sourceKind == .ios {
+                    reopenOwnSession()
                 } else {
-                    confirmFork = true
+                    confirmCopy = true
                 }
             } label: {
-                Label(forking ? "Copying…" : (session.sourceKind == .ios ? "Open in Chat" : "Continue in the app"), systemImage: "arrow.turn.down.right")
+                Label(copying ? "Copying…" : (session.sourceKind == .ios ? "Open in Chat" : "Continue in the app"), systemImage: "arrow.turn.down.right")
                     .font(BB.Font.headline)
                     .foregroundStyle(BB.Palette.onSignal)
                     .frame(maxWidth: .infinity)
@@ -292,7 +292,7 @@ struct SessionTranscriptView: View {
                     .background(RoundedRectangle(cornerRadius: BB.Radius.m, style: .continuous).fill(BB.Palette.signal))
             }
             .buttonStyle(.pressable)
-            .disabled(forking)
+            .disabled(copying || loading)
             .padding(.horizontal, BB.Space.gutter)
             .padding(.bottom, 8)
             .accessibilityIdentifier("session.continue")
@@ -313,24 +313,19 @@ struct SessionTranscriptView: View {
         }
     }
 
-    private func fork() async {
-        guard let client = model.hermes.client else { return }
-        forking = true
-        defer { forking = false }
-        do {
-            let title = "\(session.displayTitle) (\(session.sourceKind.displayName) copy)"
-            let forked = try await client.forkSession(id: session.id, title: String(title.prefix(80)))
-            let imported: [Message] = messages.compactMap { m in
-                guard m.role == "user" || m.role == "assistant", !m.content.isEmpty else { return nil }
-                return Message(role: m.role == "user" ? .user : .assistant, content: m.content, createdAt: m.date ?? Date(), state: .complete)
-            }
-            model.chat.importConversation(title: String(title.prefix(80)), sessionID: forked.id, origin: session.sourceKind.rawValue,
-                                          teammateID: model.hermes.activeTeammateID, messages: imported)
-            model.selectedTab = .agent
-            model.toasts.show("Continuing in a separate copy")
-        } catch {
-            self.error = error.asAgentError
-        }
+    /// The app's own `ios_` session: open it (re-attaching after a reinstall).
+    private func reopenOwnSession() {
+        model.chat.reopenOwnSession(session, transcript: messages, teammateID: model.hermes.activeTeammateID)
+        model.selectedTab = .agent
+    }
+
+    /// Any other source: a local copy carrying the transcript (see ChatStore).
+    private func continueAsCopy() {
+        copying = true
+        defer { copying = false }
+        model.chat.continueAsCopy(of: session, transcript: messages, teammateID: model.hermes.activeTeammateID)
+        model.selectedTab = .agent
+        model.toasts.show("Continuing in a separate copy")
     }
 }
 

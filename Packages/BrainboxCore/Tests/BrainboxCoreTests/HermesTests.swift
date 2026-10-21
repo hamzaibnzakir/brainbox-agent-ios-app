@@ -250,9 +250,17 @@ final class HermesClientTests: XCTestCase {
         XCTAssertEqual(created.sourceKind, .ios)
         let body = try JSONDecoder().decode(JSONValue.self, from: transport.requests[0].body ?? Data())
         XCTAssertEqual(body["source"]?.stringValue, "api_server")
-        let fork = try await client.forkSession(id: "agent:main:telegram:dm:42", title: "From Telegram")
+        // Hermes ends the source session when forking, so non-app sessions
+        // are refused client-side — no request is ever sent.
+        do {
+            _ = try await client.forkSession(id: "agent:main:telegram:dm:42", title: "From Telegram")
+            XCTFail("forking a Telegram session must be refused")
+        } catch AgentError.permissionDenied {}
+        XCTAssertTrue(transport.requests(matching: "POST /hermes/api/sessions/agent:main:telegram:dm:42/fork").isEmpty)
+        transport.on("POST /hermes/api/sessions/ios_a/fork") { _ in MockHTTPTransport.json(#"{"object":"hermes.session","session":{"id":"fork_1","source":"api_server","parent_session_id":"ios_a"}}"#, status: 201) }
+        let fork = try await client.forkSession(id: "ios_a", title: "Branch")
         XCTAssertEqual(fork.id, "fork_1")
-        XCTAssertEqual(fork.parentSessionID, "agent:main:telegram:dm:42")
+        XCTAssertEqual(fork.parentSessionID, "ios_a")
     }
 }
 
@@ -572,5 +580,243 @@ final class HermesProfileRoutingTests: XCTestCase {
         try await provider.stop(runID: "run_p")
         XCTAssertEqual(transport.requests(matching: "POST /hermes/p/research/v1/runs/run_p/stop").count, 1)
         XCTAssertTrue(transport.requests(matching: "POST /hermes/v1/runs").isEmpty)
+    }
+}
+
+
+// MARK: - P0: carried history, session safety, early stop
+
+/// Holds a mock request open until the test releases it.
+final class TestGate: @unchecked Sendable {
+    private let state = Locked<(open: Bool, arrived: Int, waiters: [CheckedContinuation<Void, Never>])>((false, 0, []))
+
+    var arrivals: Int { state.withLock { $0.arrived } }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeNow = state.withLock { s -> Bool in
+                s.arrived += 1
+                if s.open { return true }
+                s.waiters.append(continuation)
+                return false
+            }
+            if resumeNow { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiters = state.withLock { s -> [CheckedContinuation<Void, Never>] in
+            s.open = true
+            let w = s.waiters
+            s.waiters = []
+            return w
+        }
+        waiters.forEach { $0.resume() }
+    }
+}
+
+func waitFor(_ condition: () -> Bool, timeout: TimeInterval = 3) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition() && Date() < deadline { try? await Task.sleep(nanoseconds: 5_000_000) }
+}
+
+final class CarriedHistoryTests: XCTestCase {
+    private func conversation(_ messages: [Message]) -> Conversation {
+        Conversation(providerKind: .hermes, messages: messages, carriesHistory: true)
+    }
+
+    func testDropsTheTurnBeingSentAndKeepsOrder() {
+        let c = conversation([
+            Message(role: .user, content: "first"),
+            Message(role: .assistant, content: "reply one"),
+            Message(role: .user, content: "current question"),
+            Message(role: .assistant, content: "", state: .sending)
+        ])
+        XCTAssertEqual(CarriedHistory.build(from: c), [HistoryTurn(role: "user", content: "first"), HistoryTurn(role: "assistant", content: "reply one")])
+    }
+
+    func testSkipsFailedEmptySystemAndUnfinishedMessages() {
+        let c = conversation([
+            Message(role: .system, content: "note"),
+            Message(role: .user, content: "  "),
+            Message(role: .user, content: "kept"),
+            Message(role: .assistant, content: "partial", state: .failed(.cancelled)),
+            Message(role: .assistant, content: "streaming", state: .streaming),
+            Message(role: .assistant, content: "kept too"),
+            Message(role: .user, content: "now")
+        ])
+        XCTAssertEqual(CarriedHistory.build(from: c).map(\.content), ["kept", "kept too"])
+    }
+
+    func testCapsMessageCountAndCharactersFromTheOldestEnd() {
+        let many = (0..<10).map { Message(role: $0 % 2 == 0 ? .user : .assistant, content: "m\($0)") } + [Message(role: .user, content: "now")]
+        XCTAssertEqual(CarriedHistory.build(from: conversation(many), maxMessages: 3).map(\.content), ["m7", "m8", "m9"])
+        let long = [Message(role: .user, content: String(repeating: "a", count: 60)),
+                    Message(role: .assistant, content: String(repeating: "b", count: 60)),
+                    Message(role: .user, content: "now")]
+        XCTAssertEqual(CarriedHistory.build(from: conversation(long), maxCharacters: 100).map(\.content), [String(repeating: "b", count: 60)])
+        let huge = [Message(role: .user, content: "x" + String(repeating: "y", count: 200)), Message(role: .user, content: "now")]
+        let trimmed = CarriedHistory.build(from: conversation(huge), maxCharacters: 50)
+        XCTAssertEqual(trimmed.count, 1)
+        XCTAssertEqual(trimmed[0].content, String(repeating: "y", count: 50), "keeps the most recent part")
+    }
+
+    func testCarriesHistoryFlagRoundTripsAndOldFilesDecode() throws {
+        let copy = conversation([Message(role: .user, content: "hi")])
+        let decoded = try WireCoding.decoder.decode(Conversation.self, from: WireCoding.encoder.encode(copy))
+        XCTAssertTrue(decoded.carriesHistory)
+        let plain = Conversation(providerKind: .hermes)
+        let json = String(decoding: try WireCoding.encoder.encode(plain), as: UTF8.self)
+        XCTAssertFalse(json.contains("carriedHistory"), "default conversations keep the old file shape")
+        let legacy = #"{"id":"\#(UUID().uuidString)","title":"Old","createdAt":"2026-10-01T10:00:00.000Z","updatedAt":"2026-10-01T10:00:00.000Z","providerKind":"hermes","messages":[],"backendSessionID":"ios_abc"}"#
+        XCTAssertFalse(try WireCoding.decoder.decode(Conversation.self, from: Data(legacy.utf8)).carriesHistory)
+    }
+}
+
+final class HermesSessionSafetyTests: XCTestCase {
+    private func server() -> MockHTTPTransport {
+        let transport = MockHTTPTransport()
+        transport.on("POST /hermes/api/sessions") { _ in MockHTTPTransport.json(#"{"object":"hermes.session","session":{"id":"ios_x","source":"api_server"}}"#, status: 201) }
+        transport.on("POST /hermes/v1/runs") { _ in MockHTTPTransport.json(#"{"run_id":"run_42","status":"started"}"#, status: 202) }
+        transport.onStream("GET /hermes/v1/runs/run_42/events") { _ in
+            MockHTTPTransport.sse([HermesFixtures.event(#"{"event":"run.completed","output":"ok"}"#)])
+        }
+        return transport
+    }
+
+    func testCreateRunSendsConversationHistoryOnlyWhenSet() async throws {
+        let transport = server()
+        let client = HermesFixtures.client(transport)
+        _ = try await client.createRun(input: "a", options: .init(sessionID: "ios_x"))
+        _ = try await client.createRun(input: "b", options: .init(sessionID: "ios_x", conversationHistory: []))
+        _ = try await client.createRun(input: "c", options: .init(sessionID: "ios_x", conversationHistory: [
+            HistoryTurn(role: "user", content: "from telegram"), HistoryTurn(role: "assistant", content: "answer")]))
+        let bodies = try transport.requests(matching: "POST /hermes/v1/runs").map { try JSONDecoder().decode(JSONValue.self, from: $0.body ?? Data()) }
+        XCTAssertNil(bodies[0]["conversation_history"])
+        XCTAssertNil(bodies[1]["conversation_history"])
+        guard case .array(let turns)? = bodies[2]["conversation_history"] else { return XCTFail("missing history") }
+        XCTAssertEqual(turns.count, 2)
+        XCTAssertEqual(turns[0]["role"]?.stringValue, "user")
+        XCTAssertEqual(turns[0]["content"]?.stringValue, "from telegram")
+    }
+
+    func testProviderRefusesToWriteToNonAppSessions() async throws {
+        let transport = server()
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let request = AgentRequest(conversationID: UUID(), content: "hi",
+                                   options: AgentRequestOptions(sessionID: "agent:main:telegram:dm:42"))
+        let events = try await collect(provider.send(request))
+        guard case .failed(.permissionDenied)? = events.last else { return XCTFail("\(events)") }
+        XCTAssertTrue(transport.requests.isEmpty, "nothing may reach Hermes")
+    }
+
+    func testCopiedConversationRunsInItsOwnAppSessionWithHistory() async throws {
+        let transport = server()
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let conversationID = UUID()
+        let history = [HistoryTurn(role: "user", content: "telegram question"), HistoryTurn(role: "assistant", content: "telegram answer")]
+        _ = try await collect(provider.send(AgentRequest(conversationID: conversationID, content: "continue",
+                                                         options: AgentRequestOptions(conversationHistory: history))))
+        let sessionBody = try JSONDecoder().decode(JSONValue.self, from: transport.requests(matching: "POST /hermes/api/sessions")[0].body ?? Data())
+        XCTAssertEqual(sessionBody["id"]?.stringValue, HermesAgentProvider.sessionID(for: conversationID))
+        let runBody = try JSONDecoder().decode(JSONValue.self, from: transport.requests(matching: "POST /hermes/v1/runs")[0].body ?? Data())
+        XCTAssertEqual(runBody["session_id"]?.stringValue, HermesAgentProvider.sessionID(for: conversationID))
+        guard case .array(let turns)? = runBody["conversation_history"] else { return XCTFail("history not sent") }
+        XCTAssertEqual(turns.count, 2)
+        XCTAssertTrue(transport.requests.allSatisfy { !$0.url.path.contains("telegram") })
+    }
+}
+
+final class HermesEarlyStopTests: XCTestCase {
+    private func server(runGate: TestGate? = nil, sessionGate: TestGate? = nil) -> MockHTTPTransport {
+        let transport = MockHTTPTransport()
+        transport.on("POST /hermes/api/sessions") { _ in
+            await sessionGate?.wait()
+            return MockHTTPTransport.json(#"{"object":"hermes.session","session":{"id":"ios_x","source":"api_server"}}"#, status: 201)
+        }
+        transport.on("POST /hermes/v1/runs") { _ in
+            await runGate?.wait()
+            return MockHTTPTransport.json(#"{"run_id":"run_42","status":"started"}"#, status: 202)
+        }
+        transport.on("POST /hermes/v1/runs/run_42/stop") { _ in MockHTTPTransport.json(#"{"run_id":"run_42","status":"stopping"}"#) }
+        transport.onStream("GET /hermes/v1/runs/run_42/events") { _ in
+            MockHTTPTransport.sse([HermesFixtures.event(#"{"event":"run.cancelled","run_id":"run_42"}"#)])
+        }
+        return transport
+    }
+
+    func testStopBeforeRunIDArrivesStopsTheRunWhenItDoes() async throws {
+        let gate = TestGate()
+        let transport = server(runGate: gate)
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let request = AgentRequest(conversationID: UUID(), content: "count to 300")
+        let collector = Task { try await self.collect(provider.send(request)) }
+
+        await waitFor { gate.arrivals == 1 }
+        await provider.cancel(requestID: request.requestID)
+        XCTAssertTrue(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").isEmpty, "no run id yet")
+        gate.open()
+
+        let events = try await collector.value
+        XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").count, 1)
+        guard case .failed(.cancelled)? = events.last else { return XCTFail("\(events)") }
+        XCTAssertNil(provider.runID(for: request.requestID), "bookkeeping cleaned up")
+    }
+
+    func testStopDuringSessionSetupNeverStartsARun() async throws {
+        let gate = TestGate()
+        let transport = server(sessionGate: gate)
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let request = AgentRequest(conversationID: UUID(), content: "hi")
+        let collector = Task { try await self.collect(provider.send(request)) }
+
+        await waitFor { gate.arrivals == 1 }
+        await provider.cancel(requestID: request.requestID)
+        gate.open()
+
+        let events = try await collector.value
+        guard case .failed(.cancelled)? = events.last else { return XCTFail("\(events)") }
+        XCTAssertTrue(transport.requests(matching: "POST /hermes/v1/runs").isEmpty, "the run was never created")
+    }
+
+    func testRunIsStoppedEvenIfTheAppStopsListeningMidCreate() async throws {
+        let gate = TestGate()
+        let transport = server(runGate: gate)
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let request = AgentRequest(conversationID: UUID(), content: "long job")
+        let consumer = Task {
+            var events: [AgentEvent] = []
+            do { for try await event in provider.send(request) { events.append(event) } } catch {}
+            return events
+        }
+
+        await waitFor { gate.arrivals == 1 }
+        // What ChatStore.stop() does: ask to cancel, then stop consuming.
+        await provider.cancel(requestID: request.requestID)
+        consumer.cancel()
+        gate.open()
+
+        await waitFor { !transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").isEmpty }
+        XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").count, 1,
+                       "the run Hermes created must still be stopped")
+        _ = await consumer.value
+    }
+
+    func testStopAfterRunIDStillStopsImmediately() async throws {
+        let transport = MockHTTPTransport()
+        transport.on("POST /hermes/api/sessions") { _ in MockHTTPTransport.json(#"{"session":{"id":"ios_x"}}"#, status: 201) }
+        transport.on("POST /hermes/v1/runs") { _ in MockHTTPTransport.json(#"{"run_id":"run_42","status":"started"}"#, status: 202) }
+        transport.on("POST /hermes/v1/runs/run_42/stop") { _ in MockHTTPTransport.json(#"{"run_id":"run_42","status":"stopping"}"#) }
+        transport.onStream("GET /hermes/v1/runs/run_42/events") { _ in
+            MockHTTPTransport.sse([HermesFixtures.event(#"{"event":"message.delta","delta":"1"}"#),
+                                   HermesFixtures.event(#"{"event":"run.cancelled"}"#)], delay: 0.3)
+        }
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let request = AgentRequest(conversationID: UUID(), content: "go")
+        let collector = Task { try await self.collect(provider.send(request)) }
+        await waitFor { provider.runID(for: request.requestID) != nil }
+        await provider.cancel(requestID: request.requestID)
+        XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs/run_42/stop").count, 1)
+        _ = try await collector.value
     }
 }

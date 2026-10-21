@@ -132,7 +132,7 @@ public final class HermesAPIClient: @unchecked Sendable {
         }
         switch status {
         case 401:
-            return .authenticationFailed(detail: "Hermes rejected the access token. Check the token in Settings → Connection.")
+            return .authenticationFailed(detail: "Hermes rejected the access token. Check the device token in Settings → Hermes.")
         case 403:
             return .permissionDenied(detail: message)
         case 404 where code == "http_404":
@@ -212,9 +212,14 @@ public final class HermesAPIClient: @unchecked Sendable {
         return try decode(HermesMessagePage.self, from: try await request("GET", "/api/sessions/\(Self.escape(sessionID))/messages", query: query))
     }
 
-    /// Branches a session (CLI `/branch` semantics). Used to continue a
-    /// Telegram conversation in the app without writing into the original.
+    /// Branches a session (CLI `/branch` semantics). Hermes ENDS the source
+    /// session when forking (`db.end_session(source_id, "branched")`), so this
+    /// is only allowed on the app's own `ios_` sessions. Other sessions (e.g.
+    /// Telegram) are continued as a copy with carried history instead.
     public func forkSession(id: String, title: String? = nil) async throws -> HermesSession {
+        guard id.hasPrefix(HermesSessionSource.appSessionPrefix) else {
+            throw AgentError.permissionDenied(detail: "Only the app's own sessions can be forked; other sessions are read-only.")
+        }
         var body: [String: JSONValue] = [:]
         if let title { body["title"] = .string(title) }
         let response = try await request("POST", "/api/sessions/\(Self.escape(id))/fork", body: .object(body))
@@ -237,15 +242,19 @@ public final class HermesAPIClient: @unchecked Sendable {
         public var idempotencyKey: String?
         /// Stable long-term memory scope (`X-Hermes-Session-Key`).
         public var sessionKey: String?
+        /// Sent as `conversation_history`: authoritative for this turn and
+        /// never stored by Hermes (see `CarriedHistory`).
+        public var conversationHistory: [HistoryTurn]?
 
         public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil,
-                    idempotencyKey: String? = nil, sessionKey: String? = nil) {
+                    idempotencyKey: String? = nil, sessionKey: String? = nil, conversationHistory: [HistoryTurn]? = nil) {
             self.sessionID = sessionID
             self.instructions = instructions
             self.model = model
             self.provider = provider
             self.idempotencyKey = idempotencyKey
             self.sessionKey = sessionKey
+            self.conversationHistory = conversationHistory
         }
     }
 
@@ -255,6 +264,9 @@ public final class HermesAPIClient: @unchecked Sendable {
         if let instructions = options.instructions, !instructions.isEmpty { body["instructions"] = .string(instructions) }
         if let model = options.model, !model.isEmpty { body["model"] = .string(model) }
         if let provider = options.provider, !provider.isEmpty { body["provider"] = .string(provider) }
+        if let history = options.conversationHistory, !history.isEmpty {
+            body["conversation_history"] = .array(history.map { .object(["role": .string($0.role), "content": .string($0.content)]) })
+        }
         var headers: [String: String] = [:]
         if let key = options.idempotencyKey { headers["Idempotency-Key"] = key }
         if let sessionKey = options.sessionKey { headers["X-Hermes-Session-Key"] = sessionKey }

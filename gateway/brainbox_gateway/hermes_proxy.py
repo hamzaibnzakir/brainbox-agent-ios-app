@@ -73,11 +73,78 @@ ALLOWED_ROUTES: list[tuple[str, re.Pattern[str]]] = [
     ]
 ]
 
-FORWARD_REQUEST_HEADERS = ("Content-Type", "Accept", "Idempotency-Key", "X-Hermes-Session-Id",
-                           "X-Hermes-Session-Key", "Last-Event-ID")
+# X-Hermes-Session-Id / X-Hermes-Session-Key are deliberately NOT forwarded:
+# they can select an existing Hermes session, and the app never uses them.
+FORWARD_REQUEST_HEADERS = ("Content-Type", "Accept", "Idempotency-Key", "Last-Event-ID")
 FORWARD_RESPONSE_HEADERS = ("Content-Type", "Cache-Control", "Idempotency-Replayed", "X-Hermes-Session-Id",
                             "X-Hermes-Session-Key", "Retry-After")
 PUBLIC_ROUTES = {("GET", "/health"), ("GET", "/v1/health")}
+
+# --------------------------------------------------------------------------- session guard
+# The app may only WRITE to its own sessions (`ios_` prefix, source api_server).
+# Everything else — Telegram above all — is read-only through this proxy.
+# Verified in Hermes 284d220: POST /api/sessions/{id}/fork ENDS the source
+# session (`db.end_session(source_id, "branched")`), and a run with a
+# `session_id` writes its turn into that session.
+APP_SESSION_PREFIX = "ios_"
+_SESSION_ITEM = re.compile(rf"^/api/sessions/({ID_RE})$")
+_SESSION_WRITE_ACTION = re.compile(rf"^/api/sessions/({ID_RE})/(fork|chat|chat/stream)$")
+_JOB_PATHS = re.compile(rf"^/api/jobs(/{JOB_RE})?$")
+DELIVER_RE = re.compile(r"^[a-z0-9_:\-]{1,64}$")
+
+
+def _is_app_session(session_id: Any) -> bool:
+    return isinstance(session_id, str) and session_id.startswith(APP_SESSION_PREFIX) and len(session_id) > len(APP_SESSION_PREFIX)
+
+
+def guard_violation(method: str, path: str, body: bytes | None,
+                    allowed_deliver: tuple[str, ...] = ("local",)) -> tuple[int, str, str] | None:
+    """Returns (status, code, message) when a request must be refused, else None.
+
+    Pure function of the request so it can be tested without a server."""
+    def parsed() -> dict[str, Any] | None:
+        if not body:
+            return {}
+        try:
+            value = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    read_only = (403, "session_read_only", "Only the app's own sessions can be changed; other sessions are read-only.")
+
+    if method in ("PATCH", "DELETE"):
+        m = _SESSION_ITEM.match(path)
+        if m and not _is_app_session(m.group(1)):
+            return read_only
+    if method == "POST":
+        m = _SESSION_WRITE_ACTION.match(path)
+        if m and not _is_app_session(m.group(1)):
+            return read_only
+        if path == "/api/sessions":
+            data = parsed()
+            if data is None:
+                return (400, "invalid_json", "Request body must be a JSON object.")
+            if not _is_app_session(data.get("id") or data.get("session_id")):
+                return (403, "session_id_required", "New sessions must use an app session id (ios_…).")
+            if data.get("source") not in (None, "api_server"):
+                return (403, "session_source_not_allowed", "New sessions must use source api_server.")
+        if path == "/v1/runs":
+            data = parsed()
+            if data is None:
+                return (400, "invalid_json", "Request body must be a JSON object.")
+            if data.get("session_id") is not None and not _is_app_session(data.get("session_id")):
+                return read_only
+            if data.get("previous_response_id") is not None:
+                return (403, "previous_response_not_allowed", "Response chaining is not available through the Brainbox proxy.")
+    if method in ("POST", "PATCH") and _JOB_PATHS.match(path):
+        data = parsed()
+        if data is None:
+            return (400, "invalid_json", "Request body must be a JSON object.")
+        if "deliver" in data and data["deliver"] not in allowed_deliver:
+            return (403, "delivery_not_allowed",
+                    f"Job delivery to {data['deliver']!r} is not enabled on this server (allowed: {', '.join(allowed_deliver)}).")
+    return None
 
 
 # --------------------------------------------------------------------------- config
@@ -112,6 +179,9 @@ class ProxyConfig:
     hermes_bin: str = "/opt/hermes-src/venv/bin/hermes"
     multiplex_profiles: bool = False
     profile_admin_enabled: bool = False
+    # Where scheduled-job results may be delivered (`deliver` on /api/jobs).
+    # "local" keeps results in Hermes; add "telegram" only deliberately.
+    allowed_deliver: tuple[str, ...] = ("local",)
 
     def device_for(self, token: str) -> Device | None:
         if not token:
@@ -137,6 +207,10 @@ def load_config(path: str) -> ProxyConfig:
 def config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
     p = raw.get("proxy", {})
     profiles = raw.get("profiles", {})
+    jobs = raw.get("jobs", {})
+    allowed_deliver = jobs.get("allowed_deliver", ["local"])
+    if not isinstance(allowed_deliver, list) or not all(isinstance(d, str) and DELIVER_RE.fullmatch(d) for d in allowed_deliver):
+        raise ValueError("jobs.allowed_deliver must be a list of delivery target names, e.g. [\"local\"]")
     devices = [Device(name=str(d["name"]), token_sha256=str(d["token_sha256"]), admin=bool(d.get("admin", False)))
                for d in raw.get("devices", [])]
     cfg = ProxyConfig(
@@ -152,6 +226,7 @@ def config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
         hermes_bin=str(profiles.get("hermes_bin", "/opt/hermes-src/venv/bin/hermes")),
         multiplex_profiles=bool(profiles.get("multiplex", False)),
         profile_admin_enabled=bool(profiles.get("admin_enabled", False)),
+        allowed_deliver=tuple(allowed_deliver),
     )
     validate(cfg)
     return cfg
@@ -435,6 +510,12 @@ class HermesProxy:
                 return json_error(400, "Invalid profile name.", "invalid_profile_name")
             if not self.cfg.multiplex_profiles and profile != "default":
                 return json_error(404, "Profile routing is not enabled on this server.", "profiles_not_enabled")
+        body = await request.read() if request.can_read_body else None
+        violation = guard_violation(method, path, body, self.cfg.allowed_deliver)
+        if violation is not None:
+            status, code, message = violation
+            self.audit.write(device=device.name if device else None, action="guard", method=method, path=tail, outcome=code)
+            return json_error(status, message, code)
         key = resolve_hermes_key(self.cfg, profile) if profile and profile != "default" else self._hermes_key
         if not key:
             return json_error(503, "Hermes API key is not configured on the server.", "hermes_key_missing")
@@ -443,7 +524,6 @@ class HermesProxy:
         url = self.cfg.hermes_url + upstream_path
         headers = {h: request.headers[h] for h in FORWARD_REQUEST_HEADERS if h in request.headers}
         headers["Authorization"] = f"Bearer {key}"
-        body = await request.read() if request.can_read_body else None
 
         assert self._client is not None
         try:

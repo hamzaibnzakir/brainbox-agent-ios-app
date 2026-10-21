@@ -19,7 +19,7 @@ struct TeamView: View {
                     if !model.isHermes {
                         BBCard {
                             EmptyStateView(systemImage: "bolt.horizontal.circle", title: "Connect Hermes",
-                                           message: "Teammates run on your Hermes agent. Add its URL and device token in Settings → Connection → Hermes, then pick Hermes API as the backend.")
+                                           message: "Teammates run on your Hermes agent. Add its URL and device token in Settings → Hermes, then tap “Use Hermes as the backend”.")
                         }
                         .bbEntrance(index: 1)
                     }

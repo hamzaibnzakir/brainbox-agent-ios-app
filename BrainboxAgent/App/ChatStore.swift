@@ -87,15 +87,50 @@ final class ChatStore {
         conversations(for: teammateID).first?.messages.last(where: { $0.role == .assistant })
     }
 
-    /// Adds a conversation continued from a backend session fork (e.g. a
-    /// Telegram chat). The original session is never written to.
-    func importConversation(title: String, sessionID: String, origin: String, teammateID: UUID?, messages: [Message]) {
+    /// Adds a conversation built from a transcript. `sessionID` binds it to
+    /// one of the app's own `ios_` sessions; `carriesHistory` makes every run
+    /// re-send the transcript (copies of Telegram and other sources, which
+    /// get a fresh `ios_` session on first send).
+    func importConversation(title: String, sessionID: String?, origin: String, teammateID: UUID?, messages: [Message], carriesHistory: Bool) {
         stopIfNeeded()
         let conversation = Conversation(title: title, providerKind: provider().descriptor.kind, messages: messages,
-                                        backendSessionID: sessionID, teammateID: teammateID, origin: origin)
+                                        backendSessionID: sessionID, teammateID: teammateID, origin: origin,
+                                        carriesHistory: carriesHistory)
         conversations.insert(conversation, at: 0)
         currentID = conversation.id
         persist(conversation.id)
+    }
+
+    /// User and assistant text from a Hermes transcript, as local messages.
+    static func importable(_ transcript: [HermesMessage]) -> [Message] {
+        transcript.compactMap { m in
+            guard m.role == "user" || m.role == "assistant", !m.content.isEmpty else { return nil }
+            return Message(role: m.role == "user" ? .user : .assistant, content: m.content, createdAt: m.date ?? Date(), state: .complete)
+        }
+    }
+
+    /// "Continue in the app" for a session the app doesn't own (Telegram, CLI,
+    /// other API clients). Makes a local copy that re-sends the transcript with
+    /// every run and gets its own `ios_` session on first send. No request is
+    /// made here: the original session was only read (GET) and is never
+    /// forked, written or ended.
+    func continueAsCopy(of session: HermesSession, transcript: [HermesMessage], teammateID: UUID?) {
+        let title = String("\(session.displayTitle) (\(session.sourceKind.displayName) copy)".prefix(80))
+        importConversation(title: title, sessionID: nil, origin: session.sourceKind.rawValue, teammateID: teammateID,
+                           messages: Self.importable(transcript), carriesHistory: true)
+    }
+
+    /// Opens one of the app's own `ios_` sessions, re-attaching to the same
+    /// session id when there's no local copy (e.g. after a reinstall); Hermes
+    /// then loads its history itself. Non-app sessions go to `continueAsCopy`.
+    func reopenOwnSession(_ session: HermesSession, transcript: [HermesMessage], teammateID: UUID?) {
+        guard session.sourceKind == .ios else {
+            continueAsCopy(of: session, transcript: transcript, teammateID: teammateID)
+            return
+        }
+        if openConversation(boundTo: session.id) { return }
+        importConversation(title: session.displayTitle, sessionID: session.id, origin: HermesSessionSource.ios.rawValue,
+                           teammateID: teammateID, messages: Self.importable(transcript), carriesHistory: false)
     }
 
     /// Opens the local conversation bound to a backend session, if any.

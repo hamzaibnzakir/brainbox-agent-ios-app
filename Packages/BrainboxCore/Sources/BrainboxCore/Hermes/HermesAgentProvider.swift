@@ -62,6 +62,10 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         var createdSessions: Set<String> = []   // "profile|session"
         var heartbeat: Task<Void, Never>?
         var activeRequests = 0
+        /// Requests sent but whose `run_id` hasn't come back yet.
+        var awaitingRunID: Set<UUID> = []
+        /// Stop requested before the run id was known; applied on arrival.
+        var pendingStops: Set<UUID> = []
     }
 
     public init(client: HermesAPIClient, pause: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
@@ -202,26 +206,76 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
 
         let options = request.options
         let client = self.client.with(profile: options?.profile)
+        let requestID = request.requestID
+        // The app only ever writes to its own `ios_` sessions. Anything else
+        // (Telegram, CLI, other API clients) is read-only from here.
+        if let explicit = options?.sessionID, !explicit.hasPrefix(HermesSessionSource.appSessionPrefix) {
+            continuation.yield(.failed(.permissionDenied(detail: "This conversation points at a session the app may not write to. Continue it as a copy instead.")))
+            continuation.finish()
+            return
+        }
         let sessionID = options?.sessionID ?? Self.sessionID(for: request.conversationID)
+        state.withLock { _ = $0.awaitingRunID.insert(requestID) }
+        func stopRequestedEarly() -> Bool {
+            state.withLock { $0.pendingStops.contains(requestID) }
+        }
+        func forgetEarlyStop() {
+            state.withLock { s in
+                s.awaitingRunID.remove(requestID)
+                s.pendingStops.remove(requestID)
+            }
+        }
         let runID: String
         do {
             if options?.sessionID == nil {
                 try await ensureSession(id: sessionID, title: options?.title ?? Conversation.suggestedTitle(from: request.content), client: client)
             }
-            let accepted = try await client.createRun(input: request.content, options: .init(
+            if stopRequestedEarly() || Task.isCancelled {
+                // Stopped before anything ran: don't start a run at all.
+                forgetEarlyStop()
+                continuation.yield(.failed(.cancelled))
+                continuation.finish()
+                return
+            }
+            let runOptions = HermesAPIClient.RunOptions(
                 sessionID: sessionID,
                 instructions: options?.instructions,
                 model: options?.model,
                 provider: options?.provider,
-                idempotencyKey: request.requestID.uuidString.lowercased()))
+                idempotencyKey: requestID.uuidString.lowercased(),
+                conversationHistory: options?.conversationHistory)
+            // Detached from this task's cancellation: once the POST is on the
+            // wire Hermes may already be running it, so we must get the
+            // run id back to be able to stop it.
+            let accepted = try await Task { try await client.createRun(input: request.content, options: runOptions) }.value
             runID = accepted.runID
         } catch {
-            continuation.yield(.failed(error.asAgentError))
+            forgetEarlyStop()
+            continuation.yield(.failed(Task.isCancelled ? .cancelled : error.asAgentError))
             continuation.finish()
             return
         }
 
-        state.withLock { $0.runs[request.requestID] = runID; $0.runClients[runID] = client }
+        let stopNow = state.withLock { s -> Bool in
+            s.awaitingRunID.remove(requestID)
+            s.runs[requestID] = runID
+            s.runClients[runID] = client
+            return s.pendingStops.remove(requestID) != nil
+        }
+        if stopNow || Task.isCancelled {
+            // A Stop arrived while the run was being created: apply it now,
+            // also detached so the stop request itself isn't cancelled.
+            _ = await Task { try? await client.stopRun(id: runID) }.value
+            if Task.isCancelled {
+                state.withLock { s in
+                    _ = s.runs.removeValue(forKey: requestID)
+                    _ = s.runClients.removeValue(forKey: runID)
+                }
+                continuation.yield(.failed(.cancelled))
+                continuation.finish()
+                return
+            }
+        }
         continuation.yield(.runStarted(runID: runID, sessionID: sessionID))
         publish(RunActivity(runID: runID, sessionID: sessionID, conversationID: request.conversationID,
                             teammateID: options?.teammateID, title: Conversation.suggestedTitle(from: request.content), state: .running))
@@ -322,7 +376,14 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
     public func runID(for requestID: UUID) -> String? { state.withLock { $0.runs[requestID] } }
 
     public func cancel(requestID: UUID) async {
-        guard let runID = runID(for: requestID) else { return }
+        // Known run: stop it. Otherwise remember the Stop; `run` applies it
+        // the moment Hermes returns the run id (or skips the run entirely).
+        let runID = state.withLock { s -> String? in
+            if let id = s.runs[requestID] { return id }
+            if s.awaitingRunID.contains(requestID) { s.pendingStops.insert(requestID) }
+            return nil
+        }
+        guard let runID else { return }
         try? await stop(runID: runID)
     }
 

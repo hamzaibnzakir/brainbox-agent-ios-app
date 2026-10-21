@@ -117,7 +117,8 @@ public enum HermesSessionSource: String, Codable, Hashable, Sendable, CaseIterab
     }
 
     /// Sessions owned by an external chat platform. The app shows them
-    /// read-only; continuing one always happens in a separate fork.
+    /// read-only; continuing one makes a local copy that carries the
+    /// transcript with each run (`CarriedHistory`). They are never forked.
     public var isExternalPlatform: Bool {
         switch self {
         case .telegram, .discord, .slack: return true

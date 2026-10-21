@@ -195,7 +195,7 @@ public struct HermesCompatibilityReport: Hashable, Sendable {
             case .approvals: return "Approvals"
             case .sessions: return "Session history"
             case .sessionMessages: return "Transcripts"
-            case .sessionFork: return "Continue a conversation (fork)"
+            case .sessionFork: return "Fork app sessions"
             case .sessionChat: return "Session chat"
             case .skills: return "Skills list"
             case .toolsets: return "Toolsets list"

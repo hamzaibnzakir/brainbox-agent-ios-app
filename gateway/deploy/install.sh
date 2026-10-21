@@ -34,15 +34,15 @@ install -m 644 "$HERE/deploy/brainbox-gateway.service" /etc/systemd/system/brain
 install -m 644 "$HERE/deploy/brainbox-hermes-proxy.service" /etc/systemd/system/brainbox-hermes-proxy.service
 systemctl daemon-reload
 echo
-echo "Installed. Nothing is running yet. Next:"
-echo "  1. /opt/brainbox-gateway/venv/bin/brainbox-gateway check --config /etc/brainbox-gateway/gateway.toml"
-echo "  2. systemctl enable --now brainbox-gateway"
-echo "  3. expose privately (needs Tailscale; nginx already owns 443): tailscale serve --bg --https=8443 http://127.0.0.1:8765"
-echo "     app URL: wss://<this-machine>.<your-tailnet>.ts.net:8443/v1/agent"
+echo "Installed. Nothing is running yet, and Hermes was not touched."
 echo
-echo "Hermes API proxy (for the Hermes backend in the app) — see docs/HERMES_API_DEPLOYMENT.md:"
-echo "  a. enable the Hermes API Server deliberately (loopback, strong key) — documented, not automatic"
-echo "  b. brainbox-gateway hermes-proxy-check --config /etc/brainbox-gateway/hermes-proxy.toml"
-echo "  c. systemctl enable --now brainbox-hermes-proxy"
-echo "  d. tailscale serve --bg --https=8444 http://127.0.0.1:8766"
+echo "Hermes API proxy (the Hermes backend in the app) — docs/HERMES_API_DEPLOYMENT.md, Stage 6 onwards:"
+echo "  a. /opt/brainbox-gateway/venv/bin/brainbox-gateway new-device --name \"My iPhone\"   (run over SSH, not via the agent)"
+echo "  b. put the printed token_sha256 into /etc/brainbox-gateway/hermes-proxy.toml"
+echo "  c. /opt/brainbox-gateway/venv/bin/brainbox-gateway hermes-proxy-check --config /etc/brainbox-gateway/hermes-proxy.toml"
+echo "  d. systemctl enable --now brainbox-hermes-proxy"
+echo "  e. tailscale serve --bg --https=8444 http://127.0.0.1:8766   (serve, never funnel)"
 echo "     app URL: https://<this-machine>.<your-tailnet>.ts.net:8444/hermes"
+echo
+echo "Optional, separate: the WebSocket gateway for the app's Server tab (metrics/services/files)."
+echo "Not needed for Hermes chat. Leave it stopped unless you decide to use it."

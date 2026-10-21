@@ -114,9 +114,21 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
     public var backendSessionID: String?
     /// The AI teammate this conversation belongs to.
     public var teammateID: UUID?
-    /// Where the conversation started (e.g. "ios", or "telegram" for a fork
+    /// Where the conversation started (e.g. "ios", or "telegram" for a copy
     /// of a Telegram conversation). Purely informational.
     public var origin: String?
+    /// Stored flag behind `carriesHistory`. Optional so conversations saved
+    /// by older builds (which lack the key) still decode.
+    public var carriedHistory: Bool?
+
+    /// True for a copy of a conversation from another source (e.g. Telegram).
+    /// Hermes never stores caller-supplied history, so every run for such a
+    /// conversation re-sends its transcript as `conversation_history`; the
+    /// original session is only ever read.
+    public var carriesHistory: Bool {
+        get { carriedHistory ?? false }
+        set { carriedHistory = newValue ? true : nil }
+    }
 
     public init(
         id: UUID = UUID(),
@@ -127,7 +139,8 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
         messages: [Message] = [],
         backendSessionID: String? = nil,
         teammateID: UUID? = nil,
-        origin: String? = nil
+        origin: String? = nil,
+        carriesHistory: Bool = false
     ) {
         self.id = id
         self.title = title
@@ -138,6 +151,7 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
         self.backendSessionID = backendSessionID
         self.teammateID = teammateID
         self.origin = origin
+        self.carriedHistory = carriesHistory ? true : nil
     }
 
     public static let untitled = "New conversation"
@@ -316,8 +330,21 @@ public struct AgentRequest: Codable, Hashable, Sendable {
     }
 }
 
+/// One prior turn sent with a request when the backend must not load the
+/// history itself (see `Conversation.carriesHistory`).
+public struct HistoryTurn: Codable, Hashable, Sendable {
+    public var role: String
+    public var content: String
+
+    public init(role: String, content: String) {
+        self.role = role
+        self.content = content
+    }
+}
+
 public struct AgentRequestOptions: Codable, Hashable, Sendable {
-    /// Existing backend session to continue (e.g. a fork of a Telegram chat).
+    /// Existing backend session to continue. For Hermes this is always one
+    /// of the app's own `ios_` sessions; other sessions are never written to.
     public var sessionID: String?
     /// Extra instructions layered on top of the agent's own system prompt.
     public var instructions: String?
@@ -327,8 +354,11 @@ public struct AgentRequestOptions: Codable, Hashable, Sendable {
     public var title: String?
     /// Hermes profile to run on (`/p/<profile>/`); nil = the default profile.
     public var profile: String?
+    /// Prior turns to send with the run instead of letting the backend load
+    /// its own history (copied conversations only).
+    public var conversationHistory: [HistoryTurn]?
 
-    public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil, teammateID: UUID? = nil, title: String? = nil, profile: String? = nil) {
+    public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil, teammateID: UUID? = nil, title: String? = nil, profile: String? = nil, conversationHistory: [HistoryTurn]? = nil) {
         self.sessionID = sessionID
         self.instructions = instructions
         self.model = model
@@ -336,6 +366,7 @@ public struct AgentRequestOptions: Codable, Hashable, Sendable {
         self.teammateID = teammateID
         self.title = title
         self.profile = profile
+        self.conversationHistory = conversationHistory
     }
 }
 

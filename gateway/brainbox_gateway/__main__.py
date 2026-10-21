@@ -37,7 +37,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.cmd == "new-device":
         token = secrets.token_urlsafe(32)
-        print("Device token (paste into the app, Settings → Connection → Hermes; shown once):")
+        print("Device token (paste into the app, Settings → Hermes; shown once):")
         print(f"  {token}")
         print("Add this to the hermes-proxy config:")
         print("  [[devices]]")
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             print(f"OK · listen={pcfg.host}:{pcfg.port}{pcfg.prefix} upstream={pcfg.hermes_url} devices={len(pcfg.devices)} "
                   f"hermes_key={'found' if key else 'MISSING'} multiplex={pcfg.multiplex_profiles} "
-                  f"profile_admin={pcfg.profile_admin_enabled}")
+                  f"profile_admin={pcfg.profile_admin_enabled} job_delivery={','.join(pcfg.allowed_deliver)}")
             return 0 if key else 1
         hermes_proxy.serve(pcfg)
         return 0

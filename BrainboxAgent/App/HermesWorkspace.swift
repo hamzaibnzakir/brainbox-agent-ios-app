@@ -118,7 +118,8 @@ final class HermesWorkspace {
             provider: mate.provider,
             teammateID: mate.id,
             title: conversation?.title == Conversation.untitled ? nil : conversation?.title,
-            profile: mate.profile)
+            profile: mate.profile,
+            conversationHistory: conversation.flatMap { $0.carriesHistory ? CarriedHistory.build(from: $0) : nil })
     }
 
     // MARK: Runs

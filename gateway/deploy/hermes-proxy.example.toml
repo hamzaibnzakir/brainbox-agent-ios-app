@@ -30,3 +30,13 @@ hermes_bin = "/opt/hermes-src/venv/bin/hermes"
 multiplex = false
 # Allow admin devices to run `hermes profile create <validated-name>`.
 admin_enabled = false
+
+[jobs]
+# Where scheduled-job results may be delivered when the app creates or edits
+# a job. "local" keeps results in Hermes. Add "telegram" only if you want app-
+# created jobs to post through your existing Hermes Telegram gateway.
+allowed_deliver = ["local"]
+
+# Session safety (always on, not configurable): through this proxy the app can
+# only create, change, fork or run in its own `ios_` sessions. Telegram and all
+# other sessions are read-only (GET). X-Hermes-Session-* headers are dropped.

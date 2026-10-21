@@ -168,7 +168,7 @@ final class AppModel {
                     tokenProvider: { (try? credentials.read(.hermesToken)) ?? nil })
                 suite = .hermes(client: client)
             } else {
-                suite = ProviderSuite(agent: UnavailableAgentProvider(reason: "Add your Hermes URL and device token in Settings → Connection → Hermes."), vps: nil, terminal: nil, files: nil, logs: nil)
+                suite = ProviderSuite(agent: UnavailableAgentProvider(reason: "Add your Hermes URL and device token in Settings → Hermes."), vps: nil, terminal: nil, files: nil, logs: nil)
             }
         case .remote:
             if let url = settings.validatedBackendURL {

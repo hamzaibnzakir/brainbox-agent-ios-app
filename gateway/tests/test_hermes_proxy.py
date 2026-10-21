@@ -31,6 +31,8 @@ class FakeHermes:
                               "auth": request.headers.get("Authorization"),
                               "idem": request.headers.get("Idempotency-Key"),
                               "cookie": request.headers.get("Cookie"),
+                              "session_key": request.headers.get("X-Hermes-Session-Key"),
+                              "session_hdr": request.headers.get("X-Hermes-Session-Id"),
                               "body": (await request.text()) if request.can_read_body else ""})
 
         async def capabilities(request):
@@ -87,7 +89,7 @@ def make_cfg(tmp_path, upstream_url, **overrides):
     }
     for key, value in overrides.items():
         section, field = key.split("__")
-        raw[section][field] = value
+        raw.setdefault(section, {})[field] = value
     return hp.config_from_dict(raw)
 
 
@@ -336,3 +338,120 @@ def test_insecure_permissions(tmp_path):
     f.chmod(0o644)
     assert hp.insecure_permissions(str(f))
     assert not hp.insecure_permissions(str(tmp_path / "missing"))
+
+
+# --------------------------------------------------------------------------- session guard
+TELEGRAM_ID = "agent:main:telegram:dm:42"
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("POST", f"/api/sessions/{TELEGRAM_ID}/fork", {"title": "copy"}),
+    ("POST", "/api/sessions/api_1700000000_abcd1234/fork", {}),
+    ("POST", f"/api/sessions/{TELEGRAM_ID}/chat", {"message": "hi"}),
+    ("POST", f"/api/sessions/{TELEGRAM_ID}/chat/stream", {"message": "hi"}),
+    ("PATCH", f"/api/sessions/{TELEGRAM_ID}", {"title": "renamed"}),
+    ("DELETE", f"/api/sessions/{TELEGRAM_ID}", None),
+    ("POST", "/v1/runs", {"input": "hi", "session_id": TELEGRAM_ID}),
+    ("POST", "/v1/runs", {"input": "hi", "session_id": "ios_"}),
+    ("POST", "/v1/runs", {"input": "hi", "previous_response_id": "resp_1"}),
+    ("POST", "/api/sessions", {"id": "my-session"}),
+    ("POST", "/api/sessions", {}),
+    ("POST", "/api/sessions", {"id": "ios_abc", "source": "telegram"}),
+])
+async def test_writes_to_non_app_sessions_never_reach_hermes(make_client, method, path, body):
+    client, fake, cfg = await make_client()
+    kwargs = {"headers": auth()}
+    if body is not None:
+        kwargs["json"] = body
+    r = await client.request(method, "/hermes" + path, **kwargs)
+    assert r.status == 403
+    assert fake.seen == []  # refused before anything was forwarded
+    audit = [json.loads(line) for line in open(cfg.audit_log)]
+    assert audit[-1]["action"] == "guard" and audit[-1]["device"] == "David's iPhone"
+
+
+@pytest.mark.parametrize("method,path,body", [
+    ("POST", "/api/sessions", {"id": "ios_0123456789abcdef", "source": "api_server", "title": "t"}),
+    ("POST", "/api/sessions", {"id": "ios_0123456789abcdef"}),
+    ("POST", "/api/sessions/ios_0123456789abcdef/fork", {"title": "t"}),
+    ("PATCH", "/api/sessions/ios_0123456789abcdef", {"title": "t"}),
+    ("DELETE", "/api/sessions/ios_0123456789abcdef", None),
+    ("POST", "/v1/runs", {"input": "hi", "session_id": "ios_0123456789abcdef",
+                          "conversation_history": [{"role": "user", "content": "earlier"}]}),
+    ("POST", "/v1/runs", {"input": "hi"}),
+])
+async def test_writes_to_app_sessions_are_forwarded(make_client, method, path, body):
+    client, fake, _ = await make_client()
+    kwargs = {"headers": auth()}
+    if body is not None:
+        kwargs["json"] = body
+    r = await client.request(method, "/hermes" + path, **kwargs)
+    assert r.status in (200, 202)
+    assert fake.seen[-1]["path"] == path
+    if body is not None:
+        assert json.loads(fake.seen[-1]["body"]) == body
+
+
+async def test_telegram_sessions_stay_readable(make_client):
+    client, fake, _ = await make_client()
+    for path in (f"/api/sessions/{TELEGRAM_ID}", f"/api/sessions/{TELEGRAM_ID}/messages", "/api/sessions?source=telegram"):
+        r = await client.get("/hermes" + path, headers=auth())
+        assert r.status == 200
+    assert [s["method"] for s in fake.seen] == ["GET", "GET", "GET"]
+
+
+async def test_session_selection_headers_are_dropped(make_client):
+    client, fake, _ = await make_client()
+    r = await client.post("/hermes/v1/runs", json={"input": "hi"},
+                          headers={**auth(), "X-Hermes-Session-Key": TELEGRAM_ID, "X-Hermes-Session-Id": TELEGRAM_ID})
+    assert r.status == 202
+    assert fake.seen[-1]["session_key"] is None and fake.seen[-1]["session_hdr"] is None
+
+
+async def test_malformed_body_on_guarded_route_is_rejected(make_client):
+    client, fake, _ = await make_client()
+    r = await client.post("/hermes/v1/runs", data=b"not json", headers={**auth(), "Content-Type": "application/json"})
+    assert r.status == 400
+    assert (await r.json())["error"]["code"] == "invalid_json"
+    assert fake.seen == []
+
+
+async def test_job_delivery_defaults_to_local_only(make_client):
+    client, fake, _ = await make_client()
+    job = {"name": "n", "schedule": "every 1h", "prompt": "p"}
+    r = await client.post("/hermes/api/jobs", json={**job, "deliver": "telegram"}, headers=auth())
+    assert r.status == 403 and (await r.json())["error"]["code"] == "delivery_not_allowed"
+    r = await client.patch("/hermes/api/jobs/0123456789ab", json={"deliver": "telegram"}, headers=auth())
+    assert r.status == 403
+    assert fake.seen == []
+    r = await client.post("/hermes/api/jobs", json={**job, "deliver": "local"}, headers=auth())
+    assert r.status == 200
+    r = await client.post("/hermes/api/jobs", json=job, headers=auth())
+    assert r.status == 200
+    r = await client.post("/hermes/api/jobs/0123456789ab/pause", json={}, headers=auth())
+    assert r.status == 200
+
+
+async def test_job_delivery_can_be_widened_deliberately(make_client):
+    client, fake, _ = await make_client(jobs__allowed_deliver=["local", "telegram"])
+    r = await client.post("/hermes/api/jobs", json={"name": "n", "schedule": "every 1h", "prompt": "p", "deliver": "telegram"},
+                          headers=auth())
+    assert r.status == 200
+    assert json.loads(fake.seen[-1]["body"])["deliver"] == "telegram"
+
+
+def test_allowed_deliver_is_validated(tmp_path):
+    base = {"proxy": {"hermes_env_file": "/x"}, "devices": [{"name": "a", "token_sha256": "a" * 64}]}
+    assert hp.config_from_dict(base).allowed_deliver == ("local",)
+    for bad in ("local", ["Local Disk"], [1], ["x" * 65]):
+        with pytest.raises(ValueError):
+            hp.config_from_dict({**base, "jobs": {"allowed_deliver": bad}})
+
+
+def test_guard_is_a_pure_function():
+    assert hp.guard_violation("GET", f"/api/sessions/{TELEGRAM_ID}", None) is None
+    assert hp.guard_violation("POST", "/v1/runs", b'{"input":"x","session_id":"ios_ab"}') is None
+    assert hp.guard_violation("POST", "/v1/runs", b'{"input":"x","session_id":"telegram:1"}')[1] == "session_read_only"
+    assert hp.guard_violation("POST", "/v1/runs", b"[]")[1] == "invalid_json"
+    assert hp.guard_violation("POST", "/v1/runs/run_1/stop", b"{}") is None
+    assert hp.guard_violation("POST", "/v1/runs/run_1/approval", b'{"choice":"once"}') is None

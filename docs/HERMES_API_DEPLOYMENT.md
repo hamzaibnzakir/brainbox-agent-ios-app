@@ -29,128 +29,164 @@ entry → done; no Hermes key rotation needed.
 
 ---
 
-## Step 0 — Back up (2 min)
+Run these as root over SSH, in order, and stop at any failed check. **Do
+stages 4 and 6 yourself, not through the Hermes agent:** an agent that
+restarts its own gateway kills itself mid-reply, and a device token printed
+in a Telegram chat would end up in your chat history and `state.db`.
+
+## Stage 0 — Preflight (read-only)
+
+Stop if `API_SERVER_` lines already exist, or if `config.yaml` has an
+`api_server` block that disables it.
 
 ```bash
-sudo cp -a /root/.hermes/.env /root/.hermes/.env.bak-$(date +%F)
-sudo cp -a /root/.hermes/config.yaml /root/.hermes/config.yaml.bak-$(date +%F)
-systemctl status hermes-gateway --no-pager | head -5   # note it's active
+systemctl is-active hermes-gateway                              # active
+ss -ltnp | grep -E ':(8642|8766|8444)\b' || echo "ports free"     # ports free
+stat -c '%a %U %n' /root/.hermes/.env                           # note mode
+grep -c '^API_SERVER_' /root/.hermes/.env                       # 0
+grep -n 'api_server' /root/.hermes/config.yaml || echo "no api_server block"
+python3 --version && python3 -c 'import venv, ensurepip' && echo venv-ok   # 3.10+
+command -v rsync git openssl curl
 ```
 
-## Step 1 — Enable the Hermes API server (loopback only)
+## Stage 1 — Backups
 
-Hermes ships an API server that is **off by default**. Turn it on, bound to
-loopback, with a strong key. Append to `/root/.hermes/.env`:
+`state.db` is not copied because nothing touches it.
 
 ```bash
-KEY=$(openssl rand -hex 32)
-sudo tee -a /root/.hermes/.env >/dev/null <<EOF
-API_SERVER_ENABLED=true
-API_SERVER_HOST=127.0.0.1
-API_SERVER_PORT=8642
-API_SERVER_KEY=$KEY
-EOF
+install -d -m 700 /root/brainbox-backup
+TS=$(date +%F-%H%M)
+cp -a /root/.hermes/.env        /root/brainbox-backup/hermes.env.$TS
+cp -a /root/.hermes/config.yaml /root/brainbox-backup/config.yaml.$TS
+```
+
+## Stage 2 — Tailscale on the VPS
+
+`--accept-dns=false` leaves `/etc/resolv.conf` alone, so Telegram's DNS is not
+affected. No exit node, no subnet routes. In the Tailscale admin console → DNS,
+turn on **MagicDNS** and **HTTPS Certificates**.
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+tailscale up --accept-dns=false        # open the printed login URL and approve
+tailscale status --self                # note the MagicDNS name: <vps-host>.<tailnet>.ts.net
+```
+
+## Stage 3 — API server settings (no effect until Stage 4)
+
+At Hermes 284d220 the API server starts when a usable `API_SERVER_KEY`
+(16+ characters, not a placeholder) is in the environment
+(`gateway/config_env.py`, `_api_server`). The key is generated and appended
+without ever being printed. Don't set `API_SERVER_CORS_ORIGINS`; never bind to
+`0.0.0.0`.
+
+```bash
+umask 077
+KEY="$(openssl rand -hex 32)"
+printf '\n# Brainbox iOS: Hermes API server, loopback only (added %s)\nAPI_SERVER_HOST=127.0.0.1\nAPI_SERVER_PORT=8642\nAPI_SERVER_KEY=%s\n' "$(date -I)" "$KEY" >> /root/.hermes/.env
 unset KEY
-sudo chmod 600 /root/.hermes/.env
+chmod 600 /root/.hermes/.env
+grep -c '^API_SERVER_' /root/.hermes/.env                                          # 3
+awk -F= '/^API_SERVER_KEY=/{print "key length:", length($2)}' /root/.hermes/.env   # 64
 ```
 
-Don't set `API_SERVER_CORS_ORIGINS` (the app isn't a browser). Never bind to
-`0.0.0.0`, and never publish port 8642.
+## Stage 4 — One Hermes restart (you, at a quiet moment)
 
-## Step 2 — Restart Hermes once (your decision, your timing)
+The API server only starts with the gateway process (`/platform resume` only
+re-queues platforms that were enabled at startup), so one restart is
+unavoidable. It takes Telegram offline for a few seconds.
 
-The API server starts with the Hermes gateway process, so this one restart
-is unavoidable. **It briefly disconnects the Telegram bot (a few seconds);**
-pending Telegram updates are delivered when it reconnects. Pick a quiet
-moment:
-
-```bash
-sudo systemctl restart hermes-gateway
-sleep 5
-systemctl is-active hermes-gateway                  # → active
-journalctl -u hermes-gateway -n 50 --no-pager | grep -iE "telegram|api.server|error"
-```
-
-Check Telegram still replies (send your bot a message). Then check the API:
+Send **`/restart`** to your bot in Telegram: Hermes drains running work,
+restarts under systemd and confirms in the chat. Fallback over SSH:
+`systemctl restart hermes-gateway`. Then:
 
 ```bash
-KEY=$(sudo grep ^API_SERVER_KEY= /root/.hermes/.env | cut -d= -f2-)
-curl -s http://127.0.0.1:8642/health
-curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8642/v1/capabilities | head -c 600; echo
+systemctl is-active hermes-gateway                                   # active
+ss -ltnp | grep ':8642'                                              # 127.0.0.1:8642 ONLY
+curl -s http://127.0.0.1:8642/health; echo                           # status ok
+KEY="$(awk -F= '/^API_SERVER_KEY=/{print $2}' /root/.hermes/.env)"
+curl -s -H "Authorization: Bearer $KEY" http://127.0.0.1:8642/v1/capabilities | python3 -m json.tool | head -40
 unset KEY
+journalctl -u hermes-gateway --since "-10 min" --no-pager | grep -iE "api.?server|telegram|error" | tail -20
 ```
 
-**Rollback:** restore `.env.bak-*` and restart again. Nothing else changed.
+Send your bot a normal Telegram message — it must reply as before.
 
-## Step 3 — Install the Brainbox proxy (starts nothing)
-
-From a checkout of this repo on the VPS:
+## Stage 5 — Install the Brainbox proxy (starts nothing)
 
 ```bash
-sudo ./gateway/deploy/install.sh
+git clone --branch feature/hermes-ios https://github.com/hamzaibnzakir/brainbox-agent-ios-app /opt/brainbox-src
+cd /opt/brainbox-src/gateway && git log -1 --oneline        # the reviewed commit
+bash deploy/install.sh
 ```
 
-It installs into `/opt/brainbox-gateway/venv` with the `[proxy]` extra,
-copies `hermes-proxy.example.toml` → `/etc/brainbox-gateway/hermes-proxy.toml`
-(mode 600) and the `brainbox-hermes-proxy.service` unit. It does **not**
-enable or start anything, and doesn't touch Hermes.
+`install.sh` installs into `/opt/brainbox-gateway/venv` with the `[proxy]`
+extra, copies `hermes-proxy.example.toml` → `/etc/brainbox-gateway/hermes-proxy.toml`
+(mode 600, only if missing) and installs both unit files. It enables or starts
+nothing and doesn't touch Hermes.
 
-## Step 4 — Create a device token for your iPhone
+## Stage 6 — Device token and proxy config (you, over SSH)
 
 ```bash
-sudo /opt/brainbox-gateway/venv/bin/brainbox-gateway new-device --name "David's iPhone"
+/opt/brainbox-gateway/venv/bin/brainbox-gateway new-device --name "David's iPhone"
+# save the printed token in your password manager — it is shown once
+nano /etc/brainbox-gateway/hermes-proxy.toml
 ```
 
-It prints the **token** (shown once — this goes into the app) and its
-**sha256**. Put only the sha256 into `/etc/brainbox-gateway/hermes-proxy.toml`
-under `[[devices]]`, replacing the placeholder. Keep `admin = false` unless
-you want the phone to create Hermes profiles (also needs
-`[profiles] admin_enabled = true`).
-
-Validate (it refuses the placeholder, wrong permissions, a missing key, or a
-non-loopback Hermes URL):
+Replace the example `[[devices]]` entry with the printed one. Keep
+`admin = false`, `[profiles] multiplex = false`, `admin_enabled = false` and
+`[jobs] allowed_deliver = ["local"]`. Then validate — it refuses the
+placeholder hash, group/world-readable config or key files, a missing key, and
+a non-loopback `hermes_url`:
 
 ```bash
-sudo /opt/brainbox-gateway/venv/bin/brainbox-gateway hermes-proxy-check --config /etc/brainbox-gateway/hermes-proxy.toml
+/opt/brainbox-gateway/venv/bin/brainbox-gateway hermes-proxy-check --config /etc/brainbox-gateway/hermes-proxy.toml
+# OK · listen=127.0.0.1:8766/hermes upstream=http://127.0.0.1:8642 devices=1 hermes_key=found multiplex=False profile_admin=False job_delivery=local
 ```
 
-## Step 5 — Start the proxy
+## Stage 7 — Start and check the proxy
 
 ```bash
-sudo systemctl enable --now brainbox-hermes-proxy
-systemctl is-active brainbox-hermes-proxy
-curl -s -H "Authorization: Bearer <device token>" http://127.0.0.1:8766/hermes/brainbox/info
+systemctl enable --now brainbox-hermes-proxy
+ss -ltnp | grep ':8766'                                         # 127.0.0.1:8766 ONLY
+read -rs -p "Device token: " T; echo
+curl -s -H "Authorization: Bearer $T" http://127.0.0.1:8766/hermes/brainbox/info; echo
+curl -s -o /dev/null -w '%{http_code}\n' -H "Authorization: Bearer $T" http://127.0.0.1:8766/hermes/v1/capabilities   # 200
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8766/hermes/v1/capabilities                              # 401
+curl -s -o /dev/null -w '%{http_code}\n' -X POST -H "Authorization: Bearer $T" -H 'Content-Type: application/json' \
+  -d '{"title":"x"}' http://127.0.0.1:8766/hermes/api/sessions/not-an-app-session/fork                             # 403
+unset T
 ```
 
 This service is independent of `hermes-gateway`: restarting or stopping it
 never touches Hermes or Telegram.
 
-## Step 6 — Publish privately over Tailscale
-
-The VPS needs Tailscale (the earlier inspection found none — install it and
-join your tailnet first, and install Tailscale on the iPhone). Then:
+## Stage 8 — Publish inside your tailnet only
 
 ```bash
-sudo tailscale serve --bg --https=8444 http://127.0.0.1:8766
-tailscale serve status
+tailscale serve --bg --https=8444 http://127.0.0.1:8766
+tailscale serve status            # https://<vps-host>.<tailnet>.ts.net:8444 -> http://127.0.0.1:8766
 ```
 
-Use `serve`, **not** `funnel` — funnel would put it on the public internet.
+Use `serve`, **never** `funnel` — funnel would put it on the public internet.
 
-## Step 7 — Connect the app
+## Stage 9 — Connect the app
 
+Install Tailscale on the iPhone and sign in to the same tailnet. In Brainbox,
 Settings → **Hermes**:
 
-1. URL: `https://<vps-host>.<tailnet>.ts.net:8444/hermes`
-2. Device token: the token from step 4 (stored in the iPhone Keychain only)
-3. **Test connection** — the app reads `/v1/capabilities` and shows which
-   features your server supports. Only a fully compatible result shows the
-   “Hermes connected” sheet.
-4. **Use Hermes as the backend.**
+1. URL: `https://<vps-host>.<tailnet>.ts.net:8444/hermes` → **Save URL**
+2. Device token from Stage 6 → **Save token** (Keychain only, this device)
+3. **Test connection** — reads `/v1/capabilities`; only a compatible server
+   shows the “Hermes connected” sheet
+4. **Use Hermes now**
 
 Your Telegram conversations appear under Chat → **All sessions** as
-**read-only** transcripts. “Continue in app” makes an explicit fork into a
-separate `ios_…` session; replies never go to Telegram.
+**read-only** transcripts. “Continue in the app” makes a local copy that
+re-sends the transcript with each message (Hermes never stores that history)
+in a separate `ios_…` session. The Telegram session is only read — never
+forked, written or ended — and replies never go to Telegram. The proxy
+enforces this too: it refuses any write to a session that isn't `ios_…`.
 
 ## Revoking a phone
 
@@ -159,9 +195,12 @@ Delete its `[[devices]]` entry, then `sudo systemctl restart brainbox-hermes-pro
 ## Turning it all off
 
 ```bash
-sudo systemctl disable --now brainbox-hermes-proxy
-sudo tailscale serve --https=8444 off
-# optional: remove the API_SERVER_* lines from /root/.hermes/.env and restart hermes-gateway
+tailscale serve --https=8444 off
+systemctl disable --now brainbox-hermes-proxy
+# optional, to turn the Hermes API server off again (Telegram offline for a few seconds):
+cp -a /root/brainbox-backup/hermes.env.<TS> /root/.hermes/.env    # then /restart in Telegram
+# optional, remove the proxy completely:
+rm -rf /opt/brainbox-gateway /etc/brainbox-gateway /etc/systemd/system/brainbox-*.service && systemctl daemon-reload
 ```
 
 ---
@@ -176,6 +215,12 @@ sudo tailscale serve --https=8444 off
 * The proxy forwards only an allow-list of routes (runs, run events/status/
   stop/steer/approval, sessions, jobs, capabilities, models, skills,
   toolsets, health). Everything else is 404.
+* **Session guard:** through the proxy the app can only create, change, fork,
+  chat in or run against its own `ios_…` sessions. Writes to any other session
+  (Telegram included) are refused with 403 before reaching Hermes and are
+  written to the audit log. `X-Hermes-Session-*` headers are dropped, and
+  `previous_response_id` is refused, so a run can't be steered into another
+  session. Job delivery is limited to `[jobs] allowed_deliver` (default `local`).
 * `hermes.verified` in the older WebSocket gateway stays `false` until you have
   reviewed the probe output yourself — this proxy path doesn't change that.
 * Hermes profiles are **configuration presets, not sandboxes**: they share the
@@ -191,7 +236,7 @@ missing is turned off in the UI instead of failing later.
 | `POST /v1/runs` | Send a message / teammate run | **yes** |
 | `GET /v1/runs/{id}/events` (SSE) | Live streaming text, tool cards, reasoning | **yes** |
 | `GET /v1/runs/{id}` | Recovery after disconnect (polling) | **yes** |
-| `/api/sessions` (+ messages, fork) | Session browser, Telegram transcripts, fork-to-continue | **yes** |
+| `/api/sessions` (+ messages) | Session browser, read-only Telegram transcripts, copy-to-continue | **yes** |
 | `POST /v1/runs/{id}/approval` | Approval sheet | optional |
 | `POST /v1/runs/{id}/steer` | Steer a running agent | optional |
 | `POST /v1/runs/{id}/stop` | Stop button | optional |

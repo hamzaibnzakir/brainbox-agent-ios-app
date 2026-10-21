@@ -163,6 +163,159 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(store.conversations(for: a).count, 1)
         XCTAssertNotEqual(store.conversations(for: a).first?.id, store.conversations(for: b).first?.id)
     }
+
+    // MARK: P0 — Telegram copy, own-session reopen, early Stop
+
+    private func hermesServer(runGate: AppTestGate? = nil) -> MockHTTPTransport {
+        let transport = MockHTTPTransport()
+        let runCount = Locked(0)
+        transport.on("POST /hermes/api/sessions") { _ in MockHTTPTransport.json(#"{"session":{"id":"ios_x","source":"api_server"}}"#, status: 201) }
+        transport.on("POST /hermes/v1/runs") { _ in
+            await runGate?.wait()
+            let n = runCount.withLock { $0 += 1; return $0 }
+            return MockHTTPTransport.json(#"{"run_id":"run_\#(n)","status":"started"}"#, status: 202)
+        }
+        for n in 1...3 {
+            transport.onStream("GET /hermes/v1/runs/run_\(n)/events") { _ in
+                MockHTTPTransport.sse(["data: {\"event\":\"run.completed\",\"output\":\"Reply \(n)\"}\n\n"])
+            }
+        }
+        return transport
+    }
+
+    private func hermesProvider(_ transport: MockHTTPTransport) -> HermesAgentProvider {
+        let client = HermesAPIClient(configuration: HermesConfiguration(baseURL: URL(string: "https://vps.example.ts.net/hermes")!, pollInterval: 0.01),
+                                     transport: transport, tokenProvider: { "device-token-0123456789" })
+        return HermesAgentProvider(client: client, pause: { _ in })
+    }
+
+    private func body(_ request: HTTPRequest) throws -> JSONValue {
+        try JSONDecoder().decode(JSONValue.self, from: request.body ?? Data())
+    }
+
+    func testContinuingATelegramChatIsACopyThatNeverTouchesTelegram() async throws {
+        let transport = hermesServer()
+        let (store, _) = makeStore(provider: hermesProvider(transport))
+        let workspace = HermesWorkspace(teammateURL: nil, runsURL: nil)
+        store.requestOptions = { workspace.requestOptions(for: $0) }
+        let telegramID = "agent:main:telegram:dm:4242"
+        let telegram = HermesSession(id: telegramID, source: "telegram", title: "Shop chat")
+        let transcript = [HermesMessage(role: "user", content: "What is my store called?"),
+                          HermesMessage(role: "tool", content: "lookup output", toolName: "web_search"),
+                          HermesMessage(role: "assistant", content: "It is called Lymphora.")]
+
+        store.continueAsCopy(of: telegram, transcript: transcript, teammateID: workspace.activeTeammateID)
+        let copy = try XCTUnwrap(store.current)
+        XCTAssertTrue(copy.carriesHistory)
+        XCTAssertNil(copy.backendSessionID, "a copy gets its own ios_ session on first send")
+        XCTAssertEqual(copy.origin, "telegram")
+        XCTAssertEqual(copy.messages.map(\.content), ["What is my store called?", "It is called Lymphora."])
+        XCTAssertTrue(transport.requests.isEmpty, "copying makes no request at all")
+
+        store.send("And the product?")
+        try await waitUntilIdle(store)
+        store.send("Thanks")
+        try await waitUntilIdle(store)
+
+        let runs = transport.requests(matching: "POST /hermes/v1/runs")
+        XCTAssertEqual(runs.count, 2)
+        let appSession = HermesAgentProvider.sessionID(for: copy.id)
+        let first = try body(runs[0]), second = try body(runs[1])
+        XCTAssertEqual(first["session_id"]?.stringValue, appSession)
+        XCTAssertEqual(second["session_id"]?.stringValue, appSession)
+        guard case .array(let firstHistory)? = first["conversation_history"],
+              case .array(let secondHistory)? = second["conversation_history"] else { return XCTFail("history must be sent on every run") }
+        XCTAssertEqual(firstHistory.compactMap { $0["content"]?.stringValue }, ["What is my store called?", "It is called Lymphora."])
+        XCTAssertEqual(secondHistory.compactMap { $0["content"]?.stringValue },
+                       ["What is my store called?", "It is called Lymphora.", "And the product?", "Reply 1"])
+        XCTAssertEqual(store.current?.backendSessionID, appSession)
+
+        // Nothing addressed the Telegram session: no fork, no write, not even its id in a body.
+        for request in transport.requests {
+            XCTAssertFalse(request.url.absoluteString.contains(telegramID), "\(request.method) \(request.url)")
+            XCTAssertFalse(String(decoding: request.body ?? Data(), as: UTF8.self).contains(telegramID))
+            XCTAssertFalse(request.url.path.hasSuffix("/fork"))
+        }
+    }
+
+    func testReopeningAnOwnSessionRebindsWithoutCopyingOrForking() async throws {
+        let transport = hermesServer()
+        let (store, _) = makeStore(provider: hermesProvider(transport))
+        let workspace = HermesWorkspace(teammateURL: nil, runsURL: nil)
+        store.requestOptions = { workspace.requestOptions(for: $0) }
+        let own = HermesSession(id: "ios_0123456789abcdef0123456789abcdef", source: "api_server", title: "Earlier chat")
+
+        store.reopenOwnSession(own, transcript: [HermesMessage(role: "user", content: "hi"), HermesMessage(role: "assistant", content: "hello")],
+                               teammateID: workspace.activeTeammateID)
+        let conversation = try XCTUnwrap(store.current)
+        XCTAssertEqual(conversation.backendSessionID, own.id)
+        XCTAssertFalse(conversation.carriesHistory, "Hermes loads its own session history")
+
+        store.send("continue")
+        try await waitUntilIdle(store)
+        let run = try body(try XCTUnwrap(transport.requests(matching: "POST /hermes/v1/runs").first))
+        XCTAssertEqual(run["session_id"]?.stringValue, own.id)
+        XCTAssertNil(run["conversation_history"])
+        XCTAssertTrue(transport.requests(matching: "POST /hermes/api/sessions").isEmpty, "the session already exists")
+
+        // Opening it again selects the same local conversation instead of importing twice.
+        store.reopenOwnSession(own, transcript: [], teammateID: workspace.activeTeammateID)
+        XCTAssertEqual(store.conversations.filter { $0.backendSessionID == own.id }.count, 1)
+    }
+
+    func testStopTappedBeforeTheRunStartsStopsItOnTheServer() async throws {
+        let gate = AppTestGate()
+        let transport = hermesServer(runGate: gate)
+        transport.on("POST /hermes/v1/runs/run_1/stop") { _ in MockHTTPTransport.json(#"{"run_id":"run_1","status":"stopping"}"#) }
+        transport.onStream("GET /hermes/v1/runs/run_1/events") { _ in
+            MockHTTPTransport.sse(["data: {\"event\":\"run.cancelled\"}\n\n"])
+        }
+        let (store, _) = makeStore(provider: hermesProvider(transport))
+
+        store.send("count to 300")
+        let deadline = Date().addingTimeInterval(3)
+        while gate.arrivals == 0 && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+        store.stop()
+        try await Task.sleep(nanoseconds: 50_000_000)
+        gate.open()
+
+        try await waitUntilIdle(store)
+        let stopDeadline = Date().addingTimeInterval(3)
+        while transport.requests(matching: "POST /hermes/v1/runs/run_1/stop").isEmpty && Date() < stopDeadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs/run_1/stop").count, 1)
+        XCTAssertEqual(store.current?.messages.last?.state, .cancelled)
+    }
+}
+
+/// Holds a mock request open until the test releases it.
+final class AppTestGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var arrived = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    var arrivals: Int { lock.lock(); defer { lock.unlock() }; return arrived }
+
+    func wait() async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            lock.lock()
+            arrived += 1
+            if isOpen { lock.unlock(); continuation.resume(); return }
+            waiters.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func open() {
+        lock.lock()
+        isOpen = true
+        let pending = waiters
+        waiters = []
+        lock.unlock()
+        pending.forEach { $0.resume() }
+    }
 }
 
 @MainActor
