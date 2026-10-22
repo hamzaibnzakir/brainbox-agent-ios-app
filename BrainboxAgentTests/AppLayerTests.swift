@@ -68,17 +68,19 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(store.current?.messages.last?.state, .cancelled)
     }
 
-    func testConversationManagement() {
+    func testConversationManagement() async throws {
         let (store, _) = makeStore()
         store.newConversation()
         let first = store.currentID
         store.newConversation()
         XCTAssertEqual(store.currentID, first, "Empty conversations are reused")
         store.send("hello")
-        let id = try! XCTUnwrap(store.currentID)
+        let id = try XCTUnwrap(store.currentID)
         store.rename(id, to: "  Renamed  ")
         XCTAssertEqual(store.current?.title, "Renamed")
-        store.delete(id)
+        try await waitUntilIdle(store)
+        let result = try await store.deletePermanently(id)
+        XCTAssertEqual(result, .deviceOnly("Deleted. This chat was only stored on this device."))
         XCTAssertNil(store.conversations.first { $0.id == id })
     }
 
