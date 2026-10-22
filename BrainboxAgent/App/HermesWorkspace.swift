@@ -22,6 +22,10 @@ final class HermesWorkspace {
     private(set) var toolsets: [HermesToolset] = []
     private(set) var skills: [HermesSkill] = []
 
+    /// Scheduled jobs (Hermes cron). Lives here, not in a view, so a "run now"
+    /// being tracked keeps updating when you leave the screen and return.
+    @ObservationIgnored let scheduledJobs = ScheduledJobsModel()
+
     @ObservationIgnored private let teammateStore: TeammateStore
     @ObservationIgnored private let runCache: JSONFileCache<[RunRecord]>?
     @ObservationIgnored private var activityTask: Task<Void, Never>?
@@ -31,6 +35,7 @@ final class HermesWorkspace {
         teammateStore = TeammateStore(url: teammateURL)
         runCache = runsURL.map { JSONFileCache<[RunRecord]>(url: $0) }
         teammates = teammateStore.load()
+        scheduledJobs.clientProvider = { [weak self] in self?.client }
         runs = (runCache?.load() ?? []).sorted { $0.createdAt > $1.createdAt }
         if !teammates.contains(where: { $0.id == activeTeammateID }) {
             activeTeammateID = teammates.first?.id ?? Teammate.mainAssistantID

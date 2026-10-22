@@ -329,7 +329,7 @@ struct SessionTranscriptView: View {
     }
 }
 
-private struct TranscriptBubble: View {
+struct TranscriptBubble: View {
     let message: HermesMessage
     var body: some View {
         switch message.role {

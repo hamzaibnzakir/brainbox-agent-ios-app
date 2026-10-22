@@ -48,6 +48,20 @@ final class CriticalPathUITests: XCTestCase {
         }
     }
 
+    func testScheduledTasksScreenIsHonestWithoutHermes() throws {
+        app.buttons["tab.tasks"].tap()
+        let scheduled = app.buttons["tasks.scheduled"]
+        XCTAssertTrue(scheduled.waitForExistence(timeout: 8))
+        scheduled.tap()
+        // Mock mode has no Hermes connection: the screen says so instead of showing fake jobs.
+        let unavailable = app.staticTexts["Scheduled tasks unavailable"]
+        XCTAssertTrue(unavailable.waitForExistence(timeout: 8))
+        let refresh = app.buttons["jobs.refresh"]
+        XCTAssertTrue(refresh.waitForExistence(timeout: 5))
+        refresh.tap()
+        XCTAssertTrue(unavailable.waitForExistence(timeout: 5))
+    }
+
     func testTerminalRunsMockCommand() throws {
         app.buttons["tab.vps"].tap()
         let terminal = app.buttons["vps.terminal"]

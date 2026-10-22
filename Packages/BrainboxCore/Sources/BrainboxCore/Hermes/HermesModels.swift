@@ -622,11 +622,24 @@ public struct HermesJob: Decodable, Hashable, Sendable, Identifiable {
     public var nextRun: String?
     public var lastRun: String?
     public var lastStatus: String?
+    /// Hermes' operator-facing state: scheduled, paused, completed (retired one-shot) or error.
+    public var state: String?
+    public var lastError: String?
+    public var lastDeliveryError: String?
+    /// Consecutive failed runs (delivery failures don't count).
+    public var failureStreak: Int
+    /// Set by "run now" until that run finishes (`trigger_job` → `mark_job_run`).
+    public var manualRunAt: String?
+    /// Newest attempt from Hermes' execution ledger (`cron/executions.db`).
+    /// Only `GET /api/jobs` (the list) includes it, not `GET /api/jobs/{id}`.
+    public var latestExecution: HermesJobExecution?
     public var raw: [String: JSONValue]
 
     public init(id: String, name: String, prompt: String = "", schedule: String = "", deliver: String? = nil,
                 enabled: Bool = true, paused: Bool = false, nextRun: String? = nil, lastRun: String? = nil,
-                lastStatus: String? = nil, raw: [String: JSONValue] = [:]) {
+                lastStatus: String? = nil, state: String? = nil, lastError: String? = nil, lastDeliveryError: String? = nil,
+                failureStreak: Int = 0, manualRunAt: String? = nil, latestExecution: HermesJobExecution? = nil,
+                raw: [String: JSONValue] = [:]) {
         self.id = id
         self.name = name
         self.prompt = prompt
@@ -637,6 +650,12 @@ public struct HermesJob: Decodable, Hashable, Sendable, Identifiable {
         self.nextRun = nextRun
         self.lastRun = lastRun
         self.lastStatus = lastStatus
+        self.state = state
+        self.lastError = lastError
+        self.lastDeliveryError = lastDeliveryError
+        self.failureStreak = failureStreak
+        self.manualRunAt = manualRunAt
+        self.latestExecution = latestExecution
         self.raw = raw
     }
 
@@ -662,11 +681,64 @@ public struct HermesJob: Decodable, Hashable, Sendable, Identifiable {
         schedule = text("schedule_display", "schedule", "cron") ?? ""
         deliver = text("deliver", "delivery")
         enabled = raw["enabled"]?.boolValue ?? true
-        paused = raw["paused"]?.boolValue ?? (raw["state"]?.stringValue == "paused")
+        state = raw["state"]?.stringValue
+        paused = raw["paused"]?.boolValue ?? (state == "paused")
         nextRun = text("next_run_at", "next_run")
         lastRun = text("last_run_at", "last_run")
         lastStatus = text("last_status", "last_result")
+        lastError = raw["last_error"]?.stringValue
+        lastDeliveryError = raw["last_delivery_error"]?.stringValue
+        failureStreak = raw["failure_streak"]?.intValue ?? 0
+        manualRunAt = raw["manual_run_at"]?.stringValue
+        if case .object(let execution)? = raw["latest_execution"] {
+            latestExecution = HermesJobExecution(raw: execution)
+        } else {
+            latestExecution = nil
+        }
     }
+}
+
+/// One attempt from Hermes' cron execution ledger. Statuses (Hermes 284d220,
+/// `cron/executions.py`): claimed → running → completed | failed | unknown
+/// (`unknown` = the worker vanished before recording an end). Terminal
+/// states are immutable on the server.
+public struct HermesJobExecution: Hashable, Sendable, Identifiable {
+    public enum Status: String, Sendable {
+        case claimed, running, completed, failed, unknown
+    }
+
+    public var id: String
+    public var jobID: String?
+    public var status: Status
+    public var rawStatus: String
+    public var claimedAt: String?
+    public var startedAt: String?
+    public var finishedAt: String?
+    public var error: String?
+    public var deliveryOutcome: String?
+
+    public init(id: String, jobID: String? = nil, status: String, claimedAt: String? = nil, startedAt: String? = nil,
+                finishedAt: String? = nil, error: String? = nil, deliveryOutcome: String? = nil) {
+        self.id = id
+        self.jobID = jobID
+        self.rawStatus = status
+        self.status = Status(rawValue: status) ?? .unknown
+        self.claimedAt = claimedAt
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.error = error
+        self.deliveryOutcome = deliveryOutcome
+    }
+
+    init?(raw: [String: JSONValue]) {
+        guard let id = raw["id"]?.stringValue, !id.isEmpty else { return nil }
+        self.init(id: id, jobID: raw["job_id"]?.stringValue, status: raw["status"]?.stringValue ?? "unknown",
+                  claimedAt: raw["claimed_at"]?.stringValue, startedAt: raw["started_at"]?.stringValue,
+                  finishedAt: raw["finished_at"]?.stringValue, error: raw["error"]?.stringValue,
+                  deliveryOutcome: raw["delivery_outcome"]?.stringValue)
+    }
+
+    public var isTerminal: Bool { status == .completed || status == .failed || status == .unknown }
 }
 
 public struct HermesJobDraft: Encodable, Hashable, Sendable {
