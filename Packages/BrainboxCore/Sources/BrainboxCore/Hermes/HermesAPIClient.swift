@@ -93,16 +93,25 @@ public final class HermesAPIClient: @unchecked Sendable {
         let data = try body.map { try JSONEncoder().encode($0) }
         let request = HTTPRequest(method: method, url: url(path, query: query), headers: headers(json: body != nil, extra: extra),
                                   body: data, timeout: timeout ?? configuration.requestTimeout)
-        let response: HTTPResponse
-        do {
-            response = try await transport.send(request)
-        } catch {
-            throw error.asAgentError
-        }
+        let response = try await send(request)
         guard (200..<300).contains(response.status) else {
             throw Self.error(status: response.status, body: response.body)
         }
         return response
+    }
+
+    /// Sends without checking the status (callers that need to tell error bodies apart).
+    func send(_ request: HTTPRequest) async throws -> HTTPResponse {
+        do {
+            return try await transport.send(request)
+        } catch {
+            throw error.asAgentError
+        }
+    }
+
+    func unchecked(_ method: String, _ path: String, query: [String: String] = [:], timeout: TimeInterval? = nil) async throws -> HTTPResponse {
+        try await send(HTTPRequest(method: method, url: url(path, query: query), headers: headers(json: false),
+                                   body: nil, timeout: timeout ?? configuration.requestTimeout))
     }
 
     func decode<T: Decodable>(_ type: T.Type, from response: HTTPResponse) throws -> T {

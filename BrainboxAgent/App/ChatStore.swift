@@ -26,6 +26,16 @@ final class ChatStore {
     private(set) var approvalSignal = 0
     @ObservationIgnored private var resumeTasks: [UUID: Task<Void, Never>] = [:]
 
+    // Archive / permanent delete (server-confirmed; see "Lifecycle" below).
+    /// The Hermes client for chat management (always the default profile), or
+    /// nil when not connected to Hermes.
+    @ObservationIgnored var lifecycleClient: () -> HermesAPIClient? = { nil }
+    /// Archived conversations on the server (including ones with no copy here).
+    private(set) var serverArchived: [BrainboxAppSession] = []
+    private(set) var archiveSyncError: String?
+    /// Conversations with an archive / restore / delete request in flight.
+    private(set) var busyConversations: Set<UUID> = []
+
     init(store: ConversationStore, provider: @escaping () -> AgentProvider, isOnline: @escaping () -> Bool) {
         self.store = store
         self.provider = provider
@@ -42,7 +52,7 @@ final class ChatStore {
         } catch {
             loadError = "Saved conversations could not be read."
         }
-        currentID = conversations.first?.id
+        currentID = conversations.first { !$0.isArchived }?.id
     }
 
     var current: Conversation? {
@@ -68,7 +78,7 @@ final class ChatStore {
         stopIfNeeded()
         let teammate = activeTeammateID()
         // Reuse an existing empty conversation instead of piling them up.
-        if let empty = conversations.first(where: { $0.messages.isEmpty && $0.teammateID == teammate }) {
+        if let empty = conversations.first(where: { $0.messages.isEmpty && !$0.isArchived && $0.teammateID == teammate }) {
             currentID = empty.id
             return
         }
@@ -79,8 +89,14 @@ final class ChatStore {
 
     /// Conversations that belong to a teammate (untagged ones belong to the main assistant).
     func conversations(for teammateID: UUID) -> [Conversation] {
-        conversations.filter { ($0.teammateID ?? Teammate.mainAssistantID) == teammateID }
+        conversations.filter { !$0.isArchived && ($0.teammateID ?? Teammate.mainAssistantID) == teammateID }
     }
+
+    /// The main chat list: everything that isn't archived.
+    var activeConversations: [Conversation] { conversations.filter { !$0.isArchived } }
+
+    /// Archived Chats screen rows (local archived + server-only archived).
+    var archivedEntries: [ArchivedChatEntry] { ArchivedChatEntry.merge(local: conversations, server: serverArchived) }
 
     /// The teammate's latest assistant message (drives its mascot mood).
     func latestReply(for teammateID: UUID) -> Message? {
@@ -123,14 +139,21 @@ final class ChatStore {
     /// Opens one of the app's own `ios_` sessions, re-attaching to the same
     /// session id when there's no local copy (e.g. after a reinstall); Hermes
     /// then loads its history itself. Non-app sessions go to `continueAsCopy`.
-    func reopenOwnSession(_ session: HermesSession, transcript: [HermesMessage], teammateID: UUID?) {
+    func reopenOwnSession(_ session: HermesSession, transcript: [HermesMessage], teammateID: UUID?, archived: Bool = false) {
         guard session.sourceKind == .ios else {
             continueAsCopy(of: session, transcript: transcript, teammateID: teammateID)
             return
         }
-        if openConversation(boundTo: session.id) { return }
-        importConversation(title: session.displayTitle, sessionID: session.id, origin: HermesSessionSource.ios.rawValue,
+        // A compressed conversation is listed under its newest continuation;
+        // the app's conversation is always bound to the original `ios_` id.
+        let rootID = session.conversationRootID
+        if openConversation(boundTo: rootID) { return }
+        importConversation(title: session.displayTitle, sessionID: rootID, origin: HermesSessionSource.ios.rawValue,
                            teammateID: teammateID, messages: Self.importable(transcript), carriesHistory: false)
+        if archived, let id = currentID {
+            mutateConversation(id) { $0.archivedAt = Date() }
+            persist(id)
+        }
     }
 
     /// Opens the local conversation bound to a backend session, if any.
@@ -213,11 +236,145 @@ final class ChatStore {
         currentID = id
     }
 
-    func delete(_ id: UUID) {
+    /// Removes the conversation from this device only. Callers decide (and
+    /// say) whether the server copy is gone; see `deletePermanently`.
+    private func removeFromDevice(_ id: UUID) {
         if id == currentID { stopIfNeeded() }
         conversations.removeAll { $0.id == id }
         try? store.delete(id)
-        if currentID == id { currentID = conversations.first?.id }
+        if currentID == id { currentID = activeConversations.first?.id }
+    }
+
+    // MARK: Lifecycle: archive, restore, delete permanently
+
+    enum DeletionResult: Equatable {
+        /// The server deleted the conversation and verified nothing remains.
+        case deletedEverywhere(BrainboxSessionDeletion)
+        /// The server confirmed it never had this conversation.
+        case notOnServer
+        /// Never stored on a server this app can manage; removed from this device.
+        case deviceOnly(String)
+
+        var message: String {
+            switch self {
+            case .deletedEverywhere: return "Deleted from this device and from your server."
+            case .notOnServer: return "Deleted. Your server had no copy of this chat."
+            case .deviceOnly(let note): return note
+            }
+        }
+    }
+
+    func isBusy(_ id: UUID) -> Bool { busyConversations.contains(id) }
+
+    /// True while a reply for this conversation is streaming or being resumed.
+    func hasReplyInProgress(_ id: UUID) -> Bool {
+        guard let conversation = conversations.first(where: { $0.id == id }) else { return false }
+        if activeRequestID != nil, conversation.messages.contains(where: { $0.id == activeMessageID }) { return true }
+        return conversation.messages.contains { resumeTasks[$0.id] != nil }
+    }
+
+    /// Server-side work needs a live connection to the default Hermes profile.
+    /// Nothing is queued offline: the user retries once connected.
+    private func managementClient(for conversation: Conversation, action: String) throws -> HermesAPIClient {
+        if let profile = requestOptions(conversation)?.profile, !profile.isEmpty, profile != "default" {
+            throw AgentError.providerUnavailable(detail: "Chats on the “\(profile)” profile can't be \(action) from the app yet. Nothing was changed.")
+        }
+        guard isOnline(), let client = lifecycleClient() else {
+            throw AgentError.providerUnavailable(detail: "Connect to your Hermes server to \(action == "deleted" ? "delete this chat permanently" : "change this chat"). Nothing was changed.")
+        }
+        return client.with(profile: nil)
+    }
+
+    /// Deletes the conversation from the server (through the Brainbox gateway,
+    /// which also removes its continuations and leftover files and verifies the
+    /// result) and only then from this device. On any failure nothing local is
+    /// removed and the error is thrown for the UI to show.
+    @discardableResult
+    func deletePermanently(_ id: UUID) async throws -> DeletionResult {
+        guard let conversation = conversations.first(where: { $0.id == id }) else { throw AgentError.remote(code: "not_found", message: "That chat no longer exists.") }
+        guard !busyConversations.contains(id) else { throw AgentError.remote(code: "busy", message: "This chat is already being changed.") }
+        guard !hasReplyInProgress(id) else {
+            throw AgentError.permissionDenied(detail: "Stop the reply (or let it finish) before deleting this chat.")
+        }
+        guard let serverID = AppSessionID.serverID(for: conversation) else {
+            removeFromDevice(id)
+            return .deviceOnly(conversation.providerKind == .remote
+                ? "Deleted from this device. This connection type has no server-side chat deletion, so anything that server kept is untouched."
+                : "Deleted. This chat was only stored on this device.")
+        }
+        let client = try managementClient(for: conversation, action: "deleted")
+        busyConversations.insert(id)
+        defer { busyConversations.remove(id) }
+        let outcome = try await client.deleteAppSession(id: serverID)
+        removeFromDevice(id)
+        serverArchived.removeAll { $0.id == serverID }
+        switch outcome {
+        case .deleted(let result): return .deletedEverywhere(result)
+        case .notOnServer: return .notOnServer
+        }
+    }
+
+    /// Permanently deletes an archived server conversation that has no copy on this device.
+    func deletePermanently(serverSession session: BrainboxAppSession) async throws {
+        guard isOnline(), let client = lifecycleClient()?.with(profile: nil) else {
+            throw AgentError.providerUnavailable(detail: "Connect to your Hermes server to delete this chat permanently. Nothing was changed.")
+        }
+        _ = try await client.deleteAppSession(id: session.id)
+        serverArchived.removeAll { $0.id == session.id }
+        if let local = conversations.first(where: { AppSessionID.serverID(for: $0) == session.id }) { removeFromDevice(local.id) }
+    }
+
+    func archive(_ id: UUID) async throws { try await setArchived(true, id) }
+    func restore(_ id: UUID) async throws { try await setArchived(false, id) }
+
+    private func setArchived(_ archived: Bool, _ id: UUID) async throws {
+        guard let conversation = conversations.first(where: { $0.id == id }) else { return }
+        guard !busyConversations.contains(id) else { return }
+        if let serverID = AppSessionID.serverID(for: conversation) {
+            let client = try managementClient(for: conversation, action: archived ? "archived" : "restored")
+            busyConversations.insert(id)
+            defer { busyConversations.remove(id) }
+            do {
+                try await client.setArchived(archived, sessionID: serverID)
+            } catch AgentError.remote(let code, _) where code == "not_found" {
+                // Hermes has no such session (nothing was ever sent): the
+                // archive state only exists on this device.
+            }
+            if !archived { serverArchived.removeAll { $0.id == serverID } }
+        }
+        if archived, id == currentID { stopIfNeeded() }
+        mutateConversation(id) { $0.archivedAt = archived ? Date() : nil }
+        persist(id)
+        if archived, currentID == id { currentID = activeConversations.first?.id }
+    }
+
+    /// Restores an archived server conversation with no copy on this device.
+    func restore(serverSession session: BrainboxAppSession) async throws {
+        guard isOnline(), let client = lifecycleClient()?.with(profile: nil) else {
+            throw AgentError.providerUnavailable(detail: "Connect to your Hermes server to restore this chat. Nothing was changed.")
+        }
+        try await client.setArchived(false, sessionID: session.id)
+        serverArchived.removeAll { $0.id == session.id }
+    }
+
+    /// Re-reads archived state from the server and applies it to local chats.
+    func syncArchiveState() async {
+        guard isOnline(), let client = lifecycleClient()?.with(profile: nil) else { return }
+        do {
+            async let activePage = client.appSessions(state: .active)
+            async let archivedPage = client.appSessions(state: .archived)
+            let (active, archived) = try await (activePage, archivedPage)
+            serverArchived = archived.sessions
+            archiveSyncError = nil
+            let changed = ArchiveSync.reconcile(&conversations, active: Set(active.sessions.map(\.id)),
+                                                archived: Set(archived.sessions.map(\.id)))
+            for id in changed { persist(id) }
+            if let currentID, changed.contains(currentID), current?.isArchived == true {
+                self.currentID = activeConversations.first?.id
+            }
+        } catch {
+            archiveSyncError = error.asAgentError.message
+        }
     }
 
     func rename(_ id: UUID, to title: String) {

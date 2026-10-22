@@ -100,6 +100,9 @@ final class AppModel {
             self.settings.providerKind == .hermes ? self.hermes.requestOptions(for: conversation) : nil
         }
         chat.activeTeammateID = { [unowned self] in self.hermes.activeTeammateID }
+        chat.lifecycleClient = { [unowned self] in
+            self.settings.providerKind == .hermes && self.hermes.isConnected ? self.hermes.client : nil
+        }
         network.onReconnect = { [weak self] in self?.handleNetworkReturn() }
         hasToken = ((try? credentials.read(.gatewayToken)) ?? nil) != nil
         hasHermesToken = ((try? credentials.read(.hermesToken)) ?? nil) != nil
@@ -199,6 +202,7 @@ final class AppModel {
             if isHermes {
                 await hermes.refreshAfterConnect()
                 chat.resumeInterruptedRuns()
+                await chat.syncArchiveState()
             }
         } catch {
             let agentError = error.asAgentError

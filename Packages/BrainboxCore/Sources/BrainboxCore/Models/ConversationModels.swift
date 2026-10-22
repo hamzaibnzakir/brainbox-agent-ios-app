@@ -120,6 +120,11 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
     /// Stored flag behind `carriesHistory`. Optional so conversations saved
     /// by older builds (which lack the key) still decode.
     public var carriedHistory: Bool?
+    /// When the conversation was archived (nil = in the main list). Optional so
+    /// conversations saved by older builds still decode.
+    public var archivedAt: Date?
+
+    public var isArchived: Bool { archivedAt != nil }
 
     /// True for a copy of a conversation from another source (e.g. Telegram).
     /// Hermes never stores caller-supplied history, so every run for such a

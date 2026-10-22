@@ -142,9 +142,13 @@ public struct HermesSession: Decodable, Hashable, Sendable, Identifiable {
     public var parentSessionID: String?
     public var pinned: Bool?
     public var archived: Bool?
+    /// Hermes lists a compressed conversation under its newest continuation
+    /// ("tip") id and reports the original id here (`_lineage_root_id`).
+    public var lineageRootID: String?
 
     enum CodingKeys: String, CodingKey {
         case id, source, model, title, preview, pinned, archived
+        case lineageRootID = "_lineage_root_id"
         case startedAt = "started_at"
         case endedAt = "ended_at"
         case endReason = "end_reason"
@@ -157,7 +161,7 @@ public struct HermesSession: Decodable, Hashable, Sendable, Identifiable {
     public init(id: String, source: String? = nil, model: String? = nil, title: String? = nil, startedAt: Double? = nil,
                 endedAt: Double? = nil, endReason: String? = nil, messageCount: Int? = nil, toolCallCount: Int? = nil,
                 lastActive: Double? = nil, preview: String? = nil, parentSessionID: String? = nil,
-                pinned: Bool? = nil, archived: Bool? = nil) {
+                pinned: Bool? = nil, archived: Bool? = nil, lineageRootID: String? = nil) {
         self.id = id
         self.source = source
         self.model = model
@@ -172,6 +176,7 @@ public struct HermesSession: Decodable, Hashable, Sendable, Identifiable {
         self.parentSessionID = parentSessionID
         self.pinned = pinned
         self.archived = archived
+        self.lineageRootID = lineageRootID
     }
 
     public init(from decoder: Decoder) throws {
@@ -190,9 +195,18 @@ public struct HermesSession: Decodable, Hashable, Sendable, Identifiable {
         parentSessionID = try? c.decodeIfPresent(String.self, forKey: .parentSessionID)
         pinned = try? c.decodeIfPresent(Bool.self, forKey: .pinned)
         archived = try? c.decodeIfPresent(Bool.self, forKey: .archived)
+        lineageRootID = try? c.decodeIfPresent(String.self, forKey: .lineageRootID)
     }
 
-    public var sourceKind: HermesSessionSource { .classify(source: source, sessionID: id) }
+    /// The id the conversation started with: the lineage root for a compressed
+    /// conversation, otherwise the session's own id. App conversations are
+    /// identified (and deleted) by this id.
+    public var conversationRootID: String {
+        if let root = lineageRootID, !root.isEmpty { return root }
+        return id
+    }
+
+    public var sourceKind: HermesSessionSource { .classify(source: source, sessionID: conversationRootID) }
 
     public var displayTitle: String {
         if let title, !title.trimmingCharacters(in: .whitespaces).isEmpty { return title }

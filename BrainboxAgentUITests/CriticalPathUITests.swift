@@ -38,6 +38,42 @@ final class CriticalPathUITests: XCTestCase {
         XCTAssertTrue(done.waitForExistence(timeout: 20))
     }
 
+    /// Mock conversations live only on the device: archive → restore → delete
+    /// permanently, with a confirmation and an honest result message.
+    func testArchiveRestoreAndDeleteAChat() throws {
+        app.buttons["tab.agent"].tap()
+        let suggestion = app.buttons["suggestion.0"]
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
+        suggestion.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["assistant.complete"].firstMatch.waitForExistence(timeout: 20))
+
+        app.buttons["agent.history"].tap()
+        let row = app.descendants(matching: .any)["history.row"].firstMatch
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        row.swipeLeft()
+        app.buttons["Archive"].firstMatch.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["chat.lifecycle.notice"].waitForExistence(timeout: 5))
+
+        app.buttons["history.archived"].firstMatch.tap()
+        let archived = app.descendants(matching: .any)["archived.row"].firstMatch
+        XCTAssertTrue(archived.waitForExistence(timeout: 5))
+        archived.swipeLeft()
+        app.buttons["Restore"].firstMatch.tap()
+        XCTAssertTrue(app.staticTexts["No archived chats"].waitForExistence(timeout: 5))
+        app.navigationBars.buttons.element(boundBy: 0).tap()
+
+        let restored = app.descendants(matching: .any)["history.row"].firstMatch
+        XCTAssertTrue(restored.waitForExistence(timeout: 5))
+        restored.swipeLeft()
+        app.buttons["Delete"].firstMatch.tap()
+        let confirm = app.buttons["Delete permanently"].firstMatch
+        XCTAssertTrue(confirm.waitForExistence(timeout: 5), "deletion asks for confirmation")
+        confirm.tap()
+        let notice = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "only stored on this device")).firstMatch
+        XCTAssertTrue(notice.waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["No conversations"].waitForExistence(timeout: 5))
+    }
+
     func testEveryTabOpens() throws {
         for (tab, marker) in [("tab.team", "Your AI team"), ("tab.tasks", "Tasks"), ("tab.vps", "Services"), ("tab.settings", "Settings")] {
             let button = app.buttons[tab]
