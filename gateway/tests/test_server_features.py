@@ -129,8 +129,10 @@ async def test_upload_list_download_delete(setup):
 
     r = await client.post("/hermes/brainbox/files/upload?area=inbox&name=../../notes.txt", data=b"hello", headers=auth())
     assert r.status == 201, await r.text()
-    entry = (await r.json())["file"]
+    uploaded = await r.json()
+    entry = uploaded["file"]
     assert entry["path"] == "inbox/notes.txt" and entry["size"] == 5
+    assert uploaded["absolute_path"] == str(tmp_path / "workspace" / "inbox" / "notes.txt")
     # Same name again never overwrites.
     r = await client.post("/hermes/brainbox/files/upload?area=inbox&name=notes.txt", data=b"again", headers=auth())
     assert (await r.json())["file"]["path"] == "inbox/notes (2).txt"

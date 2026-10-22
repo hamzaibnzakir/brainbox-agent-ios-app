@@ -39,7 +39,7 @@ public struct HermesConfiguration: Hashable, Sendable {
 public final class HermesAPIClient: @unchecked Sendable {
     public let configuration: HermesConfiguration
     private let transport: HTTPTransport
-    private let tokenProvider: @Sendable () -> String?
+    let tokenProvider: @Sendable () -> String?
 
     public init(configuration: HermesConfiguration, transport: HTTPTransport, tokenProvider: @escaping @Sendable () -> String?) {
         self.configuration = configuration
@@ -447,14 +447,17 @@ public struct BrainboxGatewayInfo: Decodable, Hashable, Sendable {
     public var version: String?
     public var profileAdmin: Bool
     public var deviceName: String?
+    /// What this proxy offers this device (nil on proxies older than the feature list).
+    public var features: BrainboxFeatures?
 
-    enum CodingKeys: String, CodingKey { case service, version, profileAdmin = "profile_admin", deviceName = "device_name" }
+    enum CodingKeys: String, CodingKey { case service, version, features, profileAdmin = "profile_admin", deviceName = "device_name" }
 
-    public init(service: String, version: String? = nil, profileAdmin: Bool = false, deviceName: String? = nil) {
+    public init(service: String, version: String? = nil, profileAdmin: Bool = false, deviceName: String? = nil, features: BrainboxFeatures? = nil) {
         self.service = service
         self.version = version
         self.profileAdmin = profileAdmin
         self.deviceName = deviceName
+        self.features = features
     }
 
     public init(from decoder: Decoder) throws {
@@ -463,6 +466,7 @@ public struct BrainboxGatewayInfo: Decodable, Hashable, Sendable {
         version = try? c.decodeIfPresent(String.self, forKey: .version)
         profileAdmin = (try? c.decode(Bool.self, forKey: .profileAdmin)) ?? false
         deviceName = try? c.decodeIfPresent(String.self, forKey: .deviceName)
+        features = try? c.decodeIfPresent(BrainboxFeatures.self, forKey: .features)
     }
 }
 

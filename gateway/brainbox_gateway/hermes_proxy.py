@@ -749,7 +749,9 @@ class HermesProxy:
                 except OSError:
                     pass
         self.audit.write(device=device.name, action="files.upload", path=entry["path"], size=written)
-        return web.json_response({"object": "brainbox.file", "file": entry}, status=201)
+        # The absolute server path lets the app point the agent at the attachment.
+        return web.json_response({"object": "brainbox.file", "file": entry,
+                                  "absolute_path": str(self.workspace.root / entry["path"])}, status=201)
 
     async def handle_files_delete(self, request: web.Request) -> web.Response:
         device, err = self._files_guard(request)
