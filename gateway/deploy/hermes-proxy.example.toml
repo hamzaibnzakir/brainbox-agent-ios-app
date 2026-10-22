@@ -24,6 +24,7 @@ max_requests_per_minute = 300
 name = "David's iPhone"
 token_sha256 = "REPLACE_WITH_64_HEX_CHARS_FROM_new-device_REPLACE_WITH_64_HEX_CHA"
 admin = false                   # true + profiles.admin_enabled lets this phone create Hermes profiles
+terminal = false                # true + [terminal] enabled lets this phone open the direct VPS terminal
 
 [profiles]
 hermes_home = "/root/.hermes"
@@ -43,3 +44,35 @@ allowed_deliver = ["local"]
 # Session safety (always on, not configurable): through this proxy the app can
 # only create, change, fork or run in its own `ios_` sessions. Telegram and all
 # other sessions are read-only (GET). X-Hermes-Session-* headers are dropped.
+
+[files]
+# The Brainbox workspace — the ONLY folder the app can browse. Uploads land in
+# <root>/inbox, the agent can leave files for the phone in <root>/outbox.
+enabled = true
+root = "/var/lib/brainbox-gateway/workspace"
+max_upload_bytes = 25000000
+# allowed_extensions = ["png", "jpg", "pdf", "txt", ...]   # default list in workspace_files.py
+
+[terminal]
+# Direct VPS terminal (interactive PTY over the authenticated WebSocket).
+# OFF until you create the least-privilege account — see docs/TERMINAL.md.
+enabled = false
+user = "brainbox-term"          # never root; shells run as this account with a clean environment
+shell = "/bin/bash"
+idle_timeout_seconds = 1800     # no input for 30 min → the shell is closed
+detach_grace_seconds = 300      # a dropped connection can reattach within 5 min
+max_sessions_per_device = 3
+
+[push]
+# Apple Push Notifications. Needs a PAID Apple Developer Program membership,
+# an APNs auth key (.p8) kept only on this server, and `pip install '.[push]'`.
+# See docs/PUSH_NOTIFICATIONS.md. Leave disabled otherwise — the app shows
+# "not configured" and nothing is sent.
+enabled = false
+team_id = ""                    # 10 characters, from developer.apple.com → Membership
+key_id = ""                     # 10 characters, the APNs key's Key ID
+key_file = "/etc/brainbox-gateway/apns/AuthKey.p8"   # mode 600, root-owned; never in the app or repo
+bundle_id = ""                  # the app's bundle identifier as signed
+environment = "production"      # "development" for Xcode debug installs
+poll_seconds = 60
+long_task_seconds = 120

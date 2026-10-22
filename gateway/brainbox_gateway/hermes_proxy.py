@@ -31,7 +31,7 @@ import json
 import logging
 import os
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 import sys
 import time
 from collections import defaultdict, deque
@@ -44,6 +44,10 @@ from aiohttp import ClientSession, ClientTimeout, web
 from . import __version__
 from .chat_sessions import (OwnershipRegistry, ReadOnlySessionStore, SessionStoreUnavailable, is_app_session,
                             remove_session_files)
+from .diagnostics import host_snapshot
+from .pty_terminal import TerminalConfig, TerminalManager, TerminalUnavailable, parse_client_frame
+from .push import EVENT_KINDS, Notification, PushConfig, PushService
+from .workspace_files import Workspace, WorkspaceConfig, WorkspaceError
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -183,6 +187,8 @@ class Device:
     name: str
     token_sha256: str
     admin: bool = False
+    # Direct VPS terminal for this device (also needs [terminal] enabled = true).
+    terminal: bool = False
 
     def matches(self, token: str) -> bool:
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
@@ -218,6 +224,9 @@ class ProxyConfig:
     allowed_deliver: tuple[str, ...] = ("local",)
     # Proxy-owned state (session ownership registry, file inbox/outbox, push tokens).
     state_dir: str = "/var/lib/brainbox-gateway"
+    files: WorkspaceConfig = field(default_factory=WorkspaceConfig)
+    terminal: TerminalConfig = field(default_factory=TerminalConfig)
+    push: PushConfig = field(default_factory=PushConfig)
 
     @property
     def state_db(self) -> str:
@@ -255,8 +264,10 @@ def config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
     allowed_deliver = jobs.get("allowed_deliver", ["local"])
     if not isinstance(allowed_deliver, list) or not all(isinstance(d, str) and DELIVER_RE.fullmatch(d) for d in allowed_deliver):
         raise ValueError("jobs.allowed_deliver must be a list of delivery target names, e.g. [\"local\"]")
-    devices = [Device(name=str(d["name"]), token_sha256=str(d["token_sha256"]), admin=bool(d.get("admin", False)))
+    devices = [Device(name=str(d["name"]), token_sha256=str(d["token_sha256"]), admin=bool(d.get("admin", False)),
+                      terminal=bool(d.get("terminal", False)))
                for d in raw.get("devices", [])]
+    state_dir = str(p.get("state_dir", "/var/lib/brainbox-gateway"))
     cfg = ProxyConfig(
         host=str(p.get("host", "127.0.0.1")), port=int(p.get("port", 8766)),
         path_prefix=str(p.get("path_prefix", "/hermes")), hermes_url=str(p.get("hermes_url", "http://127.0.0.1:8642")).rstrip("/"),
@@ -271,7 +282,10 @@ def config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
         multiplex_profiles=bool(profiles.get("multiplex", False)),
         profile_admin_enabled=bool(profiles.get("admin_enabled", False)),
         allowed_deliver=tuple(allowed_deliver),
-        state_dir=str(p.get("state_dir", "/var/lib/brainbox-gateway")),
+        state_dir=state_dir,
+        files=WorkspaceConfig.from_dict(raw.get("files", {}), state_dir),
+        terminal=TerminalConfig.from_dict(raw.get("terminal", {})),
+        push=PushConfig.from_dict(raw.get("push", {})),
     )
     validate(cfg)
     return cfg
@@ -402,6 +416,10 @@ class HermesProxy:
         self._client: ClientSession | None = None
         self.owners = OwnershipRegistry(str(Path(cfg.state_dir) / "session-owners.json"))
         self.session_store = ReadOnlySessionStore(cfg.state_db)
+        self.workspace = Workspace(cfg.files)
+        self.terminals = TerminalManager(cfg.terminal)
+        self.push = PushService(cfg.push, cfg.state_dir, self._hermes_get, audit=self.audit.write)
+        self.started_at = time.time()
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -413,6 +431,17 @@ class HermesProxy:
         app.router.add_route("POST", f"{prefix}/brainbox/profiles", self.handle_create_profile)
         app.router.add_route("GET", f"{prefix}/brainbox/sessions", self.handle_list_app_sessions)
         app.router.add_route("DELETE", f"{prefix}/brainbox/sessions/{{session_id}}", self.handle_delete_app_session)
+        app.router.add_route("GET", f"{prefix}/brainbox/system", self.handle_system)
+        app.router.add_route("GET", f"{prefix}/brainbox/files", self.handle_files_list)
+        app.router.add_route("GET", f"{prefix}/brainbox/files/download", self.handle_files_download)
+        app.router.add_route("POST", f"{prefix}/brainbox/files/upload", self.handle_files_upload)
+        app.router.add_route("DELETE", f"{prefix}/brainbox/files", self.handle_files_delete)
+        app.router.add_route("GET", f"{prefix}/brainbox/terminal/status", self.handle_terminal_status)
+        app.router.add_route("GET", f"{prefix}/brainbox/terminal", self.handle_terminal)
+        app.router.add_route("GET", f"{prefix}/brainbox/push", self.handle_push_status)
+        app.router.add_route("POST", f"{prefix}/brainbox/push/register", self.handle_push_register)
+        app.router.add_route("DELETE", f"{prefix}/brainbox/push/register", self.handle_push_unregister)
+        app.router.add_route("POST", f"{prefix}/brainbox/push/test", self.handle_push_test)
         app.router.add_route("*", prefix + "/{tail:.*}", self.handle_proxy)
         app.on_startup.append(self._startup)
         app.on_cleanup.append(self._cleanup)
@@ -422,8 +451,24 @@ class HermesProxy:
         if not self._hermes_key:
             log.error("No API_SERVER_KEY found for Hermes — requests will fail with 503 until it is configured.")
         self._client = ClientSession(timeout=ClientTimeout(total=None, connect=10, sock_read=None), auto_decompress=False)
+        if self.cfg.files.enabled:
+            try:
+                await asyncio.to_thread(self.workspace.ensure)
+                await asyncio.to_thread(self.workspace.sweep_temp)
+            except OSError as exc:
+                log.error("workspace folder %s unavailable: %s", self.cfg.files.root, exc)
+        revoked = self.push.registry.prune({d.key for d in self.cfg.devices})
+        if revoked:
+            log.info("revoked push tokens of %d removed device(s)", revoked)
+        if self.cfg.push.enabled:
+            problems = self.cfg.push.problems()
+            if problems:
+                log.warning("push notifications enabled but not ready: %s", "; ".join(problems))
+            self.push.start()
 
     async def _cleanup(self, _app: web.Application) -> None:
+        self.terminals.shutdown()
+        await self.push.stop()
         if self._client:
             await self._client.close()
 
@@ -466,7 +511,13 @@ class HermesProxy:
             "service": "brainbox-hermes-proxy", "version": __version__,
             "profile_admin": bool(self.cfg.profile_admin_enabled and device.admin),
             "multiplex_profiles": self.cfg.multiplex_profiles, "device_name": device.name,
+            "features": self._features(device),
         })
+
+    def _features(self, device: Device) -> dict[str, Any]:
+        return {"chat_management": True, "files": self.cfg.files.enabled, "diagnostics": True,
+                "terminal": bool(self.cfg.terminal.enabled and device.terminal),
+                "push": {"enabled": self.cfg.push.enabled, "ready": self.cfg.push.enabled and self.push.ready}}
 
     def _profiles(self) -> list[dict[str, Any]]:
         out = [{"name": "default", "description": "The main Hermes profile", "has_api_key": bool(self._hermes_key), "routable": True}]
@@ -482,6 +533,9 @@ class HermesProxy:
         return out
 
     # -- app chat sessions (list incl. archived, verified delete) -------------
+
+    async def _hermes_get(self, method: str, path: str) -> tuple[int, Any]:
+        return await self._hermes_call(method, path)
 
     async def _hermes_call(self, method: str, path: str, payload: Any = None) -> tuple[int, Any]:
         assert self._client is not None
@@ -594,6 +648,284 @@ class HermesProxy:
         audit("ok", sessions=len(deleted), files=len(files))
         return web.json_response({"object": "brainbox.session.deleted", "id": session_id, "deleted_sessions": deleted,
                                   "files_removed": len(files), "verified": True})
+
+    # -- server overview (read-only) ------------------------------------------------
+
+    async def handle_system(self, request: web.Request) -> web.Response:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        host = await asyncio.to_thread(host_snapshot, ["/", self.cfg.files.root if self.cfg.files.enabled else "",
+                                                       self.cfg.hermes_home])
+        started = time.monotonic()
+        status, body = await self._hermes_call("GET", "/health")
+        latency = round((time.monotonic() - started) * 1000, 1)
+        hermes = {"reachable": status == 200, "http_status": status if status != 502 else None,
+                  "latency_ms": latency if status == 200 else None,
+                  "status": body.get("status") if isinstance(body, dict) and isinstance(body.get("status"), str) else None,
+                  "key_configured": bool(self._hermes_key)}
+        return web.json_response({
+            "object": "brainbox.system", "host": host, "hermes": hermes,
+            "proxy": {"version": __version__, "uptime_seconds": round(time.time() - self.started_at, 1),
+                      "features": self._features(device)},
+        })
+
+    # -- workspace files ----------------------------------------------------------------
+
+    def _files_guard(self, request: web.Request) -> tuple[Device | None, web.Response | None]:
+        device, err = self._authenticate(request)
+        if err:
+            return None, err
+        if not self.cfg.files.enabled:
+            return None, json_error(404, "File transfer is turned off on the server.", "files_disabled")
+        return device, None
+
+    @staticmethod
+    def _workspace_error(exc: WorkspaceError) -> web.Response:
+        return json_error(exc.status, exc.message, exc.code)
+
+    async def handle_files_list(self, request: web.Request) -> web.Response:
+        device, err = self._files_guard(request)
+        if err:
+            return err
+        path = request.query.get("path", "")
+        try:
+            entries = await asyncio.to_thread(self.workspace.list, path)
+        except WorkspaceError as exc:
+            return self._workspace_error(exc)
+        return web.json_response({"object": "list", "path": path.strip("/"), "data": entries,
+                                  "max_upload_bytes": self.cfg.files.max_upload_bytes,
+                                  "allowed_extensions": list(self.cfg.files.allowed_extensions)})
+
+    async def handle_files_download(self, request: web.Request) -> web.StreamResponse:
+        device, err = self._files_guard(request)
+        if err:
+            return err
+        rel = request.query.get("path", "")
+        try:
+            path, size = await asyncio.to_thread(self.workspace.file_for_download, rel)
+        except WorkspaceError as exc:
+            return self._workspace_error(exc)
+        self.audit.write(device=device.name, action="files.download", path=rel, size=size)
+        quoted = quote(path.name, safe="")
+        return web.FileResponse(path, headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}",
+            "Content-Type": "application/octet-stream"})
+
+    async def handle_files_upload(self, request: web.Request) -> web.Response:
+        device, err = self._files_guard(request)
+        if err:
+            return err
+        area = request.query.get("area", "inbox")
+        name = request.query.get("name", "")
+        declared = request.content_length
+        try:
+            directory, clean = await asyncio.to_thread(self.workspace.check_upload, area, name, declared)
+            tmp, fd = await asyncio.to_thread(self.workspace.temp_upload, directory)
+        except WorkspaceError as exc:
+            return self._workspace_error(exc)
+        limit = self.cfg.files.max_upload_bytes
+        written = 0
+        ok = False
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                async for chunk in request.content.iter_chunked(64 * 1024):
+                    written += len(chunk)
+                    if written > limit:
+                        return json_error(413, f"Files can be at most {limit // 1_000_000} MB.", "too_large")
+                    fh.write(chunk)
+            if written == 0:
+                return json_error(400, "The file is empty.", "empty_file")
+            if declared is not None and written != declared:
+                return json_error(400, "The upload was incomplete.", "incomplete_upload")
+            entry = await asyncio.to_thread(self.workspace.finish_upload, tmp, directory, clean)
+            ok = True
+        except WorkspaceError as exc:
+            return self._workspace_error(exc)
+        finally:
+            if not ok:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        self.audit.write(device=device.name, action="files.upload", path=entry["path"], size=written)
+        return web.json_response({"object": "brainbox.file", "file": entry}, status=201)
+
+    async def handle_files_delete(self, request: web.Request) -> web.Response:
+        device, err = self._files_guard(request)
+        if err:
+            return err
+        rel = request.query.get("path", "")
+        try:
+            await asyncio.to_thread(self.workspace.delete, rel)
+        except WorkspaceError as exc:
+            return self._workspace_error(exc)
+        self.audit.write(device=device.name, action="files.delete", path=rel)
+        return web.json_response({"object": "brainbox.file.deleted", "path": rel})
+
+    # -- direct terminal ----------------------------------------------------------------------
+
+    def _terminal_problem(self, device: Device) -> tuple[int, str, str] | None:
+        if not self.cfg.terminal.enabled:
+            return 404, "The terminal is turned off on the server ([terminal] enabled = false).", "terminal_disabled"
+        if not device.terminal:
+            return 403, "This device isn't allowed to open a terminal (set terminal = true for it).", "terminal_not_allowed"
+        return None
+
+    async def handle_terminal_status(self, request: web.Request) -> web.Response:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        problem = self._terminal_problem(device)
+        info: dict[str, Any] = {"available": problem is None, "reason": problem[1] if problem else None,
+                                "code": problem[2] if problem else None}
+        if problem is None:
+            info.update(user=self.cfg.terminal.user, sessions=[
+                {"id": s.id, "created": round(s.created), "attached": s.listener is not None, "cols": s.cols, "rows": s.rows}
+                for s in self.terminals.sessions.values() if s.owner == device.key and s.alive])
+        return web.json_response(info)
+
+    async def handle_terminal(self, request: web.Request) -> web.StreamResponse:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        problem = self._terminal_problem(device)
+        if problem:
+            self.audit.write(device=device.name, action="terminal.open", outcome=problem[2])
+            return json_error(*problem)
+        try:
+            cols = max(10, min(500, int(request.query.get("cols", "80"))))
+            rows = max(4, min(300, int(request.query.get("rows", "24"))))
+        except ValueError:
+            return json_error(400, "cols and rows must be numbers.", "invalid_size")
+        wanted = request.query.get("session")
+        session = None
+        if wanted:
+            session = self.terminals.get(wanted, device.key)
+            if session is None:
+                return json_error(404, "That terminal session has ended.", "session_ended")
+        else:
+            try:
+                session = self.terminals.open(device.key, cols, rows)
+            except TerminalUnavailable as exc:
+                self.audit.write(device=device.name, action="terminal.open", outcome=exc.code)
+                return json_error(503 if exc.code != "too_many_sessions" else 429, exc.message, exc.code)
+            except OSError as exc:
+                log.error("terminal spawn failed: %s", exc)
+                return json_error(503, "The server couldn't start a shell.", "terminal_spawn_failed")
+        ws = web.WebSocketResponse(heartbeat=25, max_msg_size=256 * 1024)
+        await ws.prepare(request)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=1024)
+
+        def listener(frame: dict[str, Any]) -> None:
+            try:
+                queue.put_nowait(frame)
+            except asyncio.QueueFull:
+                pass
+
+        reattached = wanted is not None
+        if session.listener is not None:   # another connection had it: take over
+            session.listener({"type": "error", "code": "taken_over", "message": "Opened on another connection."})
+        session.listener = listener
+        session.detached_at = None
+        if reattached:
+            session.resize(cols, rows)
+        self.audit.write(device=device.name, action="terminal.reattach" if reattached else "terminal.open", outcome="ok")
+        await ws.send_json({"type": "ready", "session": session.id, "user": session.user, "reattached": reattached,
+                            "cols": session.cols, "rows": session.rows})
+        if reattached and session.scrollback:
+            await ws.send_json({"type": "output", "data": session.replay()})
+
+        async def pump() -> None:
+            while True:
+                frame = await queue.get()
+                await ws.send_json(frame)
+                if frame.get("type") in ("exit",) or frame.get("code") == "taken_over":
+                    await ws.close()
+                    return
+
+        sender = asyncio.create_task(pump())
+        closed_by_client = False
+        try:
+            async for msg in ws:
+                if msg.type != web.WSMsgType.TEXT:
+                    continue
+                frame = parse_client_frame(msg.data)
+                if frame is None:
+                    await ws.send_json({"type": "error", "code": "bad_frame", "message": "Unrecognised message."})
+                    continue
+                kind = frame["type"]
+                if kind == "input":
+                    session.write(frame["data"])
+                elif kind == "resize":
+                    session.resize(frame["cols"], frame["rows"])
+                elif kind == "interrupt":
+                    session.interrupt()
+                elif kind == "close":
+                    closed_by_client = True
+                    break
+        finally:
+            sender.cancel()
+            if session.listener is listener:
+                session.listener = None
+                session.detached_at = time.monotonic()
+            if closed_by_client:
+                self.terminals.close(session.id)
+            self.audit.write(device=device.name, action="terminal.close" if closed_by_client else "terminal.detach")
+            if not ws.closed:
+                await ws.close()
+        return ws
+
+    # -- push notifications -------------------------------------------------------------------------
+
+    async def handle_push_status(self, request: web.Request) -> web.Response:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        return web.json_response(self.push.status(device.key))
+
+    async def handle_push_register(self, request: web.Request) -> web.Response:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return json_error(400, "Body must be JSON.", "invalid_json")
+        if not isinstance(body, dict):
+            return json_error(400, "Body must be a JSON object.", "invalid_json")
+        prefs = body.get("preferences")
+        if prefs is not None and not (isinstance(prefs, dict) and all(k in EVENT_KINDS and isinstance(v, bool) for k, v in prefs.items())):
+            return json_error(400, "Unknown notification preference.", "invalid_preferences")
+        try:
+            result = self.push.registry.register(device.key, str(body.get("token", "")),
+                                                 str(body.get("environment", "production")), prefs)
+        except ValueError as exc:
+            return json_error(400, "Invalid APNs device token or environment.", str(exc))
+        self.audit.write(device=device.name, action="push.register", environment=result["environment"])
+        return web.json_response({"object": "brainbox.push.registration", **result, "status": self.push.status(device.key)})
+
+    async def handle_push_unregister(self, request: web.Request) -> web.Response:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        token = request.query.get("token")
+        removed = self.push.registry.unregister(device.key, token if token else None)
+        self.audit.write(device=device.name, action="push.unregister", removed=removed)
+        return web.json_response({"object": "brainbox.push.unregistered", "removed": removed})
+
+    async def handle_push_test(self, request: web.Request) -> web.Response:
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        problems = self.cfg.push.problems()
+        if problems:
+            return json_error(503, problems[0], "push_not_ready")
+        if not self.push.registry.for_device(device.key):
+            return json_error(409, "This device hasn't registered for notifications yet.", "push_not_registered")
+        sent = await self.push.notify(Notification("test", "Brainbox test", "Notifications are working.",
+                                                   "brainbox://settings", f"test:{device.key}:{time.time_ns()}", device.key))
+        return web.json_response({"object": "brainbox.push.test", "sent": sent})
 
     async def handle_list_profiles(self, request: web.Request) -> web.Response:
         _, err = self._authenticate(request)
@@ -726,6 +1058,12 @@ class HermesProxy:
                     self.audit.write(device=device.name if device else None, method=method, path=tail, status=upstream.status)
                 return response
             data = await upstream.read()
+            if (device is not None and method == "POST" and path == "/v1/runs" and upstream.status < 300
+                    and (profile is None or profile == "default") and self.cfg.push.enabled):
+                try:
+                    self.push.watch_run(json.loads(data).get("run_id"), device.key)
+                except (ValueError, AttributeError):
+                    pass
             response = web.Response(status=upstream.status, body=data)
             for h in FORWARD_RESPONSE_HEADERS:
                 if h in upstream.headers:

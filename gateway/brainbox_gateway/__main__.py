@@ -60,10 +60,29 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"error: {f} is readable by group/others — run: chmod 600 {f}", file=sys.stderr)
             if loose:
                 return 1
-            print(f"OK · listen={pcfg.host}:{pcfg.port}{pcfg.prefix} upstream={pcfg.hermes_url} devices={len(pcfg.devices)} "
+            ok = bool(key)
+            terminal = "off"
+            if pcfg.terminal.enabled:
+                from .pty_terminal import TerminalUnavailable, account
+                try:
+                    terminal = f"on(user={account(pcfg.terminal).pw_name}, devices={sum(d.terminal for d in pcfg.devices)})"
+                except TerminalUnavailable as exc:
+                    print(f"error: terminal: {exc.message}", file=sys.stderr)
+                    terminal, ok = "BROKEN", False
+            push = "off"
+            if pcfg.push.enabled:
+                problems = pcfg.push.problems()
+                for problem in problems:
+                    print(f"error: push: {problem}", file=sys.stderr)
+                push, ok = ("BROKEN", False) if problems else (f"on({pcfg.push.environment})", ok)
+            if pcfg.push.key_file and pcfg.push.enabled and hermes_proxy.insecure_permissions(pcfg.push.key_file):
+                print(f"error: {pcfg.push.key_file} is readable by group/others — run: chmod 600 {pcfg.push.key_file}", file=sys.stderr)
+                ok = False
+            print(f"{'OK' if ok else 'PROBLEMS'} · listen={pcfg.host}:{pcfg.port}{pcfg.prefix} upstream={pcfg.hermes_url} devices={len(pcfg.devices)} "
                   f"hermes_key={'found' if key else 'MISSING'} multiplex={pcfg.multiplex_profiles} "
-                  f"profile_admin={pcfg.profile_admin_enabled} job_delivery={','.join(pcfg.allowed_deliver)}")
-            return 0 if key else 1
+                  f"profile_admin={pcfg.profile_admin_enabled} job_delivery={','.join(pcfg.allowed_deliver)} "
+                  f"files={'on:' + pcfg.files.root if pcfg.files.enabled else 'off'} terminal={terminal} push={push}")
+            return 0 if ok else 1
         hermes_proxy.serve(pcfg)
         return 0
     if args.cmd == "hash-token":
