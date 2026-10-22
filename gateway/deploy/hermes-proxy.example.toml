@@ -11,6 +11,9 @@ hermes_url = "http://127.0.0.1:8642"   # Hermes API Server (loopback only)
 hermes_env_file = "/root/.hermes/.env"
 # hermes_key_file = "/etc/brainbox-gateway/hermes-api.key"   # file containing only the key
 audit_log = "/var/lib/brainbox-gateway/hermes-proxy-audit.log"
+# Proxy-owned state (chat ownership registry, mode 600). Chat archive/delete also reads
+# Hermes' state.db READ-ONLY from [profiles] hermes_home (default /root/.hermes).
+state_dir = "/var/lib/brainbox-gateway"
 max_auth_failures_per_minute = 10
 max_requests_per_minute = 300
 

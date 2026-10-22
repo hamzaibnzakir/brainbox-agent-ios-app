@@ -80,7 +80,7 @@ def make_cfg(tmp_path, upstream_url, **overrides):
     env.write_text(f"# hermes env\nTELEGRAM_BOT_TOKEN=never-forwarded\nexport API_SERVER_KEY={HERMES_KEY}\n")
     raw = {
         "proxy": {"host": "127.0.0.1", "port": 0, "path_prefix": "/hermes", "hermes_url": upstream_url,
-                  "hermes_env_file": str(env), "audit_log": str(tmp_path / "audit.log"),
+                  "hermes_env_file": str(env), "audit_log": str(tmp_path / "audit.log"), "state_dir": str(tmp_path / "state"),
                   "max_auth_failures_per_minute": 3, "max_requests_per_minute": 1000},
         "devices": [{"name": "David's iPhone", "token_sha256": cfgmod.hash_token(DEVICE_TOKEN)},
                     {"name": "Admin iPhone", "token_sha256": cfgmod.hash_token(ADMIN_TOKEN), "admin": True}],
@@ -375,7 +375,6 @@ async def test_writes_to_non_app_sessions_never_reach_hermes(make_client, method
     ("POST", "/api/sessions", {"id": "ios_0123456789abcdef"}),
     ("POST", "/api/sessions/ios_0123456789abcdef/fork", {"title": "t"}),
     ("PATCH", "/api/sessions/ios_0123456789abcdef", {"title": "t"}),
-    ("DELETE", "/api/sessions/ios_0123456789abcdef", None),
     ("POST", "/v1/runs", {"input": "hi", "session_id": "ios_0123456789abcdef",
                           "conversation_history": [{"role": "user", "content": "earlier"}]}),
     ("POST", "/v1/runs", {"input": "hi"}),
@@ -455,3 +454,11 @@ def test_guard_is_a_pure_function():
     assert hp.guard_violation("POST", "/v1/runs", b"[]")[1] == "invalid_json"
     assert hp.guard_violation("POST", "/v1/runs/run_1/stop", b"{}") is None
     assert hp.guard_violation("POST", "/v1/runs/run_1/approval", b'{"choice":"once"}') is None
+
+
+async def test_raw_session_delete_is_refused_even_for_app_sessions(make_client):
+    client, fake, _ = await make_client()
+    r = await client.delete("/hermes/api/sessions/ios_0123456789abcdef0123456789abcdef", headers=auth())
+    assert r.status == 403
+    assert (await r.json())["error"]["code"] == "use_brainbox_session_delete"
+    assert fake.seen == []

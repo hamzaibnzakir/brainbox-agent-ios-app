@@ -42,6 +42,8 @@ from typing import Any
 from aiohttp import ClientSession, ClientTimeout, web
 
 from . import __version__
+from .chat_sessions import (OwnershipRegistry, ReadOnlySessionStore, SessionStoreUnavailable, is_app_session,
+                            remove_session_files)
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -93,6 +95,28 @@ _JOB_PATHS = re.compile(rf"^/api/jobs(/{JOB_RE})?$")
 DELIVER_RE = re.compile(r"^[a-z0-9_:\-]{1,64}$")
 
 
+def session_write_target(method: str, path: str, body: bytes | None) -> str | None:
+    """The session a request would create or change, if any (ownership is checked on it)."""
+    if method == "PATCH":
+        m = _SESSION_ITEM.match(path)
+        return m.group(1) if m else None
+    if method != "POST":
+        return None
+    m = _SESSION_WRITE_ACTION.match(path)
+    if m:
+        return m.group(1)
+    if path in ("/api/sessions", "/v1/runs"):
+        try:
+            data = json.loads(body) if body else {}
+        except (ValueError, UnicodeDecodeError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        value = (data.get("id") or data.get("session_id")) if path == "/api/sessions" else data.get("session_id")
+        return value if isinstance(value, str) else None
+    return None
+
+
 def _is_app_session(session_id: Any) -> bool:
     return isinstance(session_id, str) and session_id.startswith(APP_SESSION_PREFIX) and len(session_id) > len(APP_SESSION_PREFIX)
 
@@ -113,7 +137,12 @@ def guard_violation(method: str, path: str, body: bytes | None,
 
     read_only = (403, "session_read_only", "Only the app's own sessions can be changed; other sessions are read-only.")
 
-    if method in ("PATCH", "DELETE"):
+    if method == "DELETE" and _SESSION_ITEM.match(path):
+        # Hermes' HTTP delete orphans compression continuations and leaves transcript files;
+        # deletion goes through the verified cascade at /brainbox/sessions/{id} instead.
+        return (403, "use_brainbox_session_delete",
+                "Delete chats through DELETE /brainbox/sessions/{id}, which removes the whole conversation and verifies it.")
+    if method == "PATCH":
         m = _SESSION_ITEM.match(path)
         if m and not _is_app_session(m.group(1)):
             return read_only
@@ -159,6 +188,11 @@ class Device:
         digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
         return hmac.compare_digest(digest, self.token_sha256.lower())
 
+    @property
+    def key(self) -> str:
+        """Stable, non-secret device identity (prefix of the token hash) used for ownership."""
+        return self.token_sha256.lower()[:24]
+
 
 @dataclass
 class ProxyConfig:
@@ -182,6 +216,16 @@ class ProxyConfig:
     # Where scheduled-job results may be delivered (`deliver` on /api/jobs).
     # "local" keeps results in Hermes; add "telegram" only deliberately.
     allowed_deliver: tuple[str, ...] = ("local",)
+    # Proxy-owned state (session ownership registry, file inbox/outbox, push tokens).
+    state_dir: str = "/var/lib/brainbox-gateway"
+
+    @property
+    def state_db(self) -> str:
+        return str(Path(self.hermes_home) / "state.db")
+
+    @property
+    def sessions_dir(self) -> str:
+        return str(Path(self.hermes_home) / "sessions")
 
     def device_for(self, token: str) -> Device | None:
         if not token:
@@ -227,6 +271,7 @@ def config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
         multiplex_profiles=bool(profiles.get("multiplex", False)),
         profile_admin_enabled=bool(profiles.get("admin_enabled", False)),
         allowed_deliver=tuple(allowed_deliver),
+        state_dir=str(p.get("state_dir", "/var/lib/brainbox-gateway")),
     )
     validate(cfg)
     return cfg
@@ -355,6 +400,8 @@ class HermesProxy:
         self.audit = AuditLog(cfg.audit_log)
         self._hermes_key = hermes_key if hermes_key is not None else resolve_hermes_key(cfg)
         self._client: ClientSession | None = None
+        self.owners = OwnershipRegistry(str(Path(cfg.state_dir) / "session-owners.json"))
+        self.session_store = ReadOnlySessionStore(cfg.state_db)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -364,6 +411,8 @@ class HermesProxy:
         app.router.add_route("GET", f"{prefix}/brainbox/info", self.handle_info)
         app.router.add_route("GET", f"{prefix}/brainbox/profiles", self.handle_list_profiles)
         app.router.add_route("POST", f"{prefix}/brainbox/profiles", self.handle_create_profile)
+        app.router.add_route("GET", f"{prefix}/brainbox/sessions", self.handle_list_app_sessions)
+        app.router.add_route("DELETE", f"{prefix}/brainbox/sessions/{{session_id}}", self.handle_delete_app_session)
         app.router.add_route("*", prefix + "/{tail:.*}", self.handle_proxy)
         app.on_startup.append(self._startup)
         app.on_cleanup.append(self._cleanup)
@@ -431,6 +480,120 @@ class HermesProxy:
             out.append({"name": name, "description": None, "has_api_key": has_key,
                         "routable": bool(self.cfg.multiplex_profiles and has_key)})
         return out
+
+    # -- app chat sessions (list incl. archived, verified delete) -------------
+
+    async def _hermes_call(self, method: str, path: str, payload: Any = None) -> tuple[int, Any]:
+        assert self._client is not None
+        headers = {"Authorization": f"Bearer {self._hermes_key}", "Accept": "application/json"}
+        try:
+            async with self._client.request(method, self.cfg.hermes_url + path, headers=headers, json=payload,
+                                            allow_redirects=False) as upstream:
+                try:
+                    data = await upstream.json(content_type=None)
+                except (ValueError, UnicodeDecodeError):
+                    data = None
+                return upstream.status, data
+        except (OSError, asyncio.TimeoutError):
+            return 502, None
+
+    async def handle_list_app_sessions(self, request: web.Request) -> web.Response:
+        """GET /brainbox/sessions?state=active|archived — this device's ios_ conversations, read
+        straight from state.db (read-only) because Hermes' list API can't return archived ones."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        state = request.query.get("state", "active")
+        if state not in ("active", "archived"):
+            return json_error(400, "state must be active or archived.", "invalid_state")
+        try:
+            limit = max(1, min(200, int(request.query.get("limit", "100"))))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return json_error(400, "limit and offset must be integers.", "invalid_pagination")
+        try:
+            rows = await asyncio.to_thread(self.session_store.list_app_sessions, archived=state == "archived",
+                                           limit=limit, offset=offset)
+        except SessionStoreUnavailable as exc:
+            log.warning("session store unavailable: %s", exc)
+            return json_error(503, "Hermes' session database can't be read right now.", "session_store_unavailable")
+        has_more = len(rows) > limit
+        owners = self.owners.owners()
+        visible = []
+        for row in rows[:limit]:
+            owner = owners.get(row["id"])
+            if owner is None or owner == device.key or device.admin:
+                visible.append({**row, "owned": owner == device.key})
+        return web.json_response({"object": "list", "state": state, "data": visible, "has_more": has_more,
+                                  "limit": limit, "offset": offset})
+
+    async def handle_delete_app_session(self, request: web.Request) -> web.Response:
+        """DELETE /brainbox/sessions/{id} — permanently delete one of this device's conversations:
+        its compression continuations (deepest first) and the root via Hermes' DELETE API, then
+        the leftover transcript/debug files, then verify none of it remains."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        session_id = request.match_info["session_id"]
+        audit = lambda outcome, **extra: self.audit.write(device=device.name, action="session.delete",  # noqa: E731
+                                                          path=f"/brainbox/sessions/{session_id[:64]}", outcome=outcome, **extra)
+        if not is_app_session(session_id):
+            audit("invalid_session_id")
+            return json_error(400, "Only the app's own conversations (ios_…) can be deleted.", "invalid_session_id")
+        if not self.owners.may_manage(session_id, device.key, device.admin):
+            audit("session_not_owned")
+            return json_error(403, "This conversation belongs to another device.", "session_not_owned")
+        if not self._hermes_key:
+            return json_error(503, "Hermes API key is not configured on the server.", "hermes_key_missing")
+        try:
+            exists = await asyncio.to_thread(self.session_store.exists, session_id)
+            chain = await asyncio.to_thread(self.session_store.continuation_chain, session_id) if exists else []
+        except SessionStoreUnavailable as exc:
+            log.warning("session store unavailable: %s", exc)
+            return json_error(503, "Hermes' session database can't be read right now, so nothing was deleted.",
+                              "session_store_unavailable")
+        if not exists:
+            status, _ = await self._hermes_call("GET", f"/api/sessions/{session_id}")
+            if status == 404:
+                self.owners.forget(session_id)
+                audit("already_absent")
+                return json_error(404, "This conversation no longer exists on Hermes.", "session_not_found")
+            audit("unverifiable")
+            return json_error(503, "Hermes reports this conversation but its database copy couldn't be checked; nothing was deleted.",
+                              "session_store_unavailable")
+
+        targets = [*chain, session_id]  # continuations deepest first, root last
+        deleted: list[str] = []
+        for target in targets:
+            status, data = await self._hermes_call("DELETE", f"/api/sessions/{target}")
+            if status == 404:
+                deleted.append(target)
+                continue
+            if status >= 300 or not (isinstance(data, dict) and data.get("deleted")):
+                audit("delete_failed", status=status, deleted=len(deleted))
+                return web.json_response({"error": {"message": "Hermes did not delete the whole conversation. Nothing was reported as deleted; try again.",
+                                                    "type": "brainbox_proxy_error", "code": "delete_failed"},
+                                          "deleted_sessions": deleted, "remaining_sessions": targets[len(deleted):]},
+                                         status=502)
+            deleted.append(target)
+
+        files: list[str] = []
+        for target in deleted:
+            files += await asyncio.to_thread(remove_session_files, self.cfg.sessions_dir, target)
+        try:
+            still_there = [t for t in targets if await asyncio.to_thread(self.session_store.exists, t)]
+            messages_left = await asyncio.to_thread(self.session_store.message_count, targets)
+        except SessionStoreUnavailable:
+            still_there, messages_left = [], -1
+        if still_there or messages_left != 0:
+            audit("unverified", remaining=len(still_there))
+            return web.json_response({"error": {"message": "Hermes accepted the deletion but it could not be verified.",
+                                                "type": "brainbox_proxy_error", "code": "delete_unverified"},
+                                      "deleted_sessions": deleted, "remaining_sessions": still_there}, status=500)
+        self.owners.forget(session_id)
+        audit("ok", sessions=len(deleted), files=len(files))
+        return web.json_response({"object": "brainbox.session.deleted", "id": session_id, "deleted_sessions": deleted,
+                                  "files_removed": len(files), "verified": True})
 
     async def handle_list_profiles(self, request: web.Request) -> web.Response:
         _, err = self._authenticate(request)
@@ -516,6 +679,11 @@ class HermesProxy:
             status, code, message = violation
             self.audit.write(device=device.name if device else None, action="guard", method=method, path=tail, outcome=code)
             return json_error(status, message, code)
+        write_target = session_write_target(method, path, body)
+        if write_target and is_app_session(write_target) and device is not None \
+                and not self.owners.may_manage(write_target, device.key, device.admin):
+            self.audit.write(device=device.name, action="guard", method=method, path=tail, outcome="session_not_owned")
+            return json_error(403, "This conversation belongs to another device.", "session_not_owned")
         key = resolve_hermes_key(self.cfg, profile) if profile and profile != "default" else self._hermes_key
         if not key:
             return json_error(503, "Hermes API key is not configured on the server.", "hermes_key_missing")
@@ -534,6 +702,10 @@ class HermesProxy:
             return json_error(502, "Hermes is not reachable on the server.", "hermes_unreachable")
 
         mutating = method in ("POST", "PATCH", "DELETE")
+        if write_target and is_app_session(write_target) and device is not None and (
+                upstream.status < 300 or (path == "/api/sessions" and upstream.status == 409)):
+            # First successful write records (or claims, for pre-registry sessions) the owner.
+            self.owners.record(write_target, device.key)
         try:
             content_type = upstream.headers.get("Content-Type", "")
             if content_type.startswith("text/event-stream"):
