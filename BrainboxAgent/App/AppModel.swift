@@ -1,4 +1,6 @@
 import SwiftUI
+import UIKit
+import BackgroundTasks
 import BrainboxCore
 
 /// Bottom navigation. Settings is reached from the gear on Home and Server.
@@ -54,7 +56,7 @@ final class AppModel {
     var pendingLink: BrainboxDeepLink?
     /// The last requests made to Hermes / the proxy (Diagnostics; paths only).
     @ObservationIgnored let requestLog = RecordingHTTPTransport(URLSessionHTTPTransport())
-    let push: PushManager
+    let notifications: NotificationManager
     let transfers = TransferManager()
 
     @ObservationIgnored private var observers: [Task<Void, Never>] = []
@@ -96,7 +98,7 @@ final class AppModel {
             workspace.activeTeammateID = saved
         }
         self.hermes = workspace
-        self.push = PushManager(defaults: defaults, enabled: !environment.usesEphemeralStorage)
+        self.notifications = NotificationManager(defaults: defaults, enabled: !environment.usesEphemeralStorage)
 
         let initialSuite = ProviderSuite.mock(fast: environment.isUITesting)
         self.suite = initialSuite
@@ -106,6 +108,9 @@ final class AppModel {
         chat.provider = { [unowned self] in self.suite.agent }
         chat.isOnline = { [unowned self] in self.network.isOnline }
         chat.onReplyFinished = { [weak self] message in self?.replyFinished(message) }
+        hermes.onRunStateChange = { [weak self] run in
+            self?.notifications.runChanged(runID: run.id, title: run.title, state: run.state)
+        }
         chat.requestOptions = { [unowned self] conversation in
             self.settings.providerKind == .hermes ? self.hermes.requestOptions(for: conversation) : nil
         }
@@ -138,8 +143,11 @@ final class AppModel {
         switch phase {
         case .background:
             gate.noteBackgrounded()
+            keepFinishingInBackground()
+            notifications.scheduleBackgroundRefresh()
         case .active:
             gate.noteForegrounded()
+            Task { await notifications.refreshPermission() }
             gateway?.reconnectNow()
             if isHermes, !connectionState.isConnected { Task { await connect() } }
         default:
@@ -222,7 +230,8 @@ final class AppModel {
                 await hermes.refreshAfterConnect()
                 chat.resumeInterruptedRuns()
                 await chat.syncArchiveState()
-                await push.serverChanged(client: hermes.client, features: hermes.gatewayInfo?.features)
+                await notifications.refreshPermission()
+                startJobWatch()
             }
         } catch {
             let agentError = error.asAgentError
@@ -248,8 +257,11 @@ final class AppModel {
                 withAnimation(Motion.standard) { self.connectionState = state }
                 if case .failed(let error) = state { self.connectionError = error }
                 if state.isConnected { self.connectionError = nil }
-                if wasConnected && !state.isConnected && self.settings.notifyOnDisconnect {
-                    Notifier.post(title: "Brainbox disconnected", body: "Reconnecting to \(agent.descriptor.name)…")
+                if wasConnected && !state.isConnected {
+                    let hour = Int(Date().timeIntervalSince1970 / 3600)
+                    self.notifications.post(LocalAlert(kind: .connectionLost, title: "Brainbox disconnected",
+                                                       body: "Lost the connection to \(agent.descriptor.name). Reconnecting…",
+                                                       link: "brainbox://server", dedupeKey: "conn:\(hour)"))
                 }
             }
         }
@@ -263,8 +275,14 @@ final class AppModel {
     }
 
     private func replyFinished(_ message: Message) {
-        if settings.notifyOnTaskComplete, !message.toolCalls.isEmpty {
-            Notifier.post(title: "Task finished", body: String(message.content.prefix(120)))
+        // Hermes replies are covered by run-state alerts (same dedupe key); this covers
+        // other backends. No reply text goes on the lock screen.
+        let title = chat.conversations.first { c in c.messages.contains { $0.id == message.id } }?.title ?? ""
+        let key = message.runID ?? message.id.uuidString
+        switch message.state {
+        case .complete: notifications.runChanged(runID: key, title: title, state: .completed)
+        case .failed: notifications.runChanged(runID: key, title: title, state: .failed)
+        default: break
         }
     }
 
@@ -302,6 +320,62 @@ final class AppModel {
     func selectTeammate(_ id: UUID) {
         hermes.activeTeammateID = id
         settings.lastTeammateID = id.uuidString
+    }
+
+    // MARK: Local notifications
+
+    @ObservationIgnored private var jobWatch: Task<Void, Never>?
+    @ObservationIgnored private var backgroundTaskID: UIBackgroundTaskIdentifier = .invalid
+
+    /// While the app is open and connected: check scheduled jobs every minute.
+    private func startJobWatch() {
+        jobWatch?.cancel()
+        jobWatch = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self, self.isHermes, let client = self.hermes.client else { return }
+                if let jobs = try? await client.jobs() { self.notifications.jobsChanged(jobs) }
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            }
+        }
+    }
+
+    /// iOS gives a backgrounded app ~30 s: enough for a reply that's about to
+    /// finish to stream its end and post its notification.
+    private func keepFinishingInBackground() {
+        guard chat.isStreaming, backgroundTaskID == .invalid else { return }
+        backgroundTaskID = UIApplication.shared.beginBackgroundTask(withName: "finish-reply") { [weak self] in
+            guard let self else { return }
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
+        }
+        Task { [weak self] in
+            while let self, self.chat.isStreaming, self.backgroundTaskID != .invalid {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            guard let self, self.backgroundTaskID != .invalid else { return }
+            UIApplication.shared.endBackgroundTask(self.backgroundTaskID)
+            self.backgroundTaskID = .invalid
+        }
+    }
+
+    /// iOS background refresh: check jobs and in-flight runs, post what changed.
+    func runBackgroundCheck(_ task: BGAppRefreshTask) {
+        notifications.scheduleBackgroundRefresh()
+        let work = Task { [weak self] in
+            guard let self, self.isHermes, let client = self.hermes.client else { return false }
+            if let jobs = try? await client.jobs() { self.notifications.jobsChanged(jobs) }
+            for run in self.hermes.runs where !run.state.isTerminal {
+                guard let status = try? await client.runStatus(id: run.id) else { continue }
+                self.notifications.runChanged(runID: run.id, title: run.title, state: status.status)
+            }
+            self.notifications.noteBackgroundCheck()
+            return true
+        }
+        task.expirationHandler = { work.cancel() }
+        Task {
+            let ok = await work.value
+            task.setTaskCompleted(success: ok)
+        }
     }
 
     // MARK: Deep links

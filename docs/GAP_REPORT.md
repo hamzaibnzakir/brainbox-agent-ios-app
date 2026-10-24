@@ -73,7 +73,7 @@ Status key: ✅ done on this branch · 🟡 partly done · ❌ missing.
 
 1. **Deploying the updated proxy to the VPS.** Needs your approval. The commands are in `docs/HERMES_API_DEPLOYMENT.md`.
 2. **Terminal account `brainbox-term`.** You create it (`docs/TERMINAL.md`).
-3. **APNs.** Needs a paid Apple Developer membership, a `.p8` key on the server, and a signed build with Push.
+3. **Notifications:** now local (no paid account needed). Background alerts depend on iOS Background App Refresh timing.
 4. **Real-VPS verification** of stop, steer, parallel runs, images, files, terminal and deletion, after deployment.
 
 ## Order of work

@@ -125,14 +125,11 @@ struct HomeView: View {
     }
 
     private var pushSummary: (text: String, tone: StatusTone) {
-        switch model.push.readiness {
-        case .off: return ("Off", .idle)
-        case .ready: return ("On", .live)
-        case .checking: return ("Checking…", .busy)
-        case .permissionDenied: return ("Blocked in iOS Settings", .warning)
-        case .buildCannotPush: return ("Needs a paid Apple account build", .warning)
-        case .serverNotConfigured: return ("Not configured on the server", .warning)
-        case .notConnected: return ("Waiting for connection", .idle)
+        switch model.notifications.permission {
+        case .authorized, .provisional, .ephemeral: return ("On (local, from this iPhone)", .live)
+        case .denied: return ("Blocked in iOS Settings", .warning)
+        case .notDetermined: return ("Not set up", .idle)
+        @unknown default: return ("Unknown", .idle)
         }
     }
 

@@ -66,7 +66,7 @@ max_sessions_per_device = 3
 [push]
 # Apple Push Notifications. Needs a PAID Apple Developer Program membership,
 # an APNs auth key (.p8) kept only on this server, and `pip install '.[push]'`.
-# See docs/PUSH_NOTIFICATIONS.md. Leave disabled otherwise — the app shows
+# See docs/NOTIFICATIONS.md. Leave disabled (the app uses local notifications) — the app shows
 # "not configured" and nothing is sent.
 enabled = false
 team_id = ""                    # 10 characters, from developer.apple.com → Membership

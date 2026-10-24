@@ -1,4 +1,43 @@
-# Push notifications (APNs)
+# Notifications
+
+Brainbox uses **local notifications**, built with iOS's `UserNotifications` framework and posted by the app on your iPhone. Apple doesn't let apps signed with a free developer account use remote push (APNs), so there's no push server involved.
+
+## What you get alerts for
+
+You can turn each of these on or off in Settings → Notifications. Each event alerts **once**, and that holds across relaunches and background checks.
+
+| Alert | Comes from |
+| --- | --- |
+| Task finished / failed or stopped | The Hermes run's own stream or status: chat replies and Tasks runs. |
+| Approval needed | A run waiting on your decision. This alert also shows while the app is open. |
+| Scheduled task finished / failed | Each job's `latest_execution` from `/api/jobs`. The first look after install only records state, so old results never alert. |
+| Parallel agents finished | The parallel-agents engine, once every agent and the combined result have settled. |
+| Connection lost | The live connection dropping, at most once an hour. |
+
+Alerts contain a title, a short neutral sentence and a `brainbox://` link that opens the right screen. They never include message text, outputs or commands. Alerts about something you're looking at in the open app aren't shown, except approvals.
+
+## When alerts arrive (be aware of this)
+
+| Situation | What happens |
+| --- | --- |
+| Brainbox is open | Instant. Scheduled jobs are checked every minute. |
+| You just left the app with a reply still running | iOS gives about 30 seconds to finish. If the reply ends in that time, you get the alert. |
+| Brainbox is in the background | iOS wakes it with **Background App Refresh** (`BGAppRefreshTask`, id `app.brainbox.agent.refresh`) **when iOS decides**. That's often every few hours, depending on how you use the app, battery and Low Power Mode. Each wake checks scheduled jobs and in-flight runs. These alerts can be late. |
+| Force-quit, or Background App Refresh off | Nothing arrives until you open Brainbox again. iOS doesn't run force-quit apps. |
+
+Settings → Notifications shows when the last background check happened. Use **Send a test notification** to confirm iOS shows Brainbox alerts.
+
+## If you get a paid Apple Developer account later
+
+The Brainbox proxy still contains an optional APNs sender. It's **off by default** (`[push] enabled = false`) and the app doesn't use it. Real server push would make alerts instant even while the app is closed. Turning it on later needs four things:
+
+- the paid membership;
+- an APNs `.p8` key kept only on the server;
+- a build signed with the Push capability (the `push` input of the Signed IPA workflow);
+- registration code added back in the app.
+
+The previous server-side notes follow for reference.
+
 
 ## Requirements
 

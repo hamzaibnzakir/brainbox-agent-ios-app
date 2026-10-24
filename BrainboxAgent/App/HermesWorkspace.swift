@@ -170,9 +170,14 @@ final class HermesWorkspace {
 
     func run(_ id: String) -> RunRecord? { runs.first { $0.id == id } }
 
+    /// Called when a run's state changes (drives local notifications).
+    @ObservationIgnored var onRunStateChange: ((RunRecord) -> Void)?
+
     private func record(_ activity: RunActivity) {
         if let index = runs.firstIndex(where: { $0.id == activity.runID }) {
+            let before = runs[index].state
             runs[index] = runs[index].applying(activity)
+            if runs[index].state != before { onRunStateChange?(runs[index]) }
         } else {
             let fresh = RunRecord(id: activity.runID, title: activity.title ?? "Agent run", state: activity.state ?? .running,
                                   createdAt: activity.date, updatedAt: activity.date,

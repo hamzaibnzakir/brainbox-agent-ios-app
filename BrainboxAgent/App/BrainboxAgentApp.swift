@@ -26,7 +26,7 @@ struct BrainboxAgentApp: App {
     }
 }
 
-/// Local notifications (remote pushes come through PushManager).
+/// Simple one-off local notifications (event alerts go through NotificationManager).
 enum Notifier {
     static func requestAuthorization() async -> Bool {
         (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false

@@ -433,30 +433,83 @@ struct SecuritySettingsView: View {
 
 struct NotificationSettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
+    @State private var testing = false
+
+    private var notifications: NotificationManager { model.notifications }
 
     var body: some View {
-        @Bindable var settings = model.settings
         List {
             Section {
-                Toggle("Task finished", isOn: Binding(get: { settings.notifyOnTaskComplete }, set: { value in
-                    settings.notifyOnTaskComplete = value
-                    if value { Task { _ = await Notifier.requestAuthorization() } }
-                }))
-                .tint(BB.Palette.signal)
-                Toggle("Connection lost", isOn: Binding(get: { settings.notifyOnDisconnect }, set: { value in
-                    settings.notifyOnDisconnect = value
-                    if value { Task { _ = await Notifier.requestAuthorization() } }
-                }))
-                .tint(BB.Palette.signal)
+                HStack {
+                    Text("Notifications")
+                    Spacer()
+                    Text(permissionText).foregroundStyle(BB.Palette.textSecondary)
+                }
+                if notifications.permission == .notDetermined {
+                    Button("Allow notifications") { Task { await notifications.requestPermission() } }
+                        .accessibilityIdentifier("notifications.allow")
+                } else if notifications.permission == .denied {
+                    Button("Open iOS Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    }
+                }
+                Button {
+                    testing = true
+                    Task {
+                        await notifications.sendTest()
+                        testing = false
+                    }
+                } label: {
+                    if testing { ProgressView() } else { Text("Send a test notification") }
+                }
+                .accessibilityIdentifier("notifications.test")
+                if let result = notifications.lastTestResult {
+                    Text(result).font(BB.Font.caption).foregroundStyle(BB.Palette.textSecondary)
+                }
             } footer: {
-                Text("Local notifications only. Brainbox Agent has no push server; alerts fire while the app is running or briefly in the background.")
+                Text("Brainbox uses local notifications posted by this iPhone, so no paid Apple developer account or push server is needed.")
                     .font(BB.Font.caption)
             }
+            .listRowBackground(BB.Palette.surface)
+
+            Section {
+                ForEach(LocalAlertKind.allCases) { kind in
+                    Toggle(kind.title, isOn: Binding(get: { notifications.preferences[kind] ?? true },
+                                                     set: { notifications.setPreference(kind, $0) }))
+                        .tint(BB.Palette.signal)
+                }
+            } header: { Text("Alert me about").bbLabelStyle() }
+            .listRowBackground(BB.Palette.surface)
+
+            Section {
+                Label("Instant while Brainbox is open, or for about 30 seconds after you leave it with a reply still running.", systemImage: "bolt")
+                Label("When Brainbox is in the background, iOS wakes it occasionally to check scheduled tasks and running work. iOS decides when — often every few hours — so these alerts can be late.", systemImage: "clock.arrow.circlepath")
+                Label("Nothing arrives after you force-quit Brainbox or turn off Background App Refresh for it.", systemImage: "xmark.circle")
+                if let last = notifications.lastBackgroundCheck {
+                    Text("Last background check: \(last.formatted(date: .abbreviated, time: .shortened))")
+                        .foregroundStyle(BB.Palette.textSecondary)
+                }
+            } header: { Text("When alerts arrive").bbLabelStyle() } footer: {
+                Text("Alerts show a short neutral summary and never include message text, outputs or commands.")
+                    .font(BB.Font.caption)
+            }
+            .font(BB.Font.caption)
             .listRowBackground(BB.Palette.surface)
         }
         .listStyle(.insetGrouped)
         .bbScreen()
         .navigationTitle("Notifications")
+        .task { await notifications.refreshPermission() }
+    }
+
+    private var permissionText: String {
+        switch notifications.permission {
+        case .authorized, .provisional, .ephemeral: return "On"
+        case .denied: return "Off in iOS Settings"
+        case .notDetermined: return "Not asked yet"
+        @unknown default: return "Unknown"
+        }
     }
 }
 
