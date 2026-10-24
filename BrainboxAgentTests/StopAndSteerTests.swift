@@ -74,7 +74,7 @@ final class StopAndSteerTests: XCTestCase {
         return Harness(store: store, transport: transport, streams: streams, runInputs: inputs)
     }
 
-    private func until(_ timeout: TimeInterval = 5, _ what: String, _ condition: () -> Bool) async throws {
+    private func until(_ what: String, timeout: TimeInterval = 5, _ condition: () -> Bool) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         while !condition() {
             if Date() > deadline { return XCTFail("timed out waiting for \(what)") }
