@@ -121,8 +121,16 @@ async def agent_ready(hermes, index=0):
     return hermes.agents[index]
 
 
-async def test_hermes_drops_a_runs_events_when_its_one_consumer_disconnects(real_hermes, aiohttp_client):
-    """The root cause, demonstrated on Hermes' own code: no proxy, a phone-like client."""
+def hermes_resumes_streams() -> bool:
+    """Newer Hermes keeps a per-run backlog and honours Last-Event-ID (`_RunStream`); 284d220 doesn't."""
+    import gateway.platforms.api_server_runs as runs  # Hermes
+    return hasattr(runs, "_RunStream")
+
+
+async def test_disconnect_behaviour_of_this_hermes_version(real_hermes, aiohttp_client):
+    """284d220: the root cause, shown on Hermes' own code — a dropped consumer loses the run's
+    events (re-subscribe → 404). Newer Hermes: it resumes from Last-Event-ID. The app and the
+    relay handle both."""
     hermes, url = real_hermes
     from aiohttp import ClientSession
     headers = {"Authorization": f"Bearer {HERMES_KEY}"}
@@ -138,15 +146,25 @@ async def test_hermes_drops_a_runs_events_when_its_one_consumer_disconnects(real
         resp.close()  # the phone's socket dies
         await asyncio.sleep(0.3)
         agent.steps.put(("delta", " second"))
-        r2 = await http.get(f"{url}/v1/runs/{run_id}/events", headers=headers)
-        assert r2.status == 404  # Hermes deleted the queue: no resume, " second" is gone for SSE
-        agent.steps.put(("finish", None))
+        seen = [f for f in parse_sse(buf.decode()) if "id" in f]
+        resume_headers = dict(headers)
+        if seen:
+            resume_headers["Last-Event-ID"] = str(seen[-1]["id"])
+        r2 = await http.get(f"{url}/v1/runs/{run_id}/events", headers=resume_headers)
+        if hermes_resumes_streams():
+            assert r2.status == 200
+            agent.steps.put(("finish", None))
+            later = [f["data"] for f in parse_sse(await r2.text())]
+            assert [e.get("delta") for e in later if e["event"] == "message.delta"] == [" second"]
+        else:
+            assert r2.status == 404  # Hermes deleted the queue: " second" is gone for SSE
+            agent.steps.put(("finish", None))
         for _ in range(50):
             status = await (await http.get(f"{url}/v1/runs/{run_id}", headers=headers)).json()
             if status["status"] == "completed":
                 break
             await asyncio.sleep(0.05)
-        assert status["output"] == "first second"  # only the final output survives, by polling
+        assert status["output"] == "first second"
 
 
 async def test_through_the_relay_a_disconnect_loses_no_tokens(proxy_client):
@@ -255,3 +273,5 @@ async def test_real_gateway_prompt_matches_what_telegram_uses(real_catalog):
     report = await real_catalog.parity()
     assert report["persona_prompt_chars"] == len("You are the test persona.")
     assert isinstance(report["toolsets"]["telegram"], list) and isinstance(report["toolsets"]["api_server"], list)
+    assert report["busy_input_mode"] in {"interrupt", "queue", "steer"}
+    assert not report.get("unavailable"), report.get("unavailable")

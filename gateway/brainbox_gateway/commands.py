@@ -88,22 +88,48 @@ elif op == "persona":
     from gateway.run import GatewayRunner
     out = {"prompt": GatewayRunner._load_ephemeral_system_prompt() or ""}
 elif op == "parity":
-    from gateway.run import GatewayRunner, _load_gateway_config, _resolve_gateway_model
-    from hermes_cli.tools_config import _get_platform_tools
-    cfg = _load_gateway_config() or {}
-    tg = set(_get_platform_tools(cfg, "telegram"))
-    api = set(_get_platform_tools(cfg, "api_server"))
-    explicit = cfg.get("platform_toolsets") or {}
-    persona = GatewayRunner._load_ephemeral_system_prompt() or ""
-    out = {"toolsets": {"telegram": sorted(tg), "api_server": sorted(api),
-                        "only_telegram": sorted(tg - api), "only_api_server": sorted(api - tg),
-                        "explicit_telegram": isinstance(explicit.get("telegram"), list),
-                        "explicit_api_server": isinstance(explicit.get("api_server"), list)},
-           "model": _resolve_gateway_model() or "",
-           "persona_prompt_chars": len(persona),
-           "provider_routing": bool(GatewayRunner._load_provider_routing()),
-           "prefill_messages": len(GatewayRunner._load_prefill_messages() or []),
-           "fallback_chain": len(GatewayRunner._load_fallback_model() or [])}
+    # Each fact is read independently so one renamed internal can't hide the rest.
+    from gateway.run import GatewayRunner
+    def fact(fn, default=None):
+        try:
+            return fn()
+        except Exception as exc:
+            out.setdefault("unavailable", []).append(f"{getattr(fn, '__name__', 'fact')}: {type(exc).__name__}")
+            return default
+    def toolsets():
+        from gateway.run import _load_gateway_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = _load_gateway_config() or {}
+        tg = set(_get_platform_tools(cfg, "telegram"))
+        api = set(_get_platform_tools(cfg, "api_server"))
+        explicit = cfg.get("platform_toolsets") or {}
+        return {"telegram": sorted(tg), "api_server": sorted(api),
+                "only_telegram": sorted(tg - api), "only_api_server": sorted(api - tg),
+                "explicit_telegram": isinstance(explicit.get("telegram"), list),
+                "explicit_api_server": isinstance(explicit.get("api_server"), list)}
+    def model():
+        from gateway.run import _resolve_gateway_model
+        return _resolve_gateway_model() or ""
+    def persona_chars():
+        return len(GatewayRunner._load_ephemeral_system_prompt() or "")
+    def provider_routing():
+        return bool(GatewayRunner._load_provider_routing())
+    def prefill():
+        return len(GatewayRunner._load_prefill_messages() or [])
+    def fallback():
+        return len(GatewayRunner._load_fallback_model() or [])
+    def busy_input_mode():
+        # What Telegram does with a message sent while the agent works: interrupt | queue | steer.
+        return GatewayRunner._load_busy_input_mode()
+    def version():
+        from hermes_cli import __version__  # Hermes' canonical version (dist-info can be stale)
+        return __version__
+    out.update({"toolsets": fact(toolsets, {"telegram": [], "api_server": [], "only_telegram": [], "only_api_server": [],
+                                            "explicit_telegram": False, "explicit_api_server": False}),
+                "model": fact(model, ""), "persona_prompt_chars": fact(persona_chars, 0),
+                "provider_routing": fact(provider_routing, False), "prefill_messages": fact(prefill, 0),
+                "fallback_chain": fact(fallback, 0), "busy_input_mode": fact(busy_input_mode, "interrupt"),
+                "hermes_version": fact(version, "")})
 print(json.dumps(out))
 """
 

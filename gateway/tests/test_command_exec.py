@@ -89,6 +89,9 @@ class GatewayRunner:
     @staticmethod
     def _load_fallback_model():
         return ["b"]
+    @staticmethod
+    def _load_busy_input_mode():
+        return "queue"
 ''',
     "hermes_cli/tools_config.py": '''
 def _get_platform_tools(cfg, platform):
@@ -174,6 +177,7 @@ async def test_parity_report_names_the_differences(stubbed):
     assert report["toolsets"]["explicit_telegram"] is True and report["toolsets"]["explicit_api_server"] is False
     assert report["persona_prompt_chars"] > 0 and "Kat" not in json.dumps(report), "prompt text never leaves the server"
     assert report["fallback_chain"] == 1 and report["gateway_prompt_applied"] is True
+    assert report["busy_input_mode"] == "queue"
 
 
 async def test_runs_get_telegrams_gateway_prompt_before_app_instructions(stubbed):

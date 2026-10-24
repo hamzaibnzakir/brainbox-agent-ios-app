@@ -28,9 +28,17 @@ class FakeHermesRuns:
         self.subscriptions: dict[str, int] = {}
         self.counter = 0
         self.drop_stream_after: dict[str, int] = {}  # run -> close the SSE after N events (no terminal)
+        # Newer-Hermes mode: events carry `seq` and the stream resumes from Last-Event-ID.
+        self.resumable = False
+        self.backlog: dict[str, list] = {}
+        self.last_event_ids: list = []
 
     def push(self, run_id, event: dict):
         event = {"run_id": run_id, "timestamp": 1.0, **event}
+        if self.resumable:
+            log = self.backlog.setdefault(run_id, [])
+            event["seq"] = len(log)
+            log.append(event)
         q = self.queues.get(run_id)
         if q is not None:
             q.put_nowait(event)
@@ -53,7 +61,33 @@ class FakeHermesRuns:
             self.status[run_id] = {"object": "hermes.run", "run_id": run_id, "status": "running"}
             return web.json_response({"run_id": run_id, "status": "started"}, status=202)
 
+        async def resumable_events(request):
+            run_id = request.match_info["run_id"]
+            last = request.headers.get("Last-Event-ID")
+            self.last_event_ids.append(last)
+            self.subscriptions[run_id] = self.subscriptions.get(run_id, 0) + 1
+            cursor = int(last) if last is not None else -1
+            resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await resp.prepare(request)
+            sent = 0
+            while True:
+                pending = [e for e in self.backlog.get(run_id, []) if e["seq"] > cursor]
+                if not pending:
+                    await asyncio.sleep(0.02)
+                    continue
+                for event in pending:
+                    await resp.write(f"id: {event['seq']}\ndata: {json.dumps(event)}\n\n".encode())
+                    cursor = event["seq"]
+                    sent += 1
+                    if event["event"] in ("run.completed", "run.failed", "run.cancelled"):
+                        return resp
+                    if self.drop_stream_after.get(run_id) == sent:
+                        self.drop_stream_after.pop(run_id)
+                        return resp  # cut, but Hermes keeps the backlog
+
         async def events(request):
+            if self.resumable:
+                return await resumable_events(request)
             run_id = request.match_info["run_id"]
             q = self.queues.get(run_id)
             if q is None:
@@ -319,3 +353,26 @@ async def test_info_advertises_the_relay(relay_client):
     client, fake, proxy = await relay_client()
     info = await (await client.get("/hermes/brainbox/info", headers=auth())).json()
     assert info["features"]["run_relay"] is True
+
+
+async def test_newer_hermes_stream_is_resumed_upstream_not_polled(relay_client):
+    client, fake, proxy = await relay_client(RelayLimits(status_poll_seconds=0.05))
+    fake.resumable = True
+    run_id = await start_run(client)
+    await wait_for(lambda: fake.subscriptions.get(run_id) == 1)
+    fake.drop_stream_after[run_id] = 2
+    fake.push(run_id, {"event": "message.delta", "delta": "one "})
+    fake.push(run_id, {"event": "message.delta", "delta": "two "})
+    await wait_for(lambda: fake.subscriptions.get(run_id) == 2)
+    fake.push(run_id, {"event": "message.interim", "text": "checking the logs", "already_streamed": False})
+    fake.push(run_id, {"event": "message.delta", "delta": "three"})
+    fake.push(run_id, {"event": "run.completed", "output": "one two three"})
+    await wait_for(lambda: proxy.relay.get(run_id).finished)
+    assert fake.last_event_ids == [None, "1"], "resumed after Hermes' own seq 1"
+    frames = [f["data"] for f in parse_sse(await (await client.get(f"/hermes/brainbox/runs/{run_id}/events", headers=auth())).text())]
+    deltas = [f["delta"] for f in frames if f["event"] == "message.delta"]
+    assert deltas == ["one ", "two ", "three"]
+    assert any(f["event"] == "message.interim" for f in frames), "newer Hermes events pass through"
+    assert "polling" not in [f.get("state") for f in frames if f["event"] == "brainbox.upstream"]
+    seqs = [f["seq"] for f in frames]
+    assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs), "the relay's own numbering stays strictly increasing"

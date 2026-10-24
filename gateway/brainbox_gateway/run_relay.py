@@ -72,6 +72,8 @@ class RelayedRun:
     task: asyncio.Task | None = None
     delta_text: dict = field(default_factory=dict)  # seq -> delta, folded into evicted_text on eviction
     last_status_approval: str | None = None
+    # Newer Hermes numbers its own events (`seq`) and resumes from Last-Event-ID; 284d220 doesn't.
+    upstream_seq: int | None = None
     changed: asyncio.Event = field(default_factory=asyncio.Event)
 
     @property
@@ -185,6 +187,15 @@ class RunRelay:
         name = str(payload.get("event") or "")
         if not name:
             return False
+        hermes_seq = payload.get("seq")
+        if isinstance(hermes_seq, int) and not isinstance(hermes_seq, bool):
+            if run.upstream_seq is not None and hermes_seq <= run.upstream_seq:
+                return False  # replayed by Hermes after we resumed: already relayed
+            run.upstream_seq = hermes_seq
+        if name == "replay.truncated":
+            # Hermes evicted events we never received; its final output still arrives with run.completed.
+            self._upstream(run, "truncated", "Hermes dropped some events before the relay could read them.")
+            return False
         run.last_event_at = self.clock()
         run.hermes_last_event = name
         if name == "approval.request":
@@ -234,7 +245,10 @@ class RunRelay:
         """Read Hermes' SSE stream. Returns 'terminal', 'not_found' or 'dropped'."""
         client = self._client_getter()
         url = f"{self.hermes_url}{run.path_prefix}/v1/runs/{run.run_id}/events"
-        async with client.get(url, headers=self._headers(run, "text/event-stream"), allow_redirects=False) as resp:
+        headers = self._headers(run, "text/event-stream")
+        if run.upstream_seq is not None:
+            headers["Last-Event-ID"] = str(run.upstream_seq)
+        async with client.get(url, headers=headers, allow_redirects=False) as resp:
             if resp.status == 404:
                 return "not_found"
             if resp.status >= 300:
@@ -287,9 +301,20 @@ class RunRelay:
                 if outcome != "not_found" or run.next_seq > 1:
                     break
                 await asyncio.sleep(0.3 * (attempt + 1))
+            # Newer Hermes resumes a stream from Last-Event-ID: re-open it before giving up on live events.
+            resumes = 0
+            while outcome == "dropped" and run.upstream_seq is not None and resumes < self.limits.subscribe_attempts:
+                resumes += 1
+                self._upstream(run, "reconnecting", "Reconnecting to Hermes' event stream.")
+                await asyncio.sleep(0.5 * resumes)
+                try:
+                    outcome = await self._stream(run)
+                except Exception as exc:  # noqa: BLE001 — OSError, timeouts, aiohttp payload errors
+                    log.info("Hermes stream for %s broke again: %s", run.run_id, exc)
+                    outcome = "dropped"
             if outcome == "terminal":
                 return
-            # Hermes deletes a run's queue when its consumer disconnects, so the stream can't be
+            # 284d220 deletes a run's queue when its consumer disconnects, so the stream can't be
             # re-opened: follow the run by status and relay the terminal state Hermes reports.
             self._upstream(run, "polling", "Hermes' live stream ended early; following the run by status.")
             await self._poll_until_terminal(run)
