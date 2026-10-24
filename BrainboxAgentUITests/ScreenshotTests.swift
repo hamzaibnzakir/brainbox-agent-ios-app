@@ -12,7 +12,7 @@ final class ScreenshotTests: XCTestCase {
     private func launch(_ appearance: XCUIDevice.Appearance) {
         XCUIDevice.shared.appearance = appearance
         app = XCUIApplication()
-        app.launchArguments = ["-uitesting"]
+        app.launchArguments = ["-uitesting", "-ui-appearance", appearance == .dark ? "dark" : "light"]
         app.launch()
     }
 

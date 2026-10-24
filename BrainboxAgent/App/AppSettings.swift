@@ -78,7 +78,15 @@ final class AppSettings {
         self.defaults = defaults
         providerKind = ProviderKind(rawValue: defaults.string(forKey: Key.provider) ?? "") ?? .mock
         backendURL = defaults.string(forKey: Key.backendURL) ?? ""
-        appearance = AppearanceMode(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .dark
+        // New installs follow the system appearance (light and dark are both designed).
+        appearance = AppearanceMode(rawValue: defaults.string(forKey: Key.appearance) ?? "") ?? .system
+        #if DEBUG
+        // UI tests can force one: `-ui-appearance light|dark`.
+        let args = ProcessInfo.processInfo.arguments
+        if let index = args.firstIndex(of: "-ui-appearance"), index + 1 < args.count, let forced = AppearanceMode(rawValue: args[index + 1]) {
+            appearance = forced
+        }
+        #endif
         biometricsEnabled = isTesting ? false : (defaults.object(forKey: Key.biometrics) as? Bool ?? true)
         let storedTimeout = defaults.object(forKey: Key.sessionTimeout) as? Double ?? 300
         sessionTimeout = storedTimeout < 0 ? nil : storedTimeout

@@ -19,7 +19,7 @@ struct TeamView: View {
                     if !model.isHermes {
                         BBCard {
                             EmptyStateView(systemImage: "bolt.horizontal.circle", title: "Connect Hermes",
-                                           message: "Teammates run on your Hermes agent. Add its URL and device token in Settings → Hermes, then tap “Use Hermes as the backend”.")
+                                           message: "Presets and parallel agents run on your Hermes agent. Add its URL and device token in Settings → Hermes, then tap “Use Hermes as the backend”.")
                         }
                         .bbEntrance(index: 1)
                     }
@@ -98,21 +98,25 @@ struct TeamView: View {
     // MARK: Hero
 
     private var hero: some View {
-        ZStack {
-            MascotConstellation(
-                members: workspace.visibleTeammates.prefix(6).map { MascotConstellation.Member(id: $0.id, style: $0.mascot, mood: mood(for: $0)) },
-                radius: 128, mascotSize: 48,
-                onTap: { id in if let mate = workspace.teammate(id) { open(mate) } })
-            VStack(spacing: 6) {
+        VStack(spacing: 12) {
+            HStack(spacing: -8) {
+                ForEach(Array(workspace.visibleTeammates.prefix(5).enumerated()), id: \.element.id) { index, mate in
+                    Button { open(mate) } label: {
+                        MascotView(style: mate.mascot, mood: mood(for: mate), size: index == 0 ? 64 : 48, seed: mate.id,
+                                   hopTrigger: hopTargets[mate.id, default: 0])
+                            .background(Circle().fill(BB.Palette.background).padding(-3))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Open \(mate.name)")
+                }
+            }
+            VStack(spacing: 4) {
                 Text("Agent workspace").font(BB.Font.display).foregroundStyle(BB.Palette.textPrimary)
                 LiveIndicator(state: model.connectionState)
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
-            .background(Capsule().fill(BB.Palette.background.opacity(0.75)).blur(radius: 12))
         }
-        .frame(height: 230)
         .frame(maxWidth: .infinity)
+        .padding(.vertical, BB.Space.l)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Agent workspace")
     }

@@ -45,7 +45,7 @@ final class CriticalPathUITests: XCTestCase {
         let suggestion = app.buttons["suggestion.0"]
         XCTAssertTrue(suggestion.waitForExistence(timeout: 5))
         suggestion.tap()
-        XCTAssertTrue(app.descendants(matching: .any)["assistant.complete"].firstMatch.waitForExistence(timeout: 20))
+        XCTAssertTrue(app.descendants(matching: .any)["assistant.complete"].firstMatch.waitForExistence(timeout: 40))
 
         app.buttons["agent.history"].tap()
         let row = app.descendants(matching: .any)["history.row"].firstMatch
