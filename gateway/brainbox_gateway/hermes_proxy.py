@@ -47,6 +47,7 @@ from .chat_sessions import (OwnershipRegistry, ReadOnlySessionStore, SessionStor
 from .commands import CommandCatalog, CommandsUnavailable
 from .diagnostics import host_snapshot
 from .pty_terminal import TerminalConfig, TerminalManager, TerminalUnavailable, parse_client_frame
+from .run_relay import RunRelay
 from .push import EVENT_KINDS, Notification, PushConfig, PushService
 from .workspace_files import Workspace, WorkspaceConfig, WorkspaceError, owner_dir
 
@@ -96,6 +97,7 @@ PUBLIC_ROUTES = {("GET", "/health"), ("GET", "/v1/health")}
 APP_SESSION_PREFIX = "ios_"
 _SESSION_ITEM = re.compile(rf"^/api/sessions/({ID_RE})$")
 _SESSION_WRITE_ACTION = re.compile(rf"^/api/sessions/({ID_RE})/(fork|chat|chat/stream)$")
+_RUN_PATH = re.compile(rf"^/v1/runs/({ID_RE})(/events|/stop|/steer|/approval)?$")
 _JOB_PATHS = re.compile(rf"^/api/jobs(/{JOB_RE})?$")
 DELIVER_RE = re.compile(r"^[a-z0-9_:\-]{1,64}$")
 
@@ -422,6 +424,8 @@ class HermesProxy:
         self.push = PushService(cfg.push, cfg.state_dir, self._hermes_get, audit=self.audit.write)
         self.started_at = time.time()
         self.commands = CommandCatalog(cfg.hermes_bin, cfg.hermes_home)
+        self.relay = RunRelay(cfg.hermes_url, lambda: self._client)
+        self._closing = False
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -434,6 +438,7 @@ class HermesProxy:
         app.router.add_route("GET", f"{prefix}/brainbox/sessions", self.handle_list_app_sessions)
         app.router.add_route("DELETE", f"{prefix}/brainbox/sessions/{{session_id}}", self.handle_delete_app_session)
         app.router.add_route("GET", f"{prefix}/brainbox/system", self.handle_system)
+        app.router.add_route("GET", f"{prefix}/brainbox/runs/{{run_id}}/events", self.handle_relay_events)
         app.router.add_route("GET", f"{prefix}/brainbox/commands", self.handle_commands)
         app.router.add_route("POST", f"{prefix}/brainbox/commands/skill", self.handle_skill_command)
         app.router.add_route("GET", f"{prefix}/brainbox/files", self.handle_files_list)
@@ -448,6 +453,7 @@ class HermesProxy:
         app.router.add_route("POST", f"{prefix}/brainbox/push/test", self.handle_push_test)
         app.router.add_route("*", prefix + "/{tail:.*}", self.handle_proxy)
         app.on_startup.append(self._startup)
+        app.on_shutdown.append(self._shutdown)
         app.on_cleanup.append(self._cleanup)
         return app
 
@@ -470,7 +476,14 @@ class HermesProxy:
                 log.warning("push notifications enabled but not ready: %s", "; ".join(problems))
             self.push.start()
 
+    async def _shutdown(self, _app: web.Application) -> None:
+        # Before aiohttp waits for open handlers: end relay streams so shutdown isn't held up.
+        self._closing = True
+        await self.relay.shutdown()
+
     async def _cleanup(self, _app: web.Application) -> None:
+        self._closing = True
+        await self.relay.shutdown()
         self.terminals.shutdown()
         await self.push.stop()
         if self._client:
@@ -520,6 +533,7 @@ class HermesProxy:
 
     def _features(self, device: Device) -> dict[str, Any]:
         return {"chat_management": True, "files": self.cfg.files.enabled, "diagnostics": True, "commands": True,
+                "run_relay": True,
                 "terminal": bool(self.cfg.terminal.enabled and device.terminal),
                 "push": {"enabled": self.cfg.push.enabled, "ready": self.cfg.push.enabled and self.push.ready}}
 
@@ -675,6 +689,51 @@ class HermesProxy:
         })
 
     # -- slash commands -------------------------------------------------------------------
+
+    # -- run event relay -----------------------------------------------------
+
+    def _relayed_run_for(self, device: Device, run_id: str):
+        """(run, error). A run the relay knows is visible only to the device that started it."""
+        run = self.relay.get(run_id)
+        if run is None:
+            return None, None
+        if run.owner != device.key and not device.admin:
+            return None, json_error(404, f"Run not found: {run_id}", "run_not_found")
+        return run, None
+
+    async def _serve_relay(self, request: web.Request, run, after: int) -> web.StreamResponse:
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/event-stream", "Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        await response.prepare(request)
+        try:
+            await self.relay.serve(run, response, after, is_closing=lambda: self._closing)
+        except (ConnectionResetError, asyncio.CancelledError):
+            pass
+        return response
+
+    @staticmethod
+    def _resume_cursor(request: web.Request) -> int:
+        raw = request.query.get("after") or request.headers.get("Last-Event-ID") or "0"
+        try:
+            return max(0, int(raw))
+        except ValueError:
+            return 0
+
+    async def handle_relay_events(self, request: web.Request) -> web.StreamResponse:
+        """GET /brainbox/runs/{run_id}/events?after=<seq> — resumable, sequenced run events."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        run_id = request.match_info["run_id"]
+        if not re.fullmatch(ID_RE, run_id):
+            return json_error(400, "Invalid run id.", "invalid_run_id")
+        run, err = self._relayed_run_for(device, run_id)
+        if err:
+            return err
+        if run is None:
+            return json_error(404, "This run isn't being relayed (it may have been started before the proxy restarted). "
+                                   "Follow it by status instead.", "run_not_relayed")
+        return await self._serve_relay(request, run, self._resume_cursor(request))
 
     async def handle_commands(self, request: web.Request) -> web.Response:
         """GET /brainbox/commands — Hermes' command registry and skill commands (read-only)."""
@@ -1071,6 +1130,14 @@ class HermesProxy:
         key = resolve_hermes_key(self.cfg, profile) if profile and profile != "default" else self._hermes_key
         if not key:
             return json_error(503, "Hermes API key is not configured on the server.", "hermes_key_missing")
+        run_match = _RUN_PATH.match(path)
+        if run_match and device is not None:
+            run, err = self._relayed_run_for(device, run_match.group(1))
+            if err:
+                return err
+            if run is not None and method == "GET" and run_match.group(2) == "/events":
+                # Hermes allows one consumer per run and the relay is it; serve the relay's copy.
+                return await self._serve_relay(request, run, self._resume_cursor(request))
 
         upstream_path = path if not profile or profile == "default" else f"/p/{profile}{path}"
         url = self.cfg.hermes_url + upstream_path
@@ -1110,6 +1177,13 @@ class HermesProxy:
                     self.audit.write(device=device.name if device else None, method=method, path=tail, status=upstream.status)
                 return response
             data = await upstream.read()
+            if device is not None and method == "POST" and path == "/v1/runs" and upstream.status < 300:
+                try:
+                    run_id = json.loads(data).get("run_id")
+                except (ValueError, AttributeError):
+                    run_id = None
+                if isinstance(run_id, str) and re.fullmatch(ID_RE, run_id):
+                    self.relay.track(run_id, owner=device.key, profile=profile, key=key)
             if (device is not None and method == "POST" and path == "/v1/runs" and upstream.status < 300
                     and (profile is None or profile == "default") and self.cfg.push.enabled):
                 try:
