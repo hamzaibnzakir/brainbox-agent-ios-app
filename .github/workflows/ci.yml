@@ -71,11 +71,13 @@ jobs:
         include:
           - label: "Hermes 284d220 — on the VPS"
             ref: 284d220ba48e25f2e3623b3afe72db8f24a4c2db
+            install: pip
           - label: "Hermes main 2026-10-24 — after an upgrade"
             ref: 1c0cd667746d3395fe9e1b6c74f8f85952486f18
+            install: lock
     steps:
       - uses: actions/checkout@v4
-      - name: Check out hermes-agent at the version the VPS runs
+      - name: Check out hermes-agent at this matrix version
         uses: actions/checkout@v4
         with:
           repository: NousResearch/hermes-agent
@@ -85,24 +87,32 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install Hermes and the gateway
+        id: install
         run: |
-          pip install -q -e ./hermes-src
-          # Hermes main imports ruamel.yaml without declaring it in its core dependencies.
-          pip install -q "ruamel.yaml==0.18.17"
-          pip install -q -e "./gateway[test]"
+          if [ "${{ matrix.install }}" = "lock" ]; then
+            # Hermes main installs from its lockfile (its pyproject pins only resolve through uv.lock).
+            pip install -q "uv==0.11.32"
+            (cd hermes-src && uv sync -q --frozen)
+            uv pip install -q --python hermes-src/.venv/bin/python -e "./gateway[test]"
+            echo "python=$GITHUB_WORKSPACE/hermes-src/.venv/bin/python" >> "$GITHUB_OUTPUT"
+          else
+            pip install -q -e ./hermes-src
+            pip install -q -e "./gateway[test]"
+            echo "python=python" >> "$GITHUB_OUTPUT"
+          fi
       - name: Run Hermes' real run handlers behind the Brainbox proxy
         working-directory: gateway
         env:
           HERMES_SRC: ${{ github.workspace }}/hermes-src
         run: |
           STATUS=0
-          python -m pytest -q -rs tests/test_hermes_contract.py > contract-test.log 2>&1 || STATUS=$?
+          "${{ steps.install.outputs.python }}" -m pytest -q -rs tests/test_hermes_contract.py > contract-test.log 2>&1 || STATUS=$?
           tail -n 40 contract-test.log
           bash ../scripts/ci/annotate-log.sh contract-test.log "Hermes contract"
           grep -E "[0-9]+ passed" contract-test.log | tail -n 1 | sed 's/^/::notice title=Hermes contract summary::/' || true
           if grep -q "skipped" contract-test.log && ! grep -q "passed" contract-test.log; then
             echo "::error::contract tests were skipped: $(grep -m1 SKIPPED contract-test.log | cut -c1-300)"
-            python -c "import sys; sys.path.insert(0, '$HERMES_SRC'); import gateway.platforms.api_server" 2>&1 | tail -n 3 | sed 's/^/::error::import: /'
+            "${{ steps.install.outputs.python }}" -c "import sys; sys.path.insert(0, '$HERMES_SRC'); import gateway.platforms.api_server" 2>&1 | tail -n 3 | sed 's/^/::error::import: /'
             exit 1
           fi
           exit $STATUS
