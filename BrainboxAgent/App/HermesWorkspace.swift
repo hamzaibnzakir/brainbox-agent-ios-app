@@ -25,6 +25,8 @@ final class HermesWorkspace {
     private(set) var overview: BrainboxSystemOverview?
     private(set) var overviewError: String?
     private(set) var overviewUpdated: Date?
+    /// Hermes' slash commands and skills (via the proxy), for the composer.
+    private(set) var commandCatalog: HermesCommandCatalog?
 
     /// What the proxy offers this device (nil = unknown / not behind the proxy).
     var features: BrainboxFeatures? { gatewayInfo?.features }
@@ -62,6 +64,7 @@ final class HermesWorkspace {
         profiles = []
         overview = nil
         overviewError = nil
+        commandCatalog = nil
         guard let provider else { return }
         activityTask = Task { [weak self] in
             for await activity in provider.runActivity() {
@@ -77,6 +80,7 @@ final class HermesWorkspace {
         guard let client else { return }
         gatewayInfo = try? await client.gatewayInfo()
         if gatewayInfo != nil { profiles = (try? await client.gatewayProfiles()) ?? [] }
+        if gatewayInfo?.features?.commands == true { commandCatalog = try? await client.commandCatalog() }
         if report?.supports(.toolsets) == true { toolsets = (try? await client.toolsets()) ?? [] }
         if report?.supports(.skills) == true { skills = (try? await client.skills()) ?? [] }
     }
@@ -149,7 +153,7 @@ final class HermesWorkspace {
         return AgentRequestOptions(
             sessionID: conversation?.backendSessionID,
             instructions: mate.runInstructions,
-            model: mate.model,
+            model: conversation?.modelOverride ?? mate.model,
             provider: mate.provider,
             teammateID: mate.id,
             title: conversation?.title == Conversation.untitled ? nil : conversation?.title,

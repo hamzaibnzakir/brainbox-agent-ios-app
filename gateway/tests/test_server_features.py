@@ -418,3 +418,82 @@ async def test_runs_started_through_the_proxy_are_watched_only_when_enabled(setu
     r = await client.post("/hermes/v1/runs", json={"input": "hi", "session_id": "ios_" + "e" * 32}, headers=auth())
     assert r.status == 202
     assert proxy.push.runs == {}, "push is off: nothing is watched"
+
+
+# --------------------------------------------------------------------------- slash commands
+
+STUB_COMMANDS = '''
+from dataclasses import dataclass
+@dataclass(frozen=True)
+class CommandDef:
+    name: str
+    description: str
+    category: str
+    aliases: tuple = ()
+    args_hint: str = ""
+    cli_only: bool = False
+    gateway_only: bool = False
+COMMAND_REGISTRY = [CommandDef("compress", "Compress context", "Session", ("compact",)),
+                    CommandDef("steer", "Steer the agent", "Session", (), "<text>")]
+'''
+STUB_SKILLS = '''
+import os
+def get_skill_commands():
+    return {"/demo-skill": {"name": "demo-skill", "description": "Demo"}}
+def resolve_skill_command_key(command):
+    key = "/" + command.replace("_", "-")
+    return key if key in get_skill_commands() else None
+def build_skill_invocation_message(key, instruction=""):
+    return f"[skill {key} home={os.environ['HERMES_HOME']} platform={os.environ['HERMES_PLATFORM']}] {instruction}"
+'''
+
+
+@pytest.fixture
+def fake_hermes_install(tmp_path):
+    src = tmp_path / "hermes-src"
+    (src / "hermes_cli").mkdir(parents=True)
+    (src / "agent").mkdir()
+    (src / "hermes_cli" / "__init__.py").write_text("")
+    (src / "agent" / "__init__.py").write_text("")
+    (src / "hermes_cli" / "commands.py").write_text(STUB_COMMANDS)
+    (src / "agent" / "skill_commands.py").write_text(STUB_SKILLS)
+    bindir = src / "venv" / "bin"
+    bindir.mkdir(parents=True)
+    os.symlink(os.path.realpath(__import__("sys").executable), bindir / "python")
+    (bindir / "hermes").write_text("#!/bin/sh\n")
+    return str(bindir / "hermes")
+
+
+async def test_command_catalog_and_skill_invocation(setup, fake_hermes_install):
+    client, _fake, proxy, cfg, tmp_path = setup
+    from brainbox_gateway.commands import CommandCatalog
+    proxy.commands = CommandCatalog(fake_hermes_install, str(tmp_path / "hermes"))
+    r = await client.get("/hermes/brainbox/commands", headers=auth())
+    assert r.status == 200, await r.text()
+    body = await r.json()
+    assert body["api_runs_commands"] is False, "the API never runs commands itself"
+    assert [c["name"] for c in body["native"]] == ["compress", "steer"]
+    assert body["skills"] == [{"name": "demo-skill", "skill": "demo-skill", "description": "Demo"}]
+
+    r = await client.post("/hermes/brainbox/commands/skill", json={"name": "demo_skill", "instruction": "check $(id) ; rm -rf /"},
+                          headers=auth())
+    assert r.status == 200, await r.text()
+    message = (await r.json())["message"]
+    assert message.startswith("[skill /demo-skill") and "platform=api_server" in message
+    assert message.endswith("check $(id) ; rm -rf /"), "instruction passed as data, never through a shell"
+
+    r = await client.post("/hermes/brainbox/commands/skill", json={"name": "nope"}, headers=auth())
+    assert r.status == 404
+    for bad in ("../x", "a b", "", "X" * 70):
+        r = await client.post("/hermes/brainbox/commands/skill", json={"name": bad}, headers=auth())
+        assert r.status == 400, bad
+    r = await client.get("/hermes/brainbox/commands")
+    assert r.status == 401
+
+
+async def test_command_catalog_reports_missing_hermes(setup):
+    client, _fake, proxy, *_ = setup
+    from brainbox_gateway.commands import CommandCatalog
+    proxy.commands = CommandCatalog("/nonexistent/venv/bin/hermes", "/tmp")
+    r = await client.get("/hermes/brainbox/commands", headers=auth())
+    assert r.status == 503 and (await r.json())["error"]["code"] == "hermes_python_missing"

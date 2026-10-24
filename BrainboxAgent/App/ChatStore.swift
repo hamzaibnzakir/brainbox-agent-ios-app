@@ -397,13 +397,21 @@ final class ChatStore {
     // MARK: Sending
 
     func send(_ rawText: String) {
+        send(rawText, sentContent: nil)
+    }
+
+    /// Sends a user turn. `text` is what the chat shows; `sentContent` (skill
+    /// messages, file paths) is what the agent receives; images go inline.
+    func send(_ rawText: String, sentContent: String?, attachments: [MessageAttachment] = [], imageDataURLs: [String] = []) {
         let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty, !isStreaming else { return }
+        guard !text.isEmpty || !attachments.isEmpty, !isStreaming else { return }
 
         if current == nil { newConversation() }
         guard let conversationID = currentID else { return }
 
-        let user = Message(role: .user, content: text)
+        var user = Message(role: .user, content: text.isEmpty ? "(attachment)" : text)
+        user.sentContent = sentContent
+        user.attachments = attachments.isEmpty ? nil : attachments
         let assistant = Message(role: .assistant, content: "", state: .sending)
         mutateConversation(conversationID) { conversation in
             if conversation.messages.isEmpty || conversation.title == Conversation.untitled {
@@ -423,8 +431,10 @@ final class ChatStore {
             return
         }
 
-        let request = AgentRequest(conversationID: conversationID, responseMessageID: assistant.id, content: text,
+        var request = AgentRequest(conversationID: conversationID, responseMessageID: assistant.id, content: sentContent ?? text,
                                    options: requestOptions(conversations.first { $0.id == conversationID }))
+        request.imageDataURLs = imageDataURLs.isEmpty ? nil : imageDataURLs
+        let userMessageID = user.id
         activeRequestID = request.requestID
         activeMessageID = assistant.id
         activeConversationID = conversationID
@@ -436,6 +446,14 @@ final class ChatStore {
             do {
                 for try await event in agent.send(request) {
                     guard let self else { return }
+                    if case .runStarted = event {
+                        // Hermes accepted the run: its attachments reached the server with it.
+                        self.mutateMessage(conversationID, userMessageID) { message in
+                            guard var items = message.attachments else { return }
+                            for i in items.indices where items[i].status == .uploaded || items[i].status == .preparing { items[i].status = .sent }
+                            message.attachments = items
+                        }
+                    }
                     let effects = self.apply(event, conversationID: conversationID, messageID: assistant.id)
                     if effects.finished { sawTerminal = true }
                 }
@@ -448,6 +466,203 @@ final class ChatStore {
                 self.apply(.failed(Task.isCancelled ? .cancelled : .agentUnavailable), conversationID: conversationID, messageID: assistant.id)
             }
             self.finishRequest(conversationID: conversationID, messageID: assistant.id)
+        }
+    }
+
+    // MARK: Slash commands
+
+    /// Where a command wants the app to go.
+    enum CommandDestination: Equatable { case workspace, sessions, files, terminal }
+
+    /// What a composer submission did, for the UI.
+    enum SubmitOutcome: Equatable {
+        case sent
+        case handled(String?)
+        case navigate(CommandDestination)
+        case parallel([String])
+        case refused(String)
+    }
+
+    /// Hermes' command registry + skills (from the proxy), when connected.
+    @ObservationIgnored var commandCatalog: () -> HermesCommandCatalog? = { nil }
+    /// Short real-state summary for /status (connection, server).
+    @ObservationIgnored var statusSummary: () -> String = { "" }
+
+    /// The composer's single entry point: routes slash commands (never sending
+    /// them to the model as text) and sends everything else.
+    func submit(_ rawText: String, attachments: [MessageAttachment] = [], imageDataURLs: [String] = [],
+                attachmentNote: String? = nil) async -> SubmitOutcome {
+        let parsed = SlashCommandRouter.parse(rawText, catalog: commandCatalog())
+        if !attachments.isEmpty {
+            if case .text = parsed {} else {
+                return .refused("Attachments can only be sent with a normal message, not with a command.")
+            }
+        }
+        switch parsed {
+        case .text(let text):
+            guard !isStreaming else {
+                return .refused("A reply is still running. Use Steer, “Send after this”, or Stop first.")
+            }
+            let sent = attachmentNote.map { text.isEmpty ? $0 : text + $0 }
+            send(text, sentContent: sent, attachments: attachments, imageDataURLs: imageDataURLs)
+            return .sent
+        case .skill(let name, let instruction):
+            guard !isStreaming else { return .refused("Wait for the current reply (or stop it) before running /\(name).") }
+            guard let client = lifecycleClient() else {
+                return .refused("Skill commands need a live connection to Hermes through the Brainbox proxy.")
+            }
+            do {
+                let message = try await client.skillInvocation(name: name, instruction: instruction)
+                send("/\(name)" + (instruction.isEmpty ? "" : " \(instruction)"), sentContent: message)
+                return .sent
+            } catch {
+                return .refused("/\(name) wasn't run: \(error.asAgentError.message)")
+            }
+        case .app(let command, let argument):
+            return await perform(command, argument: argument)
+        case .unavailable, .missingArgument, .unknown:
+            return .refused(SlashCommandRouter.explanation(for: parsed) ?? "That command can't run here.")
+        }
+    }
+
+    private func perform(_ command: AppCommand, argument: String) async -> SubmitOutcome {
+        switch command {
+        case .new:
+            newConversation()
+            return .handled(nil)
+        case .stop:
+            guard isStreaming else { return .refused("Nothing is running.") }
+            stop()
+            return .handled("Stop sent — waiting for Hermes to confirm.")
+        case .steer:
+            guard isStreaming else { return .refused("Nothing is running to steer. Send it as a normal message instead.") }
+            do {
+                try await steer(argument, mode: .inject)
+                return .handled("Steering sent to the running agent.")
+            } catch {
+                return .refused(error.asAgentError.message)
+            }
+        case .queue:
+            guard isStreaming else {
+                send(argument)
+                return .sent
+            }
+            try? await steer(argument, mode: .queue)
+            return .handled("Queued — it's sent when the current reply ends.")
+        case .retry:
+            guard !isStreaming, let last = current?.messages.last(where: { $0.role == .assistant }) else {
+                return .refused(isStreaming ? "Wait for the current reply first." : "There's nothing to retry yet.")
+            }
+            retry(last.id)
+            return .sent
+        case .title:
+            guard let id = currentID else { return .refused("Open a chat first.") }
+            rename(id, to: argument)
+            if let conversation = current, let serverID = AppSessionID.serverID(for: conversation),
+               conversation.backendSessionID != nil, let client = lifecycleClient()?.with(profile: nil) {
+                do {
+                    _ = try await client.updateSession(id: serverID, title: argument)
+                    return .handled("Renamed here and on Hermes.")
+                } catch {
+                    return .handled("Renamed here. Hermes' title wasn't updated: \(error.asAgentError.message)")
+                }
+            }
+            return .handled("Renamed.")
+        case .model:
+            return await chooseModel(argument)
+        case .approve, .deny:
+            guard let conversation = current,
+                  let approval = conversation.messages.last(where: { $0.pendingApproval != nil })?.pendingApproval else {
+                return .refused("Nothing is waiting for an approval in this chat.")
+            }
+            do {
+                try await respond(to: approval, choice: command == .approve ? .once : .deny)
+                return .handled(command == .approve ? "Approved once." : "Denied.")
+            } catch {
+                return .refused(error.asAgentError.message)
+            }
+        case .status:
+            var lines = [statusSummary()]
+            if let conversationID = activeConversationID, let messageID = activeMessageID, let reply = message(conversationID, messageID) {
+                lines.append("Reply running" + (reply.runID.map { " (run \($0))" } ?? "") + (reply.stop.map { " · stop: \(Self.describe($0))" } ?? ""))
+            } else {
+                lines.append("No reply running.")
+            }
+            if let model = current?.modelOverride { lines.append("Model for this chat: \(model)") }
+            if let queued = currentID.flatMap({ queuedInstructions[$0] }), !queued.isEmpty { lines.append("\(queued.count) queued instruction(s)") }
+            addCommandOutput("/status", lines.filter { !$0.isEmpty }.joined(separator: "\n"))
+            return .handled(nil)
+        case .skills:
+            guard let catalog = commandCatalog() else { return .refused("Hermes' skill list isn't available (needs the Brainbox proxy).") }
+            let list = catalog.skills.isEmpty ? "Hermes has no skill commands installed."
+                : catalog.skills.map { "/\($0.name) — \($0.description)" }.joined(separator: "\n")
+            addCommandOutput("/skills", list)
+            return .handled(nil)
+        case .help:
+            var text = AppCommand.allCases.map { "/\($0.rawValue)\($0.argsHint.isEmpty ? "" : " " + $0.argsHint) — \($0.summary)" }.joined(separator: "\n")
+            if let skills = commandCatalog()?.skills, !skills.isEmpty { text += "\n\nPlus \(skills.count) Hermes skill command(s) — type /skills." }
+            text += "\n\nOther Hermes commands (e.g. /compress) only work in the Hermes CLI or Telegram; Brainbox explains instead of sending them."
+            addCommandOutput("/help", text)
+            return .handled(nil)
+        case .archive:
+            guard let id = currentID else { return .refused("Open a chat first.") }
+            do {
+                try await archive(id)
+                return .handled("Archived.")
+            } catch {
+                return .refused(error.asAgentError.message)
+            }
+        case .agents: return .navigate(.workspace)
+        case .sessions: return .navigate(.sessions)
+        case .files: return .navigate(.files)
+        case .terminal: return .navigate(.terminal)
+        case .parallel:
+            let tasks = SlashCommandRouter.parallelTasks(argument)
+            guard tasks.count >= 2 else { return .refused("Give at least two tasks separated by | — e.g. /parallel check disk | review logs") }
+            return .parallel(tasks)
+        }
+    }
+
+    private func chooseModel(_ argument: String) async -> SubmitOutcome {
+        if currentID == nil { newConversation() }
+        guard let id = currentID else { return .refused("Open a chat first.") }
+        let name = argument.trimmingCharacters(in: .whitespaces)
+        var available: [String]?
+        if let client = lifecycleClient() { available = (try? await client.models())?.map(\.id) }
+        if name.isEmpty {
+            let current = conversations.first { $0.id == id }?.modelOverride
+            let list = available.map { $0.isEmpty ? "Hermes listed no models." : $0.map { "• \($0)" }.joined(separator: "\n") }
+                ?? "The model list isn't available right now."
+            addCommandOutput("/model", "This chat uses: \(current ?? "the preset's model")\n\n\(list)\n\nUse /model <name> to switch, /model default to go back.")
+            return .handled(nil)
+        }
+        if name == "default" {
+            mutateConversation(id) { $0.modelOverride = nil }
+            persist(id)
+            return .handled("This chat uses the preset's model again.")
+        }
+        if let available, !available.isEmpty, !available.contains(name) {
+            return .refused("Hermes doesn't list a model called “\(name)”. Type /model to see the list.")
+        }
+        mutateConversation(id) { $0.modelOverride = name }
+        persist(id)
+        return .handled("This chat now asks Hermes for \(name). Hermes reports an error on the next message if it can't route it.")
+    }
+
+    /// Local command output (never sent to the agent or stored on the server).
+    private func addCommandOutput(_ command: String, _ text: String) {
+        if current == nil { newConversation() }
+        guard let id = currentID else { return }
+        mutateConversation(id) { $0.messages.append(Message(role: .system, content: "**\(command)**\n\n" + text, state: .complete)) }
+        persist(id)
+    }
+
+    static func describe(_ phase: StopPhase) -> String {
+        switch phase {
+        case .requested: return "requested"
+        case .acknowledged: return "Hermes is stopping it"
+        case .finishedFirst: return "finished before the stop"
+        case .unconfirmed: return "not confirmed"
         }
     }
 

@@ -44,6 +44,7 @@ from aiohttp import ClientSession, ClientTimeout, web
 from . import __version__
 from .chat_sessions import (OwnershipRegistry, ReadOnlySessionStore, SessionStoreUnavailable, is_app_session,
                             remove_session_files)
+from .commands import CommandCatalog, CommandsUnavailable
 from .diagnostics import host_snapshot
 from .pty_terminal import TerminalConfig, TerminalManager, TerminalUnavailable, parse_client_frame
 from .push import EVENT_KINDS, Notification, PushConfig, PushService
@@ -420,6 +421,7 @@ class HermesProxy:
         self.terminals = TerminalManager(cfg.terminal)
         self.push = PushService(cfg.push, cfg.state_dir, self._hermes_get, audit=self.audit.write)
         self.started_at = time.time()
+        self.commands = CommandCatalog(cfg.hermes_bin, cfg.hermes_home)
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -432,6 +434,8 @@ class HermesProxy:
         app.router.add_route("GET", f"{prefix}/brainbox/sessions", self.handle_list_app_sessions)
         app.router.add_route("DELETE", f"{prefix}/brainbox/sessions/{{session_id}}", self.handle_delete_app_session)
         app.router.add_route("GET", f"{prefix}/brainbox/system", self.handle_system)
+        app.router.add_route("GET", f"{prefix}/brainbox/commands", self.handle_commands)
+        app.router.add_route("POST", f"{prefix}/brainbox/commands/skill", self.handle_skill_command)
         app.router.add_route("GET", f"{prefix}/brainbox/files", self.handle_files_list)
         app.router.add_route("GET", f"{prefix}/brainbox/files/download", self.handle_files_download)
         app.router.add_route("POST", f"{prefix}/brainbox/files/upload", self.handle_files_upload)
@@ -515,7 +519,7 @@ class HermesProxy:
         })
 
     def _features(self, device: Device) -> dict[str, Any]:
-        return {"chat_management": True, "files": self.cfg.files.enabled, "diagnostics": True,
+        return {"chat_management": True, "files": self.cfg.files.enabled, "diagnostics": True, "commands": True,
                 "terminal": bool(self.cfg.terminal.enabled and device.terminal),
                 "push": {"enabled": self.cfg.push.enabled, "ready": self.cfg.push.enabled and self.push.ready}}
 
@@ -669,6 +673,46 @@ class HermesProxy:
             "proxy": {"version": __version__, "uptime_seconds": round(time.time() - self.started_at, 1),
                       "features": self._features(device)},
         })
+
+    # -- slash commands -------------------------------------------------------------------
+
+    async def handle_commands(self, request: web.Request) -> web.Response:
+        """GET /brainbox/commands — Hermes' command registry and skill commands (read-only)."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        try:
+            catalog = await self.commands.catalog()
+        except CommandsUnavailable as exc:
+            return json_error(503, exc.message, exc.code)
+        return web.json_response({"object": "brainbox.commands", "api_runs_commands": False, **catalog})
+
+    async def handle_skill_command(self, request: web.Request) -> web.Response:
+        """POST /brainbox/commands/skill {name, instruction} — the message Hermes builds for
+        ``/<skill> <instruction>``. The app sends it as the run input."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return json_error(400, "Body must be JSON.", "invalid_json")
+        if not isinstance(body, dict):
+            return json_error(400, "Body must be a JSON object.", "invalid_json")
+        name = str(body.get("name", "")).lstrip("/")
+        instruction = body.get("instruction") or ""
+        if not isinstance(instruction, str):
+            return json_error(400, "instruction must be text.", "invalid_instruction")
+        try:
+            message = await self.commands.skill_message(name, instruction)
+        except ValueError as exc:
+            return json_error(400, "Invalid skill name or instruction.", str(exc))
+        except CommandsUnavailable as exc:
+            return json_error(503, exc.message, exc.code)
+        if message is None:
+            return json_error(404, f"Hermes has no skill command /{name}.", "skill_not_found")
+        self.audit.write(device=device.name, action="command.skill", skill=name)
+        return web.json_response({"object": "brainbox.skill_invocation", "name": name, "message": message})
 
     # -- workspace files ----------------------------------------------------------------
 

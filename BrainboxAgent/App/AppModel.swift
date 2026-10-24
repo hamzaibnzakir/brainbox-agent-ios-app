@@ -110,6 +110,15 @@ final class AppModel {
             self.settings.providerKind == .hermes ? self.hermes.requestOptions(for: conversation) : nil
         }
         chat.activeTeammateID = { [unowned self] in self.hermes.activeTeammateID }
+        chat.commandCatalog = { [unowned self] in self.hermes.commandCatalog }
+        chat.statusSummary = { [unowned self] in
+            var parts = ["Backend: \(self.settings.providerKind.displayName) — \(self.connectionState.label)"]
+            if let info = self.hermes.gatewayInfo { parts.append("Brainbox proxy v\(info.version ?? "?")") }
+            if let hermes = self.hermes.overview?.hermes {
+                parts.append(hermes.reachable ? "Hermes responding" + (hermes.latencyMs.map { " (\(Int($0)) ms)" } ?? "") : "Hermes not responding")
+            }
+            return parts.joined(separator: "\n")
+        }
         chat.lifecycleClient = { [unowned self] in
             self.settings.providerKind == .hermes && self.hermes.isConnected ? self.hermes.client : nil
         }

@@ -259,7 +259,8 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
                 model: options?.model,
                 provider: options?.provider,
                 idempotencyKey: requestID.uuidString.lowercased(),
-                conversationHistory: options?.conversationHistory)
+                conversationHistory: options?.conversationHistory,
+                imageDataURLs: request.imageDataURLs ?? [])
             // Detached from this task's cancellation: once the POST is on the
             // wire Hermes may already be running it, so we must get the
             // run id back to be able to stop it.

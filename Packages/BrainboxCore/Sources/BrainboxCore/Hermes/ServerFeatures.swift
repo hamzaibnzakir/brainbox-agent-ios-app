@@ -21,18 +21,21 @@ public struct BrainboxFeatures: Decodable, Hashable, Sendable {
     }
 
     public var chatManagement: Bool
+    /// The proxy lists Hermes' commands and builds skill messages.
+    public var commands: Bool
     public var files: Bool
     public var diagnostics: Bool
     public var terminal: Bool
     public var push: Push
 
     enum CodingKeys: String, CodingKey {
-        case files, diagnostics, terminal, push
+        case files, diagnostics, terminal, push, commands
         case chatManagement = "chat_management"
     }
 
-    public init(chatManagement: Bool = false, files: Bool = false, diagnostics: Bool = false, terminal: Bool = false, push: Push = Push()) {
+    public init(chatManagement: Bool = false, commands: Bool = false, files: Bool = false, diagnostics: Bool = false, terminal: Bool = false, push: Push = Push()) {
         self.chatManagement = chatManagement
+        self.commands = commands
         self.files = files
         self.diagnostics = diagnostics
         self.terminal = terminal
@@ -42,6 +45,7 @@ public struct BrainboxFeatures: Decodable, Hashable, Sendable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         chatManagement = (try? c.decode(Bool.self, forKey: .chatManagement)) ?? false
+        commands = (try? c.decode(Bool.self, forKey: .commands)) ?? false
         files = (try? c.decode(Bool.self, forKey: .files)) ?? false
         diagnostics = (try? c.decode(Bool.self, forKey: .diagnostics)) ?? false
         terminal = (try? c.decode(Bool.self, forKey: .terminal)) ?? false

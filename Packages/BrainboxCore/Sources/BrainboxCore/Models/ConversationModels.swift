@@ -36,6 +36,42 @@ public enum StopPhase: Codable, Hashable, Sendable {
     public var isPending: Bool { self == .requested || self == .acknowledged }
 }
 
+/// A photo or file sent with a user message. Its status only advances on a
+/// server answer: uploaded = the proxy stored it; sent = Hermes accepted the
+/// run that carries it.
+public struct MessageAttachment: Identifiable, Codable, Hashable, Sendable {
+    public enum Kind: String, Codable, Sendable { case image, file }
+    public enum Status: Codable, Hashable, Sendable {
+        case preparing
+        case uploading(Double)
+        /// Stored in the Brainbox workspace at `serverPath` (files).
+        case uploaded
+        /// Hermes accepted the run that includes it (inline image or file path).
+        case sent
+        case failed(String)
+    }
+
+    public var id: UUID
+    public var name: String
+    public var kind: Kind
+    public var byteCount: Int64
+    public var serverPath: String?
+    public var status: Status
+    /// Small JPEG preview kept on the device (never sent separately).
+    public var thumbnail: Data?
+
+    public init(id: UUID = UUID(), name: String, kind: Kind, byteCount: Int64, serverPath: String? = nil,
+                status: Status = .preparing, thumbnail: Data? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.byteCount = byteCount
+        self.serverPath = serverPath
+        self.status = status
+        self.thumbnail = thumbnail
+    }
+}
+
 public struct Message: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var role: MessageRole
@@ -56,6 +92,11 @@ public struct Message: Identifiable, Codable, Hashable, Sendable {
     public var reasoning: String?
     /// Stop progress for this reply (nil when Stop wasn't pressed).
     public var stop: StopPhase?
+    /// Photos / files sent with this (user) message.
+    public var attachments: [MessageAttachment]?
+    /// What was actually sent when it differs from what's shown — e.g. the
+    /// skill message Hermes built for `/skill …`, or file paths appended.
+    public var sentContent: String?
 
     public init(
         id: UUID = UUID(),
@@ -140,6 +181,8 @@ public struct Conversation: Identifiable, Codable, Hashable, Sendable {
     /// When the conversation was archived (nil = in the main list). Optional so
     /// conversations saved by older builds still decode.
     public var archivedAt: Date?
+    /// Model chosen for this chat with /model (nil = the preset's model).
+    public var modelOverride: String?
 
     public var isArchived: Bool { archivedAt != nil }
 
@@ -342,6 +385,8 @@ public struct AgentRequest: Codable, Hashable, Sendable {
     public var content: String
     /// Backend-specific routing (session, teammate instructions, model).
     public var options: AgentRequestOptions?
+    /// Images sent inline to the model as `data:image/…;base64,…` URLs.
+    public var imageDataURLs: [String]?
 
     public init(requestID: UUID = UUID(), conversationID: UUID, responseMessageID: UUID = UUID(), content: String, options: AgentRequestOptions? = nil) {
         self.requestID = requestID

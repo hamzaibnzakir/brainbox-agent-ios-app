@@ -254,9 +254,13 @@ public final class HermesAPIClient: @unchecked Sendable {
         /// Sent as `conversation_history`: authoritative for this turn and
         /// never stored by Hermes (see `CarriedHistory`).
         public var conversationHistory: [HistoryTurn]?
+        /// Inline images (`data:image/…` URLs) sent with the input as OpenAI-style content parts.
+        public var imageDataURLs: [String]
 
         public init(sessionID: String? = nil, instructions: String? = nil, model: String? = nil, provider: String? = nil,
-                    idempotencyKey: String? = nil, sessionKey: String? = nil, conversationHistory: [HistoryTurn]? = nil) {
+                    idempotencyKey: String? = nil, sessionKey: String? = nil, conversationHistory: [HistoryTurn]? = nil,
+                    imageDataURLs: [String] = []) {
+            self.imageDataURLs = imageDataURLs
             self.sessionID = sessionID
             self.instructions = instructions
             self.model = model
@@ -269,6 +273,14 @@ public final class HermesAPIClient: @unchecked Sendable {
 
     public func createRun(input: String, options: RunOptions = RunOptions()) async throws -> HermesRunAccepted {
         var body: [String: JSONValue] = ["input": .string(input)]
+        if !options.imageDataURLs.isEmpty {
+            // Hermes passes list content to the agent as one multimodal user turn.
+            var parts: [JSONValue] = [.object(["type": "text", "text": .string(input)])]
+            for url in options.imageDataURLs {
+                parts.append(.object(["type": "image_url", "image_url": .object(["url": .string(url)])]))
+            }
+            body["input"] = .array([.object(["role": "user", "content": .array(parts)])])
+        }
         if let sessionID = options.sessionID { body["session_id"] = .string(sessionID) }
         if let instructions = options.instructions, !instructions.isEmpty { body["instructions"] = .string(instructions) }
         if let model = options.model, !model.isEmpty { body["model"] = .string(model) }
