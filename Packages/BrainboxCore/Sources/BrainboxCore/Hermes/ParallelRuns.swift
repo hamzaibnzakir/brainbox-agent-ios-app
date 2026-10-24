@@ -366,7 +366,8 @@ public final class ParallelRunEngine {
             case .stopping:
                 a.state = .stopping
             case .completed(let output, _, _):
-                if let output, output.count > a.output.count { a.output = output }
+                // Hermes' final output is authoritative over the streamed deltas.
+                if let output, !output.isEmpty { a.output = output }
                 a.state = .completed
                 a.finishedAt = Date()
             case .failed(let error):
