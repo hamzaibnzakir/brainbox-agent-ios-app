@@ -14,10 +14,26 @@ public protocol RunControllingProvider: AgentProvider {
     func resume(runID: String, alreadyStreamed: String) -> AsyncThrowingStream<AgentEvent, Error>
     /// Stops a run by id (Tasks screen).
     func stop(runID: String) async throws
+    /// Asks the server to stop the run behind a chat request and reports what
+    /// the server said — never assumes the stop worked.
+    func requestStop(requestID: UUID) async -> StopRequestResult
     /// Live feed of run activity for the Tasks screen.
     func runActivity() -> AsyncStream<RunActivity>
     var compatibility: HermesCompatibilityReport? { get }
     var client: HermesAPIClient { get }
+}
+
+/// The server's answer to a Stop.
+public enum StopRequestResult: Equatable, Sendable {
+    /// Hermes accepted the stop and reported this status (`stopping`, or a
+    /// terminal state when the run had already ended).
+    case sent(HermesRunState)
+    /// The run id isn't known yet; the stop is applied the moment it is.
+    case deferredUntilRunStarts
+    /// No run is attached to this request (nothing to stop on the server).
+    case notRunning
+    /// The stop request itself failed; the run may still be going.
+    case failed(AgentError)
 }
 
 /// One thing that happened in a run, published for the Tasks screen.
@@ -385,6 +401,26 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         }
         guard let runID else { return }
         try? await stop(runID: runID)
+    }
+
+    public func requestStop(requestID: UUID) async -> StopRequestResult {
+        let lookup = state.withLock { s -> (runID: String?, awaiting: Bool) in
+            if let id = s.runs[requestID] { return (id, false) }
+            if s.awaitingRunID.contains(requestID) {
+                s.pendingStops.insert(requestID)
+                return (nil, true)
+            }
+            return (nil, false)
+        }
+        guard let runID = lookup.runID else { return lookup.awaiting ? .deferredUntilRunStarts : .notRunning }
+        do {
+            // Detached so cancelling the chat stream can't cancel the stop request itself.
+            let client = client(forRun: runID)
+            let status = try await Task { try await client.stopRun(id: runID) }.value
+            return .sent(status)
+        } catch {
+            return .failed(error.asAgentError)
+        }
     }
 
     public func stop(runID: String) async throws {

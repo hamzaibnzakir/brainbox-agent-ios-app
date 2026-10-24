@@ -21,6 +21,21 @@ public enum MessageState: Codable, Hashable, Sendable {
     }
 }
 
+/// Where a Stop stands for a reply, as reported by the backend. The reply is
+/// only shown as stopped once the backend reports the run cancelled.
+public enum StopPhase: Codable, Hashable, Sendable {
+    /// The user pressed Stop; nothing from the server yet.
+    case requested
+    /// The server accepted the stop and is interrupting the run.
+    case acknowledged
+    /// The run finished on its own before the stop took effect.
+    case finishedFirst
+    /// No confirmation (yet): the request failed or the server never answered.
+    case unconfirmed(String)
+
+    public var isPending: Bool { self == .requested || self == .acknowledged }
+}
+
 public struct Message: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var role: MessageRole
@@ -39,6 +54,8 @@ public struct Message: Identifiable, Codable, Hashable, Sendable {
     public var resolvedApprovals: [ResolvedApproval]?
     /// Reasoning summary the backend chose to expose, if any.
     public var reasoning: String?
+    /// Stop progress for this reply (nil when Stop wasn't pressed).
+    public var stop: StopPhase?
 
     public init(
         id: UUID = UUID(),
@@ -395,6 +412,10 @@ public enum AgentEvent: Hashable, Sendable {
     case approvalResolved(choice: String)
     /// A short informational line (e.g. "Steering accepted").
     case notice(String)
+    /// Stop lifecycle, from the user's press to the backend's acknowledgement.
+    case stopRequested
+    case stopAcknowledged
+    case stopUnconfirmed(String)
     case completed
     case failed(AgentError)
 }

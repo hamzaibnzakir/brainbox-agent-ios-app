@@ -461,7 +461,7 @@ class HermesProxy:
         if revoked:
             log.info("revoked push tokens of %d removed device(s)", revoked)
         if self.cfg.push.enabled:
-            problems = self.cfg.push.problems()
+            problems = self.push.problems()
             if problems:
                 log.warning("push notifications enabled but not ready: %s", "; ".join(problems))
             self.push.start()
@@ -920,7 +920,7 @@ class HermesProxy:
         device, err = self._authenticate(request)
         if err:
             return err
-        problems = self.cfg.push.problems()
+        problems = self.push.problems()
         if problems:
             return json_error(503, problems[0], "push_not_ready")
         if not self.push.registry.for_device(device.key):

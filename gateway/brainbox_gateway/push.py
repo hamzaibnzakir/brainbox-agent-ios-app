@@ -67,7 +67,7 @@ class PushConfig:
             raise ValueError("push timing out of range")
         return cfg
 
-    def problems(self) -> list[str]:
+    def problems(self, check_dependencies: bool = True) -> list[str]:
         """Why push can't send (empty = ready). Never includes key material."""
         if not self.enabled:
             return ["Push notifications are turned off on the server ([push] enabled = false)."]
@@ -81,8 +81,9 @@ class PushConfig:
         if not self.key_file or not os.path.isfile(self.key_file):
             out.append("push.key_file doesn't point at the APNs .p8 key on the server.")
         try:
-            import httpx  # noqa: F401
-            import h2  # noqa: F401
+            if check_dependencies:
+                import httpx  # noqa: F401
+                import h2  # noqa: F401
         except ImportError:
             out.append("The server needs the optional packages: pip install 'httpx[http2]' cryptography.")
         return out
@@ -292,12 +293,16 @@ class PushService:
         self.connection_down = False
         self._task: asyncio.Task | None = None
 
+    def problems(self) -> list[str]:
+        # An injected sender (tests) doesn't need the HTTP/2 client packages.
+        return self.cfg.problems(check_dependencies=self._sender is not None)
+
     @property
     def ready(self) -> bool:
-        return not self.cfg.problems()
+        return not self.problems()
 
     def status(self, device_key: str) -> dict[str, Any]:
-        problems = self.cfg.problems()
+        problems = self.problems()
         registered = self.registry.for_device(device_key)
         return {"enabled": self.cfg.enabled, "ready": not problems, "problems": problems,
                 "environment": self.cfg.environment if self.cfg.enabled else None,

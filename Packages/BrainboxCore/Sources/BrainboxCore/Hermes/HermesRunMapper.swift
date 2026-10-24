@@ -80,7 +80,7 @@ public struct HermesRunMapper: Sendable {
             return [.notice("Subtask \(status ?? "finished")")]
 
         case .stopping:
-            return [.notice("Stopping…")]
+            return [.stopAcknowledged]
 
         case .completed(let output, _, let pendingSteer):
             finished = true
@@ -130,7 +130,9 @@ public struct HermesRunMapper: Sendable {
                 return map(.approvalRequest(approval))
             }
             return []
-        case .running, .queued, .stopping, .unknown:
+        case .stopping:
+            return [.stopAcknowledged]
+        case .running, .queued, .unknown:
             if pendingApproval != nil {
                 pendingApproval = nil
                 return [.approvalResolved(choice: "resolved elsewhere"), .status(.thinking)]

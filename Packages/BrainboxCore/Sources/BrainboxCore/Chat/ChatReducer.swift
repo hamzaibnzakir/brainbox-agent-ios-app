@@ -69,12 +69,21 @@ public enum ChatReducer {
             message.pendingApproval = nil
         case .notice:
             break
+        case .stopRequested:
+            if message.stop == nil || message.stop?.isPending == false { message.stop = .requested }
+        case .stopAcknowledged:
+            if message.stop != .acknowledged { message.stop = .acknowledged }
+        case .stopUnconfirmed(let reason):
+            message.stop = .unconfirmed(reason)
         case .completed:
+            if message.stop != nil { message.stop = .finishedFirst }
             message.state = .complete
             message.pendingApproval = nil
             finishRunningTools(in: &message, as: .succeeded)
             effects.finished = true
         case .failed(let error):
+            // A confirmed cancellation settles any pending stop.
+            if error == .cancelled { message.stop = nil }
             message.state = error == .cancelled ? .cancelled : .failed(error)
             message.pendingApproval = nil
             finishRunningTools(in: &message, as: error == .cancelled ? .cancelled : .failed)

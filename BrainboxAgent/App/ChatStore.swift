@@ -10,6 +10,10 @@ final class ChatStore {
     var currentID: UUID?
     private(set) var activeRequestID: UUID?
     private(set) var activeMessageID: UUID?
+    /// The conversation the in-flight reply belongs to (may differ from `currentID`).
+    private(set) var activeConversationID: UUID?
+    /// Follow-up instructions waiting for the current reply to end, per conversation.
+    private(set) var queuedInstructions: [UUID: [QueuedInstruction]] = [:]
     private(set) var loadError: String?
 
     @ObservationIgnored private var streamTask: Task<Void, Never>?
@@ -75,7 +79,6 @@ final class ChatStore {
     // MARK: Conversations
 
     func newConversation() {
-        stopIfNeeded()
         let teammate = activeTeammateID()
         // Reuse an existing empty conversation instead of piling them up.
         if let empty = conversations.first(where: { $0.messages.isEmpty && !$0.isArchived && $0.teammateID == teammate }) {
@@ -108,7 +111,6 @@ final class ChatStore {
     /// re-send the transcript (copies of Telegram and other sources, which
     /// get a fresh `ios_` session on first send).
     func importConversation(title: String, sessionID: String?, origin: String, teammateID: UUID?, messages: [Message], carriesHistory: Bool) {
-        stopIfNeeded()
         let conversation = Conversation(title: title, providerKind: provider().descriptor.kind, messages: messages,
                                         backendSessionID: sessionID, teammateID: teammateID, origin: origin,
                                         carriesHistory: carriesHistory)
@@ -176,8 +178,8 @@ final class ChatStore {
     var activeRunID: String? {
         guard let requestID = activeRequestID else { return nil }
         if let id = runController?.runID(for: requestID) { return id }
-        guard let conversation = current, let messageID = activeMessageID else { return nil }
-        return conversation.messages.first { $0.id == messageID }?.runID
+        guard let conversationID = activeConversationID, let messageID = activeMessageID else { return nil }
+        return message(conversationID, messageID)?.runID
     }
 
     func steer(_ text: String) async throws {
@@ -230,16 +232,17 @@ final class ChatStore {
         }
     }
 
+    /// Switching chats never stops a reply: it keeps running (and streaming
+    /// into its own conversation) while you look at another one.
     func select(_ id: UUID) {
         guard id != currentID else { return }
-        stopIfNeeded()
         currentID = id
     }
 
     /// Removes the conversation from this device only. Callers decide (and
     /// say) whether the server copy is gone; see `deletePermanently`.
     private func removeFromDevice(_ id: UUID) {
-        if id == currentID { stopIfNeeded() }
+        if id == activeConversationID { stopIfNeeded() }
         conversations.removeAll { $0.id == id }
         try? store.delete(id)
         if currentID == id { currentID = activeConversations.first?.id }
@@ -342,7 +345,7 @@ final class ChatStore {
             }
             if !archived { serverArchived.removeAll { $0.id == serverID } }
         }
-        if archived, id == currentID { stopIfNeeded() }
+        if archived, id == activeConversationID { stopIfNeeded() }
         mutateConversation(id) { $0.archivedAt = archived ? Date() : nil }
         persist(id)
         if archived, currentID == id { currentID = activeConversations.first?.id }
@@ -424,6 +427,7 @@ final class ChatStore {
                                    options: requestOptions(conversations.first { $0.id == conversationID }))
         activeRequestID = request.requestID
         activeMessageID = assistant.id
+        activeConversationID = conversationID
         persist(conversationID)
 
         let agent = provider()
@@ -447,19 +451,167 @@ final class ChatStore {
         }
     }
 
-    /// Stop generation. Asks the provider to cancel, then hard-stops locally
-    /// if the backend doesn't confirm quickly.
+    // MARK: Stop
+
+    /// How long to wait for the server to confirm a stop before saying so.
+    @ObservationIgnored var stopConfirmationTimeout: TimeInterval = 45
+
+    /// Stop the in-flight reply. For server-side runs (Hermes) this asks the
+    /// server to interrupt the run and keeps following it: the reply only
+    /// shows as stopped once the server reports it cancelled. Pressing Stop
+    /// again while a stop is pending does nothing; after an unconfirmed stop
+    /// it retries. Local providers (Mock) are cancelled locally.
     func stop() {
-        guard let requestID = activeRequestID, let messageID = activeMessageID, let conversationID = currentID else { return }
-        let agent = provider()
-        Task { [weak self] in
-            await agent.cancel(requestID: requestID)
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard let self, self.activeRequestID == requestID else { return }
-            self.streamTask?.cancel()
-            self.apply(.failed(.cancelled), conversationID: conversationID, messageID: messageID)
-            self.finishRequest(conversationID: conversationID, messageID: messageID)
+        guard let requestID = activeRequestID, let messageID = activeMessageID, let conversationID = activeConversationID else { return }
+        let phase = message(conversationID, messageID)?.stop
+        if phase?.isPending == true { return }   // idempotent
+        apply(.stopRequested, conversationID: conversationID, messageID: messageID)
+        guard let runController else {
+            let agent = provider()
+            Task { [weak self] in
+                await agent.cancel(requestID: requestID)
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                guard let self, self.activeRequestID == requestID else { return }
+                // Local providers have no server work: cancelling the stream is the stop.
+                self.streamTask?.cancel()
+                self.apply(.failed(.cancelled), conversationID: conversationID, messageID: messageID)
+                self.finishRequest(conversationID: conversationID, messageID: messageID)
+            }
+            return
         }
+        Task { [weak self] in
+            let result = await runController.requestStop(requestID: requestID)
+            guard let self, self.activeRequestID == requestID else { return }
+            switch result {
+            case .sent(let status):
+                if status == .stopping || status == .running || status == .queued {
+                    self.apply(.stopAcknowledged, conversationID: conversationID, messageID: messageID)
+                }
+                // Terminal statuses arrive on the run stream / poll and settle the reply.
+            case .deferredUntilRunStarts:
+                break   // the provider sends the stop as soon as Hermes returns the run id
+            case .notRunning:
+                // No server run behind this request (e.g. still creating the session).
+                self.streamTask?.cancel()
+                self.apply(.failed(.cancelled), conversationID: conversationID, messageID: messageID)
+                self.finishRequest(conversationID: conversationID, messageID: messageID)
+                return
+            case .failed(let error):
+                self.apply(.stopUnconfirmed("The stop request failed: \(error.message) The run may still be going — try Stop again or check Tasks."),
+                           conversationID: conversationID, messageID: messageID)
+                return
+            }
+            try? await Task.sleep(nanoseconds: UInt64(self.stopConfirmationTimeout * 1_000_000_000))
+            guard self.activeRequestID == requestID, self.message(conversationID, messageID)?.stop?.isPending == true else { return }
+            self.apply(.stopUnconfirmed("Hermes hasn't confirmed the stop yet. The run may still be working — Brainbox keeps following it."),
+                       conversationID: conversationID, messageID: messageID)
+        }
+    }
+
+    /// Stops following an unconfirmed reply locally. Says plainly that the
+    /// server never confirmed, so nobody mistakes it for a stop.
+    func stopFollowing() {
+        guard let messageID = activeMessageID, let conversationID = activeConversationID else { return }
+        streamTask?.cancel()
+        apply(.failed(.remote(code: "detached", message: "Stopped following this reply. Hermes never confirmed the stop, so the run may still have finished on the server — check Tasks.")),
+              conversationID: conversationID, messageID: messageID)
+        finishRequest(conversationID: conversationID, messageID: messageID)
+    }
+
+    // MARK: Steering
+
+    enum SteerMode: String, CaseIterable, Identifiable {
+        /// Hermes `/steer`: the running agent reads it at its next step.
+        case inject
+        /// Sent as the next message once this reply has ended.
+        case queue
+        /// Stop the current work (server-confirmed), then send this.
+        case interrupt
+        var id: String { rawValue }
+        var title: String {
+            switch self {
+            case .inject: return "Steer now"
+            case .queue: return "Send after this"
+            case .interrupt: return "Stop and send"
+            }
+        }
+        var detail: String {
+            switch self {
+            case .inject: return "The agent reads it at its next step, without stopping."
+            case .queue: return "Waits until the current reply ends, then sends it as a new message."
+            case .interrupt: return "Stops the current work, waits for Hermes to confirm, then sends it."
+            }
+        }
+    }
+
+    struct QueuedInstruction: Identifiable, Equatable {
+        let id = UUID()
+        let text: String
+        let afterInterrupt: Bool
+    }
+
+    var canInject: Bool { canSteer }
+
+    /// Sends guidance to the reply that's running in the active conversation.
+    func steer(_ rawText: String, mode: SteerMode) async throws {
+        let text = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        guard let conversationID = activeConversationID, isStreaming else {
+            send(text)
+            return
+        }
+        switch mode {
+        case .inject:
+            guard let runController, let runID = activeRunID else {
+                throw AgentError.notImplemented(detail: "This backend can't steer a running reply. Use “Send after this” instead.")
+            }
+            do {
+                try await runController.steer(runID: runID, text: text)
+            } catch AgentError.remote(let code, _) where code == "run_not_accepting_steer" || code == "steer_not_accepted" {
+                throw AgentError.remote(code: code, message: "The agent isn't taking steering right now (it may be waiting on a tool or an approval). Use “Send after this” instead.")
+            }
+        case .queue:
+            queuedInstructions[conversationID, default: []].append(QueuedInstruction(text: text, afterInterrupt: false))
+        case .interrupt:
+            queuedInstructions[conversationID, default: []].insert(QueuedInstruction(text: text, afterInterrupt: true), at: 0)
+            stop()
+        }
+    }
+
+    func removeQueued(_ id: UUID, from conversationID: UUID) {
+        queuedInstructions[conversationID]?.removeAll { $0.id == id }
+        if queuedInstructions[conversationID]?.isEmpty == true { queuedInstructions[conversationID] = nil }
+    }
+
+    /// After a reply ends: send the next queued instruction. A failed reply
+    /// keeps the queue (the user decides); a cancelled one only continues if
+    /// the cancellation was the requested interrupt.
+    private func dispatchQueued(after conversationID: UUID, finalState: MessageState?) {
+        guard var queue = queuedInstructions[conversationID], let next = queue.first else { return }
+        switch finalState {
+        case .complete?: break
+        case .cancelled?: guard next.afterInterrupt else { return }
+        default: return
+        }
+        queue.removeFirst()
+        queuedInstructions[conversationID] = queue.isEmpty ? nil : queue
+        Task { @MainActor [weak self] in
+            guard let self, !self.isStreaming else { return }
+            if self.currentID != conversationID { self.currentID = conversationID }
+            self.send(next.text)
+        }
+    }
+
+    /// Sends a held instruction now (e.g. after a failed reply).
+    func sendQueuedNow(_ id: UUID, in conversationID: UUID) {
+        guard !isStreaming, let item = queuedInstructions[conversationID]?.first(where: { $0.id == id }) else { return }
+        removeQueued(id, from: conversationID)
+        if currentID != conversationID { currentID = conversationID }
+        send(item.text)
+    }
+
+    private func message(_ conversationID: UUID, _ messageID: UUID) -> Message? {
+        conversations.first { $0.id == conversationID }?.messages.first { $0.id == messageID }
     }
 
     func retry(_ assistantMessageID: UUID) {
@@ -506,12 +658,13 @@ final class ChatStore {
         guard activeMessageID == messageID else { return }
         activeRequestID = nil
         activeMessageID = nil
+        activeConversationID = nil
         streamTask = nil
         mutateConversation(conversationID) { $0.updatedAt = Date() }
         persist(conversationID)
-        if let message = conversations.first(where: { $0.id == conversationID })?.messages.first(where: { $0.id == messageID }) {
-            onReplyFinished?(message)
-        }
+        let finished = message(conversationID, messageID)
+        if let finished { onReplyFinished?(finished) }
+        dispatchQueued(after: conversationID, finalState: finished?.state)
     }
 
     private func mutateConversation(_ id: UUID, _ body: (inout Conversation) -> Void) {

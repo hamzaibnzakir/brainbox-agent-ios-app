@@ -29,7 +29,7 @@ final class ChatLifecycleTests: XCTestCase {
         return (store, persistence)
     }
 
-    private func deleted(_ id: String, chain: [String] = []) -> HTTPResponse {
+    nonisolated private func deleted(_ id: String, chain: [String] = []) -> HTTPResponse {
         let sessions = (chain + [id]).map { "\"\($0)\"" }.joined(separator: ",")
         return MockHTTPTransport.json(#"{"object":"brainbox.session.deleted","id":"\#(id)","deleted_sessions":[\#(sessions)],"files_removed":3,"verified":true}"#)
     }
