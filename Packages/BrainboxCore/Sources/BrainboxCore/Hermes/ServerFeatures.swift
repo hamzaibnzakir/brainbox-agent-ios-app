@@ -464,6 +464,8 @@ public enum BrainboxDeepLink: Equatable, Sendable {
     case server
     case settings
     case files
+    case terminal
+    case agents(taskID: UUID?)
 
     public static func parse(_ url: URL) -> BrainboxDeepLink? {
         guard url.scheme?.lowercased() == "brainbox" else { return nil }
@@ -477,6 +479,9 @@ public enum BrainboxDeepLink: Equatable, Sendable {
         case ("server", 0): return .server
         case ("settings", 0): return .settings
         case ("files", 0): return .files
+        case ("terminal", 0): return .terminal
+        case ("agents", 0): return .agents(taskID: nil)
+        case ("agents", 1): return UUID(uuidString: parts[0]).map { .agents(taskID: $0) }
         default: return nil
         }
     }

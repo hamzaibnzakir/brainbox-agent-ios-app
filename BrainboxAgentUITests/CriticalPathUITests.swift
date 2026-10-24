@@ -75,13 +75,16 @@ final class CriticalPathUITests: XCTestCase {
     }
 
     func testEveryTabOpens() throws {
-        for (tab, marker) in [("tab.team", "Your AI team"), ("tab.tasks", "Tasks"), ("tab.vps", "Services"), ("tab.settings", "Settings")] {
+        for (tab, marker) in [("tab.team", "Agent workspace"), ("tab.tasks", "Tasks"), ("tab.vps", "Services"), ("tab.home", "Recent chats")] {
             let button = app.buttons[tab]
             XCTAssertTrue(button.waitForExistence(timeout: 5), "\(tab) missing")
             button.tap()
             let label = app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", marker)).firstMatch
             XCTAssertTrue(label.waitForExistence(timeout: 8), "\(tab) did not show \(marker)")
         }
+        // Settings lives behind the gear on Home.
+        app.buttons["home.settings"].tap()
+        XCTAssertTrue(app.staticTexts.containing(NSPredicate(format: "label CONTAINS[c] %@", "Notifications")).firstMatch.waitForExistence(timeout: 8))
     }
 
     func testScheduledTasksScreenIsHonestWithoutHermes() throws {
@@ -133,7 +136,8 @@ final class CriticalPathUITests: XCTestCase {
     }
 
     func testMotionLabIsReachableInDebug() throws {
-        app.buttons["tab.settings"].tap()
+        app.buttons["tab.home"].tap()
+        app.buttons["home.settings"].tap()
         let developer = app.descendants(matching: .any).matching(NSPredicate(format: "label BEGINSWITH[c] %@", "Developer")).firstMatch
         XCTAssertTrue(developer.waitForExistence(timeout: 8))
         developer.tap()

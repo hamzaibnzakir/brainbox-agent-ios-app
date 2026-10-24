@@ -174,7 +174,7 @@ struct HomeView: View {
             }
             action("Start a task", "play.rectangle", id: "home.startTask") { model.selectedTab = .team }
             action("Files", "folder", id: "home.files") { model.open(.files) }
-            action("Terminal", "terminal", id: "home.terminal") { model.open(.server) }
+            action("Terminal", "terminal", id: "home.terminal") { model.open(.terminal) }
         }
     }
 

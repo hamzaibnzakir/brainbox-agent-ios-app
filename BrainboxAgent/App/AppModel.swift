@@ -399,9 +399,11 @@ final class AppModel {
         case .job, .run:
             pendingLink = link
             selectedTab = .tasks
-        case .server, .files:
+        case .server, .files, .terminal:
             pendingLink = link
             selectedTab = .vps
+        case .agents:
+            selectedTab = .team
         case .settings:
             showSettings = true
         }

@@ -26,7 +26,12 @@ struct TeamView: View {
                     if !model.chat.pendingApprovals.isEmpty {
                         approvalsBanner.bbEntrance(index: 1)
                     }
-                    SectionHeader(title: "Your team", trailing: "New teammate") { creating = true }
+                    ParallelTasksSection().bbEntrance(index: 2)
+                    SectionHeader(title: "Presets", trailing: "New preset") { creating = true }
+                    Text("Presets are saved instructions, model and profile choices for your one Hermes agent — not separate agents. Real parallel work runs above.")
+                        .font(BB.Font.caption)
+                        .foregroundStyle(BB.Palette.textTertiary)
+                        .padding(.horizontal, BB.Space.xs)
                     VStack(spacing: 10) {
                         ForEach(Array(workspace.visibleTeammates.enumerated()), id: \.element.id) { index, mate in
                             TeammateCard(teammate: mate, mood: mood(for: mate), isActive: mate.id == workspace.activeTeammateID,
@@ -72,12 +77,12 @@ struct TeamView: View {
                 .padding(.bottom, BB.Space.xxl)
             }
             .bbScreen()
-            .navigationTitle("Team")
+            .navigationTitle("Workspace")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { creating = true } label: { Image(systemName: "plus") }
-                        .accessibilityLabel("New teammate")
+                        .accessibilityLabel("New preset")
                         .accessibilityIdentifier("team.new")
                 }
             }
@@ -99,7 +104,7 @@ struct TeamView: View {
                 radius: 128, mascotSize: 48,
                 onTap: { id in if let mate = workspace.teammate(id) { open(mate) } })
             VStack(spacing: 6) {
-                Text("Your AI team").font(BB.Font.display).foregroundStyle(BB.Palette.textPrimary)
+                Text("Agent workspace").font(BB.Font.display).foregroundStyle(BB.Palette.textPrimary)
                 LiveIndicator(state: model.connectionState)
             }
             .padding(.horizontal, 20)
@@ -109,7 +114,7 @@ struct TeamView: View {
         .frame(height: 230)
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Your AI team")
+        .accessibilityLabel("Agent workspace")
     }
 
     private var approvalsBanner: some View {

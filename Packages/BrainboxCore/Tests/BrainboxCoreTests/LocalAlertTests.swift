@@ -44,3 +44,15 @@ final class LocalAlertTests: XCTestCase {
         XCTAssertEqual(RunAlerts.alert(for: task)?.body, "1 of 1 agents finished “Check”.")
     }
 }
+
+final class DeepLinkMoreTests: XCTestCase {
+    func testAgentAndTerminalLinks() {
+        let id = UUID()
+        XCTAssertEqual(BrainboxDeepLink.parse(URL(string: "brainbox://agents/\(id.uuidString.lowercased())")!), .agents(taskID: id))
+        XCTAssertEqual(BrainboxDeepLink.parse(URL(string: "brainbox://terminal")!), .terminal)
+        // Every alert link the app posts must open somewhere.
+        let alert = RunAlerts.alert(for: { var t = ParallelTask(id: id, title: "x", agents: [], wantsSynthesis: false); t.agents = []; return t }())
+        XCTAssertNotNil(alert.flatMap { URL(string: $0.link) }.flatMap(BrainboxDeepLink.parse))
+        XCTAssertNotNil(BrainboxDeepLink.parse(URL(string: RunAlerts.alert(runID: "run_1", title: "t", state: .completed)!.link)!))
+    }
+}

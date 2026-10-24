@@ -394,7 +394,7 @@ struct AgentView: View {
                 case .workspace: model.selectedTab = .team
                 case .sessions: showSessions = true
                 case .files: model.open(.files)
-                case .terminal: model.open(.server)
+                case .terminal: model.open(.terminal)
                 }
             case .parallel(let tasks):
                 let mate = currentTeammate
