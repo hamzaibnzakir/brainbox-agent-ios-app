@@ -76,3 +76,9 @@ bundle_id = ""                  # the app's bundle identifier as signed
 environment = "production"      # "development" for Xcode debug installs
 poll_seconds = 60
 long_task_seconds = 120
+
+[parity]
+# Telegram adds Hermes' gateway prompt (display.personality / agent.system_prompt) to every
+# turn; Hermes' API server doesn't. With this on, the proxy adds the same text (read with
+# Hermes' own GatewayRunner._load_ephemeral_system_prompt, cached 60 s) to app runs.
+gateway_prompt = true
