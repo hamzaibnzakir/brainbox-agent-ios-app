@@ -7,6 +7,8 @@ import BrainboxCore
 struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.tabIsActive) private var isActive
+    @State private var taskDraft = ""
+    @FocusState private var taskFocused: Bool
 
     private var workspace: HermesWorkspace { model.hermes }
 
@@ -15,6 +17,7 @@ struct HomeView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: BB.Space.xl) {
                     greeting.bbEntrance(index: 0)
+                    taskComposer.bbEntrance(index: 1)
                     connectionCard.bbEntrance(index: 1)
                     if !model.chat.pendingApprovals.isEmpty { approvalsCard.bbEntrance(index: 2) }
                     quickActions.bbEntrance(index: 3)
@@ -50,17 +53,68 @@ struct HomeView: View {
 
     // MARK: Greeting
 
+    /// The bot's mood reflects only real state: connection, a running reply,
+    /// approvals waiting, parallel agents at work.
+    private var botMood: MascotMood {
+        guard model.connectionState.isConnected else { return .offline }
+        if !model.chat.pendingApprovals.isEmpty { return .waitingApproval }
+        if model.chat.isStreaming {
+            if case .runningTool = model.agentStatus { return .working }
+            return .thinking
+        }
+        if !model.agents.active.isEmpty || !workspace.activeRuns.isEmpty { return .working }
+        return .idle
+    }
+
     private var greeting: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(spacing: 10) {
+            MascotView(style: .brainbox, mood: botMood, size: 132)
+                .padding(.top, BB.Space.l)
+                .accessibilityIdentifier("home.bot")
             Text(Self.salutation(for: Date()))
                 .font(BB.Font.display)
                 .foregroundStyle(BB.Palette.textPrimary)
-            Text(Date(), format: .dateTime.weekday(.wide).month().day())
+            Text(botMood == .offline ? "Not connected" : botMood.label == "Idle" ? "Ready when you are" : botMood.label)
                 .font(BB.Font.subhead)
                 .foregroundStyle(BB.Palette.textSecondary)
+                .contentTransition(.interpolate)
         }
-        .padding(.top, BB.Space.s)
+        .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
+    }
+
+    private var taskComposer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("What should Brainbox do?", text: $taskDraft, axis: .vertical)
+                .font(BB.Font.body)
+                .lineLimit(1...4)
+                .focused($taskFocused)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 13)
+                .accessibilityIdentifier("home.composer")
+            Button {
+                let text = taskDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                taskDraft = ""
+                taskFocused = false
+                model.chat.newConversation()
+                model.selectedTab = .agent
+                Task { _ = await model.chat.submit(text) }
+            } label: {
+                Image(systemName: "arrow.up")
+                    .font(.system(size: 15, weight: .bold))
+                    .foregroundStyle(taskDraft.isEmpty ? BB.Palette.textTertiary : BB.Palette.onSignal)
+                    .frame(width: 38, height: 38)
+                    .background(Circle().fill(taskDraft.isEmpty ? BB.Palette.surfaceHigh : BB.Palette.signal))
+            }
+            .buttonStyle(.pressable)
+            .disabled(taskDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || model.chat.isStreaming)
+            .padding(5)
+            .accessibilityLabel("Start")
+            .accessibilityIdentifier("home.start")
+        }
+        .background(RoundedRectangle(cornerRadius: 26, style: .continuous).fill(BB.Palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: 26, style: .continuous).strokeBorder(taskFocused ? BB.Palette.strokeStrong : BB.Palette.stroke))
     }
 
     static func salutation(for date: Date) -> String {
@@ -172,7 +226,7 @@ struct HomeView: View {
                 model.chat.newConversation()
                 model.selectedTab = .agent
             }
-            action("Start a task", "play.rectangle", id: "home.startTask") { model.selectedTab = .team }
+            action("Parallel agents", "square.split.2x2", id: "home.startTask") { model.selectedTab = .team }
             action("Files", "folder", id: "home.files") { model.open(.files) }
             action("Terminal", "terminal", id: "home.terminal") { model.open(.terminal) }
         }

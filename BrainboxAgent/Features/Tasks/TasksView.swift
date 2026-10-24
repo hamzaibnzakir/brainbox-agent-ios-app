@@ -20,7 +20,10 @@ struct TasksView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.tabIsActive) private var isActive
     @State private var filter: TaskFilter = .active
+    @State private var linkPath: [TaskLink] = []
     @Namespace private var pill
+
+    enum TaskLink: Hashable { case job(String), run(String) }
 
     private var workspace: HermesWorkspace { model.hermes }
 
@@ -34,7 +37,7 @@ struct TasksView: View {
     }
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $linkPath) {
             List {
                 Section {
                     filterBar.listRowBackground(Color.clear).listRowInsets(EdgeInsets())
@@ -73,6 +76,14 @@ struct TasksView: View {
             .scrollContentBackground(.hidden)
             .bbScreen()
             .navigationTitle("Tasks")
+            .navigationDestination(for: TaskLink.self) { link in
+                switch link {
+                case .job(let id): JobDetailView(jobID: id)
+                case .run(let id): RunDetailView(runID: id)
+                }
+            }
+            .onChange(of: model.pendingLink) { _, link in consume(link) }
+            .onAppear { consume(model.pendingLink) }
             .animation(Motion.smooth, value: filter)
             .refreshable { await refreshActive() }
             .task(id: isActive) {
@@ -107,6 +118,21 @@ struct TasksView: View {
         case .approval: return "No approvals waiting"
         case .done: return "No finished runs yet"
         case .failed: return "No failures"
+        }
+    }
+
+    /// Notification taps / brainbox:// links for a job or a run.
+    private func consume(_ link: BrainboxDeepLink?) {
+        switch link {
+        case .job(let id)?:
+            linkPath = [.job(id)]
+            model.pendingLink = nil
+            Task { await workspace.scheduledJobs.refresh() }
+        case .run(let id)?:
+            linkPath = [.run(id)]
+            model.pendingLink = nil
+        default:
+            break
         }
     }
 
