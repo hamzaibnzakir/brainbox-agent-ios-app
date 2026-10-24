@@ -187,6 +187,8 @@ final class ChatCommandTests: XCTestCase {
         let (store, _, bodies, release) = longRunStore(busyMode: nil)
         let started = await store.submit("start")
         XCTAssertEqual(started, .sent)
+        let deadline = Date().addingTimeInterval(3)
+        while bodies.current.isEmpty && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
         guard case .refused = await store.submit("follow-up") else { return XCTFail() }
         XCTAssertEqual(bodies.current.count, 1)
         release.withLock { $0 = true }
