@@ -1,0 +1,78 @@
+# Brainbox Hermes proxy — /etc/brainbox-gateway/hermes-proxy.toml (mode 600)
+# The iPhone talks to THIS, never to Hermes directly. The Hermes API key
+# stays on the server; each phone gets its own revocable device token.
+
+[proxy]
+host = "127.0.0.1"              # keep loopback; publish privately with `tailscale serve`
+port = 8766
+path_prefix = "/hermes"         # app URL ends with /hermes
+hermes_url = "http://127.0.0.1:8642"   # Hermes API Server (loopback only)
+# Where API_SERVER_KEY lives. Use ONE of:
+hermes_env_file = "/root/.hermes/.env"
+# hermes_key_file = "/etc/brainbox-gateway/hermes-api.key"   # file containing only the key
+audit_log = "/var/lib/brainbox-gateway/hermes-proxy-audit.log"
+# Proxy-owned state (chat ownership registry, mode 600). Chat archive/delete also reads
+# Hermes' state.db READ-ONLY from [profiles] hermes_home (default /root/.hermes).
+state_dir = "/var/lib/brainbox-gateway"
+max_auth_failures_per_minute = 10
+max_requests_per_minute = 300
+
+# One entry per phone. Generate with:
+#   /opt/brainbox-gateway/venv/bin/brainbox-gateway new-device --name "David's iPhone"
+# Revoke a phone by deleting its entry and restarting brainbox-hermes-proxy.
+[[devices]]
+name = "David's iPhone"
+token_sha256 = "REPLACE_WITH_64_HEX_CHARS_FROM_new-device_REPLACE_WITH_64_HEX_CHA"
+admin = false                   # true + profiles.admin_enabled lets this phone create Hermes profiles
+terminal = false                # true + [terminal] enabled lets this phone open the direct VPS terminal
+
+[profiles]
+hermes_home = "/root/.hermes"
+hermes_bin = "/opt/hermes-src/venv/bin/hermes"
+# Forward /p/<profile>/... only if you enabled gateway.multiplex_profiles in
+# Hermes AND gave each profile its own API_SERVER_KEY in its .env.
+multiplex = false
+# Allow admin devices to run `hermes profile create <validated-name>`.
+admin_enabled = false
+
+[jobs]
+# Where scheduled-job results may be delivered when the app creates or edits
+# a job. "local" keeps results in Hermes. Add "telegram" only if you want app-
+# created jobs to post through your existing Hermes Telegram gateway.
+allowed_deliver = ["local"]
+
+# Session safety (always on, not configurable): through this proxy the app can
+# only create, change, fork or run in its own `ios_` sessions. Telegram and all
+# other sessions are read-only (GET). X-Hermes-Session-* headers are dropped.
+
+[files]
+# The Brainbox workspace — the ONLY folder the app can browse. Uploads land in
+# <root>/inbox, the agent can leave files for the phone in <root>/outbox.
+enabled = true
+root = "/var/lib/brainbox-gateway/workspace"
+max_upload_bytes = 25000000
+# allowed_extensions = ["png", "jpg", "pdf", "txt", ...]   # default list in workspace_files.py
+
+[terminal]
+# Direct VPS terminal (interactive PTY over the authenticated WebSocket).
+# OFF until you create the least-privilege account — see docs/TERMINAL.md.
+enabled = false
+user = "brainbox-term"          # never root; shells run as this account with a clean environment
+shell = "/bin/bash"
+idle_timeout_seconds = 1800     # no input for 30 min → the shell is closed
+detach_grace_seconds = 300      # a dropped connection can reattach within 5 min
+max_sessions_per_device = 3
+
+[push]
+# Apple Push Notifications. Needs a PAID Apple Developer Program membership,
+# an APNs auth key (.p8) kept only on this server, and `pip install '.[push]'`.
+# See docs/NOTIFICATIONS.md. Leave disabled (the app uses local notifications) — the app shows
+# "not configured" and nothing is sent.
+enabled = false
+team_id = ""                    # 10 characters, from developer.apple.com → Membership
+key_id = ""                     # 10 characters, the APNs key's Key ID
+key_file = "/etc/brainbox-gateway/apns/AuthKey.p8"   # mode 600, root-owned; never in the app or repo
+bundle_id = ""                  # the app's bundle identifier as signed
+environment = "production"      # "development" for Xcode debug installs
+poll_seconds = 60
+long_task_seconds = 120

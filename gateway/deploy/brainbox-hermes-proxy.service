@@ -1,0 +1,24 @@
+[Unit]
+Description=Brainbox Hermes proxy (device tokens + allow-list in front of the Hermes API Server)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root only so it can read API_SERVER_KEY from /root/.hermes/.env (or a
+# root-only key file). It never writes to Hermes' files except via the
+# opt-in `hermes profile create` admin action.
+User=root
+ExecStart=/opt/brainbox-gateway/venv/bin/brainbox-gateway hermes-proxy --config /etc/brainbox-gateway/hermes-proxy.toml
+Restart=on-failure
+RestartSec=3
+UMask=0077
+PrivateTmp=yes
+ProtectSystem=full
+StandardOutput=journal
+StandardError=journal
+# Independent from hermes-gateway.service (Telegram): restarting this never
+# restarts Hermes or the Telegram bot.
+
+[Install]
+WantedBy=multi-user.target

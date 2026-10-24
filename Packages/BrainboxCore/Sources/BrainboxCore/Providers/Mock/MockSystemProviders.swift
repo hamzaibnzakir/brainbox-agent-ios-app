@@ -186,10 +186,4 @@ public extension ProviderSuite {
             logs: MockLogProvider(interval: fast ? 0.01 : 0.7)
         )
     }
-
-    /// Hermes is pending: only the agent slot exists, and it reports
-    /// itself unavailable.
-    static func hermesPending() -> ProviderSuite {
-        ProviderSuite(agent: HermesProvider(), vps: nil, terminal: nil, files: nil, logs: nil)
-    }
 }

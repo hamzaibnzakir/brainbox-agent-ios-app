@@ -29,6 +29,10 @@ settings:
 packages:
   BrainboxCore:
     path: Packages/BrainboxCore
+  # Terminal emulator for the direct VPS terminal (MIT, Miguel de Icaza).
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    minorVersion: 1.2.0
 
 targets:
   BrainboxAgent:
@@ -38,6 +42,7 @@ targets:
       - path: BrainboxAgent
     dependencies:
       - package: BrainboxCore
+      - package: SwiftTerm
     info:
       path: BrainboxAgent/Info.plist
       properties:
@@ -54,6 +59,15 @@ targets:
         NSLocalNetworkUsageDescription: Brainbox Agent connects to your private Brainbox gateway on your local or Tailscale network.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSPhotoLibraryUsageDescription: Brainbox Agent lets you pick photos to send to your agent or upload to your server's Brainbox workspace.
+        UIBackgroundModes:
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - app.brainbox.agent.refresh
+        CFBundleURLTypes:
+          - CFBundleURLName: app.brainbox.agent
+            CFBundleURLSchemes:
+              - brainbox
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.brainbox.agent

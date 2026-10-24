@@ -14,6 +14,12 @@ struct SettingsView: View {
                             StatusDot(tone: model.connectionState.tone, size: 7)
                         }
                     }
+                    NavigationLink { HermesConnectionView() } label: {
+                        SettingsRow(systemImage: "bolt.horizontal.circle", title: "Hermes", subtitle: hermesSubtitle, tint: BB.Palette.signalText) {
+                            if model.isHermes { StatusDot(tone: model.connectionState.tone, size: 7) }
+                        }
+                    }
+                    .accessibilityIdentifier("settings.hermes")
                     NavigationLink { AgentSettingsView() } label: {
                         SettingsRow(systemImage: "sparkles", title: "Agent", subtitle: model.settings.providerKind.displayName, tint: BB.Palette.signalText) { EmptyView() }
                     }
@@ -34,6 +40,10 @@ struct SettingsView: View {
                 .listRowBackground(BB.Palette.surface)
 
                 Section {
+                    NavigationLink { DiagnosticsView() } label: {
+                        SettingsRow(systemImage: "stethoscope", title: "Diagnostics", subtitle: "Recent requests and connection details") { EmptyView() }
+                    }
+                    .accessibilityIdentifier("settings.diagnostics")
                     NavigationLink { DeveloperSettingsView() } label: {
                         SettingsRow(systemImage: "hammer", title: "Developer", subtitle: "Providers, protocol, diagnostics") { EmptyView() }
                     }
@@ -47,6 +57,12 @@ struct SettingsView: View {
             .bbScreen()
             .navigationTitle("Settings")
         }
+    }
+
+    private var hermesSubtitle: String {
+        if model.isHermes { return model.connectionState.label }
+        if model.settings.validatedHermesURL == nil { return "Not set up" }
+        return model.hasHermesToken ? "Ready — not the active backend" : "Token missing"
     }
 }
 
@@ -234,7 +250,7 @@ struct AgentSettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 HStack(spacing: 6) {
                                     Text(kind.displayName).font(BB.Font.callout).foregroundStyle(kind.isAvailable ? BB.Palette.textPrimary : BB.Palette.textTertiary)
-                                    if kind == .hermes { Badge(text: "Pending", color: BB.Palette.ion) }
+                                    if kind == .hermes { Badge(text: "API v1", color: BB.Palette.ion) }
                                 }
                                 Text(description(for: kind)).font(BB.Font.caption).foregroundStyle(BB.Palette.textSecondary)
                             }
@@ -254,7 +270,7 @@ struct AgentSettingsView: View {
             } header: {
                 Text("Backend").bbLabelStyle()
             } footer: {
-                Text("Every backend goes through the same provider interface, so the app behaves the same whichever is active. Hermes will connect through the Brainbox gateway once its adapter is built and verified.")
+                Text("Every backend goes through the same provider interface. Hermes API talks to your Hermes Agent's API Server through the Brainbox proxy; Remote Agent talks to the Brainbox gateway (server metrics, terminal, files).")
                     .font(BB.Font.caption)
             }
             .listRowBackground(BB.Palette.surface)
@@ -281,7 +297,7 @@ struct AgentSettingsView: View {
         switch kind {
         case .mock: return "testtube.2"
         case .remote: return "point.3.connected.trianglepath.dotted"
-        case .hermes: return "hourglass"
+        case .hermes: return "bolt.horizontal.circle"
         }
     }
 
@@ -289,7 +305,7 @@ struct AgentSettingsView: View {
         switch kind {
         case .mock: return "Simulated agent, VPS, terminal, files and logs for development."
         case .remote: return "Any agent behind a Brainbox gateway (WebSocket)."
-        case .hermes: return "Adapter not built yet — no Hermes APIs are assumed."
+        case .hermes: return "Hermes Agent on your VPS: runs, approvals, teammates, Telegram sessions, schedules."
         }
     }
 
@@ -421,30 +437,83 @@ struct SecuritySettingsView: View {
 
 struct NotificationSettingsView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.openURL) private var openURL
+    @State private var testing = false
+
+    private var notifications: NotificationManager { model.notifications }
 
     var body: some View {
-        @Bindable var settings = model.settings
         List {
             Section {
-                Toggle("Task finished", isOn: Binding(get: { settings.notifyOnTaskComplete }, set: { value in
-                    settings.notifyOnTaskComplete = value
-                    if value { Task { _ = await Notifier.requestAuthorization() } }
-                }))
-                .tint(BB.Palette.signal)
-                Toggle("Connection lost", isOn: Binding(get: { settings.notifyOnDisconnect }, set: { value in
-                    settings.notifyOnDisconnect = value
-                    if value { Task { _ = await Notifier.requestAuthorization() } }
-                }))
-                .tint(BB.Palette.signal)
+                HStack {
+                    Text("Notifications")
+                    Spacer()
+                    Text(permissionText).foregroundStyle(BB.Palette.textSecondary)
+                }
+                if notifications.permission == .notDetermined {
+                    Button("Allow notifications") { Task { await notifications.requestPermission() } }
+                        .accessibilityIdentifier("notifications.allow")
+                } else if notifications.permission == .denied {
+                    Button("Open iOS Settings") {
+                        if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                    }
+                }
+                Button {
+                    testing = true
+                    Task {
+                        await notifications.sendTest()
+                        testing = false
+                    }
+                } label: {
+                    if testing { ProgressView() } else { Text("Send a test notification") }
+                }
+                .accessibilityIdentifier("notifications.test")
+                if let result = notifications.lastTestResult {
+                    Text(result).font(BB.Font.caption).foregroundStyle(BB.Palette.textSecondary)
+                }
             } footer: {
-                Text("Local notifications only. Brainbox Agent has no push server; alerts fire while the app is running or briefly in the background.")
+                Text("Brainbox uses local notifications posted by this iPhone, so no paid Apple developer account or push server is needed.")
                     .font(BB.Font.caption)
             }
+            .listRowBackground(BB.Palette.surface)
+
+            Section {
+                ForEach(LocalAlertKind.allCases) { kind in
+                    Toggle(kind.title, isOn: Binding(get: { notifications.preferences[kind] ?? true },
+                                                     set: { notifications.setPreference(kind, $0) }))
+                        .tint(BB.Palette.signal)
+                }
+            } header: { Text("Alert me about").bbLabelStyle() }
+            .listRowBackground(BB.Palette.surface)
+
+            Section {
+                Label("Instant while Brainbox is open, or for about 30 seconds after you leave it with a reply still running.", systemImage: "bolt")
+                Label("When Brainbox is in the background, iOS wakes it occasionally to check scheduled tasks and running work. iOS decides when — often every few hours — so these alerts can be late.", systemImage: "clock.arrow.circlepath")
+                Label("Nothing arrives after you force-quit Brainbox or turn off Background App Refresh for it.", systemImage: "xmark.circle")
+                if let last = notifications.lastBackgroundCheck {
+                    Text("Last background check: \(last.formatted(date: .abbreviated, time: .shortened))")
+                        .foregroundStyle(BB.Palette.textSecondary)
+                }
+            } header: { Text("When alerts arrive").bbLabelStyle() } footer: {
+                Text("Alerts show a short neutral summary and never include message text, outputs or commands.")
+                    .font(BB.Font.caption)
+            }
+            .font(BB.Font.caption)
             .listRowBackground(BB.Palette.surface)
         }
         .listStyle(.insetGrouped)
         .bbScreen()
         .navigationTitle("Notifications")
+        .task { await notifications.refreshPermission() }
+    }
+
+    private var permissionText: String {
+        switch notifications.permission {
+        case .authorized, .provisional, .ephemeral: return "On"
+        case .denied: return "Off in iOS Settings"
+        case .notDetermined: return "Not asked yet"
+        @unknown default: return "Unknown"
+        }
     }
 }
 
@@ -452,6 +521,15 @@ struct NotificationSettingsView: View {
 
 struct DeveloperSettingsView: View {
     @Environment(AppModel.self) private var model
+    @AppStorage("bb.motionLab.unlocked") private var motionLabUnlocked = false
+
+    private var showMotionLab: Bool {
+        #if DEBUG
+        return true
+        #else
+        return motionLabUnlocked
+        #endif
+    }
 
     var body: some View {
         List {
@@ -471,9 +549,19 @@ struct DeveloperSettingsView: View {
                     }
                 }
             } header: { Text("Provider").bbLabelStyle() } footer: {
-                Text("Mock drives every screen without a server. Future Hermes stays disabled until the adapter exists.").font(BB.Font.caption)
+                Text("Mock drives every screen without a server. Hermes API needs a URL and device token (Settings → Hermes).").font(BB.Font.caption)
             }
             .listRowBackground(BB.Palette.surface)
+
+            if showMotionLab {
+                Section {
+                    NavigationLink { MotionLabView() } label: {
+                        SettingsRow(systemImage: "wand.and.stars", title: "Motion Lab", subtitle: "Preview every animation on this device") { EmptyView() }
+                    }
+                    .accessibilityIdentifier("dev.motionlab")
+                }
+                .listRowBackground(BB.Palette.surface)
+            }
 
             Section {
                 row("Protocol", "Brainbox Agent Protocol v\(BrainboxProtocol.version)")
@@ -534,12 +622,19 @@ struct DeveloperSettingsView: View {
 
 struct AboutView: View {
     private let repo = URL(string: "https://github.com/hamzaibnzakir/brainbox-agent-ios-app")!
+    @AppStorage("bb.motionLab.unlocked") private var motionLabUnlocked = false
+    @State private var unlockedPulse = 0
 
     var body: some View {
         List {
             Section {
                 VStack(spacing: 14) {
                     AgentOrb(mode: .ready, size: 84)
+                        .onTapGesture(count: 3) {
+                            motionLabUnlocked = true
+                            unlockedPulse += 1
+                        }
+                        .sensoryFeedback(.success, trigger: unlockedPulse)
                     Text("Brainbox Agent").font(BB.Font.title).foregroundStyle(BB.Palette.textPrimary)
                     Text("Your personal AI agent control center.").font(BB.Font.callout).foregroundStyle(BB.Palette.textSecondary)
                     Text("Version \(Bundle.main.appVersion)").font(BB.Font.monoSmall).foregroundStyle(BB.Palette.textTertiary)
@@ -553,7 +648,7 @@ struct AboutView: View {
             Section {
                 Link(destination: repo) { Label("Source & docs", systemImage: "chevron.left.forwardslash.chevron.right") }
                 Link(destination: repo.appendingPathComponent("blob/main/docs/AGENT_PROTOCOL.md")) { Label("Agent protocol", systemImage: "doc.text") }
-                Link(destination: repo.appendingPathComponent("blob/main/docs/HERMES_INTEGRATION.md")) { Label("Hermes integration plan", systemImage: "hourglass") }
+                Link(destination: repo.appendingPathComponent("blob/main/docs/HERMES_API_DEPLOYMENT.md")) { Label("Hermes setup guide", systemImage: "bolt.horizontal.circle") }
                 Link(destination: repo.appendingPathComponent("blob/main/docs/SECURITY.md")) { Label("Security review", systemImage: "lock.shield") }
             }
             .foregroundStyle(BB.Palette.signalText)

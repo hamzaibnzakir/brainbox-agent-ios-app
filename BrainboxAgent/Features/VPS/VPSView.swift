@@ -14,16 +14,21 @@ struct VPSView: View {
     @State private var busyService: String?
     @State private var pendingAction: (ServiceAction, ServiceStatus)?
     @State private var openTerminal = false
+    @State private var showFiles = false
     @State private var authMessage: String?
+    @State private var serverPath: [ServerDestination] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $serverPath) {
             ScrollView {
                 VStack(alignment: .leading, spacing: BB.Space.xl) {
                     header.bbEntrance(index: 0)
-                    if model.suite.vps == nil {
+                    if model.suite.vps == nil && model.isHermes {
+                        HermesServerHub(path: $serverPath).bbEntrance(index: 1)
+                    } else if model.suite.vps == nil {
                         BBCard {
-                            EmptyStateView(systemImage: "server.rack", title: "No server connected", message: "The current backend doesn't expose VPS controls. Switch to Mock or connect the Brainbox gateway in Settings.")
+                            EmptyStateView(systemImage: "server.rack", title: "No server controls",
+                                           message: "The current backend doesn't expose VPS controls. Connect Hermes, switch to Mock, or connect the Brainbox gateway in Settings.")
                         }
                     } else {
                         if let error {
@@ -46,9 +51,29 @@ struct VPSView: View {
             }
             .refreshable { await load() }
             .bbScreen()
-            .navigationTitle("VPS")
+            .navigationTitle("Server")
             .navigationBarTitleDisplayMode(.large)
-            .navigationDestination(isPresented: $openTerminal) { TerminalView() }
+            .navigationDestination(isPresented: $openTerminal) { GatewayTerminalView() }
+            .navigationDestination(for: ServerDestination.self) { destination in
+                switch destination {
+                case .files: WorkspaceFilesView()
+                case .terminal: PtyTerminalScreen()
+                case .diagnostics: DiagnosticsView()
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button { model.showSettings = true } label: { Image(systemName: "gearshape") }
+                        .accessibilityLabel("Settings")
+                }
+            }
+            .onChange(of: model.pendingLink) { _, link in consume(link) }
+            .onAppear { consume(model.pendingLink) }
+            .sheet(isPresented: $showFiles) {
+                FilesView()
+                    .presentationDetents([.large])
+                    .presentationDragIndicator(.visible)
+            }
             .task(id: "\(model.settings.providerKind.rawValue)-\(isActive)") {
                 if isActive { await run() }
             }
@@ -67,6 +92,17 @@ struct VPSView: View {
                 Text("This runs on the server. You'll confirm with \(model.gate.biometryName).")
             }
         }
+    }
+
+    private func consume(_ link: BrainboxDeepLink?) {
+        guard let link, model.isHermes else { return }
+        switch link {
+        case .files: serverPath = [.files]
+        case .terminal: serverPath = [.terminal]
+        case .server: serverPath = []
+        default: return
+        }
+        model.pendingLink = nil
     }
 
     // MARK: Sections
@@ -160,6 +196,8 @@ struct VPSView: View {
                 }
             }
             .accessibilityIdentifier("vps.terminal")
+            toolButton("Files", "folder", enabled: model.suite.files != nil) { showFiles = true }
+                .accessibilityIdentifier("vps.files")
             NavigationLink { LogViewerView() } label: { toolLabel("Logs", "text.alignleft") }
                 .buttonStyle(.pressable)
                 .disabled(model.suite.logs == nil)

@@ -158,6 +158,25 @@ jobs:
           grep -E "Test Case .* skipped|Test skipped" build/xcodebuild-test.log | head -n 5 | sed 's/^/::notice title=Skipped::/' || true
           exit $STATUS
 
+      - name: Export UI screenshots (light + dark)
+        if: always()
+        run: |
+          mkdir -p build/screenshots
+          if [ -d build/TestResults.xcresult ]; then
+            xcrun xcresulttool export attachments --path build/TestResults.xcresult --output-path build/screenshots > /dev/null 2>&1 || true
+          fi
+          COUNT=$(find build/screenshots -name '*.png' | wc -l | tr -d ' ')
+          echo "::notice title=Screenshots::$COUNT screenshot(s) exported (artifact: ui-screenshots)"
+
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: build/screenshots
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Archive (unsigned, device)
         run: |
           STATUS=0
@@ -176,6 +195,9 @@ jobs:
       - name: Package unsigned IPA
         run: bash scripts/package-unsigned-ipa.sh build/BrainboxAgent.xcarchive build/BrainboxAgent-unsigned.ipa
 
+      - name: Verify IPA structure and metadata
+        run: bash scripts/ci/verify-ipa.sh build/BrainboxAgent-unsigned.ipa expect-unsigned
+
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
@@ -192,3 +214,4 @@ jobs:
             build/TestResults.xcresult
             build/xcodebuild-test.log
           retention-days: 7
+

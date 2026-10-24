@@ -68,18 +68,9 @@ final class MockAgentProviderTests: XCTestCase {
         XCTAssertEqual(result.exitCode, 0)
     }
 
-    func testHermesProviderIsClearlyPending() async {
-        let hermes = HermesProvider()
-        XCTAssertTrue(hermes.capabilities.isEmpty)
-        do {
-            try await hermes.connect()
-            XCTFail("Hermes must not pretend to connect")
-        } catch {
-            guard case .notImplemented = error.asAgentError else { return XCTFail("Unexpected \(error)") }
-        }
-        let events = (try? await collect(hermes.send(AgentRequest(conversationID: UUID(), content: "hi")))) ?? []
-        guard case .failed(.notImplemented) = events.last else { return XCTFail("Expected notImplemented") }
-        XCTAssertFalse(ProviderKind.hermes.isAvailable)
+    func testHermesKindIsAvailableAndLabelled() {
+        XCTAssertTrue(ProviderKind.hermes.isAvailable)
+        XCTAssertEqual(ProviderKind.hermes.displayName, "Hermes API")
     }
 
     func testChunksPreserveText() {

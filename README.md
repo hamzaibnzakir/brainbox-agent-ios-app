@@ -5,21 +5,23 @@ watch it run tools, and manage the VPS it lives on: metrics, services,
 terminal, logs and files. Native SwiftUI, built and packaged entirely on
 GitHub so no Mac is required.
 
-> **Hermes: gateway built, awaiting verification.** The app ships with a
-> clearly-labelled **Mock** backend and a **Remote Agent** backend that speaks
-> the [Brainbox Agent Protocol](docs/AGENT_PROTOCOL.md). The
-> [Brainbox gateway](gateway/) bridges that protocol to Hermes; it refuses to
-> call Hermes until a read-only probe has confirmed the API on your VPS — see
-> [docs/HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md).
+> **Hermes API mode.** The app talks to the Hermes Agent API Server that
+> ships with Hermes (runs, live run events, approvals, sessions, jobs) through
+> the small [Brainbox Hermes proxy](gateway/) — per-device tokens, so the
+> Hermes key never lives on the phone. Your Telegram bot keeps running
+> untouched. Setup is a deliberate, manual procedure:
+> [docs/HERMES_API_DEPLOYMENT.md](docs/HERMES_API_DEPLOYMENT.md).
 
 ## Features
 
-- **Agent chat** — streaming markdown, syntax-highlighted code blocks with
-  copy, inline tool cards (terminal, file, git, service, network…) with live
-  output, stop / retry / regenerate, titles, searchable history, offline
-  reading.
-- **Home** — the animated agent core, status, current backend, live server
-  health, quick actions, recent conversations and activity.
+- **AI team** — teammates with their own instructions, mascot and optional
+  Hermes profile; an animated team constellation; per-teammate chats.
+- **Agent chat** — streaming markdown, live tool cards, reasoning disclosure,
+  steer a running agent, stop / retry, inline approvals (hold to confirm).
+- **Tasks** — every run with live status and timeline, approve / steer / stop
+  from anywhere, plus Hermes scheduled jobs (create, pause, run now).
+- **All sessions** — browse Hermes sessions incl. Telegram, read-only;
+  “continue in app” forks into a separate app session (never posts to Telegram).
 - **VPS** — CPU / memory / disk rings, network sparklines, services with
   start / stop / restart, processes, system info, cached offline snapshot.
 - **Terminal** — multiple sessions, streaming output, history (↑/↓),
@@ -42,7 +44,8 @@ GitHub so no Mac is required.
 |---|---|
 | Install it on my iPhone | Download the `BrainboxAgent-unsigned-ipa` artifact from the latest green **CI** run and follow [docs/BUILD_AND_SIDELOAD.md](docs/BUILD_AND_SIDELOAD.md) |
 | Try it without a server | It starts on **Mock** — ask "check server status", "run a long deploy", "trigger an error"… |
-| Connect a real agent | Run a Brainbox gateway, then Settings → Connection (URL + token) → Agent → **Remote Agent** |
+| Connect my Hermes | Follow [docs/HERMES_API_DEPLOYMENT.md](docs/HERMES_API_DEPLOYMENT.md), then Settings → **Hermes** (URL + device token) → Test connection |
+| Connect another agent | Run a Brainbox gateway, then Settings → Connection (URL + token) → Agent → **Remote Agent** |
 | Develop | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) |
 
 ## Documentation
@@ -51,7 +54,9 @@ GitHub so no Mac is required.
 |---|---|
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | layers, provider abstraction, concurrency, motion system |
 | [AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md) | exact WebSocket protocol a backend must implement |
-| [HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) | what we need from Hermes and how the adapter will work |
+| [HERMES_API_DEPLOYMENT.md](docs/HERMES_API_DEPLOYMENT.md) | **connect to Hermes**: safe manual VPS steps, compatibility matrix |
+| [MOTION.md](docs/MOTION.md) | motion moments shipped / deferred, Motion Lab |
+| [HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) | older WebSocket-gateway route (library adapter, probe) |
 | [BUILD_AND_SIDELOAD.md](docs/BUILD_AND_SIDELOAD.md) | CI, IPA, Sideloadly / SideStore / AltStore / paid signing |
 | [SECURITY.md](docs/SECURITY.md) | security review and gateway requirements |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | workflow, mock mode, adding providers, tests |
