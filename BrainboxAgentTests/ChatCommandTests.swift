@@ -56,14 +56,14 @@ final class ChatCommandTests: XCTestCase {
 
     func testEscapedSlashIsSentAsText() async throws {
         let (store, _, bodies) = makeStore()
-        XCTAssertEqual(await store.submit("//compress is just a word here"), .sent)
+        do { let outcome = await store.submit("//compress is just a word here"); XCTAssertEqual(outcome, .sent) }
         try await idle(store)
         XCTAssertEqual(bodies.current.first?["input"]?.stringValue, "/compress is just a word here")
     }
 
     func testSkillCommandRunsHermesBuiltMessage() async throws {
         let (store, transport, bodies) = makeStore()
-        XCTAssertEqual(await store.submit("/demo_skill go"), .sent)
+        do { let outcome = await store.submit("/demo_skill go"); XCTAssertEqual(outcome, .sent) }
         try await idle(store)
         XCTAssertEqual(transport.requests(matching: "POST /hermes/brainbox/commands/skill").count, 1)
         let input = try XCTUnwrap(bodies.current.first?["input"]?.stringValue)
@@ -75,12 +75,12 @@ final class ChatCommandTests: XCTestCase {
 
     func testLocalCommandsProduceOutputAndAreNotSent() async throws {
         let (store, _, bodies) = makeStore()
-        XCTAssertEqual(await store.submit("/help"), .handled(nil))
+        do { let outcome = await store.submit("/help"); XCTAssertEqual(outcome, .handled(nil)) }
         XCTAssertEqual(store.current?.messages.last?.role, .system)
         XCTAssertTrue(store.current?.messages.last?.content.contains("/steer") ?? false)
-        XCTAssertEqual(await store.submit("/stop"), .refused("Nothing is running."))
-        XCTAssertEqual(await store.submit("/files"), .navigate(.files))
-        XCTAssertEqual(await store.submit("/parallel a | b"), .parallel(["a", "b"]))
+        do { let outcome = await store.submit("/stop"); XCTAssertEqual(outcome, .refused("Nothing is running.")) }
+        do { let outcome = await store.submit("/files"); XCTAssertEqual(outcome, .navigate(.files)) }
+        do { let outcome = await store.submit("/parallel a | b"); XCTAssertEqual(outcome, .parallel(["a", "b"])) }
         XCTAssertTrue(bodies.current.isEmpty)
     }
 
@@ -89,7 +89,7 @@ final class ChatCommandTests: XCTestCase {
         guard case .refused = await store.submit("/model gpt-imaginary") else { return XCTFail("unknown model must be refused") }
         guard case .handled = await store.submit("/model claude-sonnet") else { return XCTFail() }
         XCTAssertEqual(store.current?.modelOverride, "claude-sonnet")
-        XCTAssertEqual(await store.submit("hello"), .sent)
+        do { let outcome = await store.submit("hello"); XCTAssertEqual(outcome, .sent) }
         try await idle(store)
         XCTAssertEqual(bodies.current.last?["model"]?.stringValue, "claude-sonnet")
     }
@@ -98,7 +98,7 @@ final class ChatCommandTests: XCTestCase {
         let (store, _, bodies) = makeStore()
         let dataURL = "data:image/jpeg;base64,/9j/4AAQSkZJRg=="
         let attachment = MessageAttachment(name: "photo.jpg", kind: .image, byteCount: 12, status: .preparing)
-        XCTAssertEqual(await store.submit("What is this?", attachments: [attachment], imageDataURLs: [dataURL]), .sent)
+        do { let outcome = await store.submit("What is this?", attachments: [attachment], imageDataURLs: [dataURL]); XCTAssertEqual(outcome, .sent) }
         try await idle(store)
         let input = try XCTUnwrap(bodies.current.first?["input"])
         XCTAssertEqual(input[0]?["role"]?.stringValue, "user")
