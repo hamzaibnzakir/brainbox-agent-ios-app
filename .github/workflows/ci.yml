@@ -215,29 +215,3 @@ jobs:
             build/xcodebuild-test.log
           retention-days: 7
 
-  # Temporary review aid for this branch: publishes the UI screenshots to the
-  # `ci/screenshots` branch so they can be reviewed without downloading artifacts.
-  screenshots-branch:
-    name: Publish screenshots for review
-    needs: ios
-    if: always() && github.ref == 'refs/heads/feature/full-stack-upgrade'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: ui-screenshots
-          path: shots
-        continue-on-error: true
-      - name: Push to ci/screenshots
-        run: |
-          [ -d shots ] && [ -n "$(find shots -name '*.png' | head -1)" ] || { echo "no screenshots"; exit 0; }
-          mkdir out && find shots -name '*.png' -exec cp {} out/ \;
-          cd out
-          git init -q -b ci/screenshots
-          git config user.name "brainbox-ci"
-          git config user.email "ci@users.noreply.github.com"
-          git add . && git commit -qm "UI screenshots for ${GITHUB_SHA::7}"
-          git push -q --force "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" ci/screenshots
-          echo "::notice title=Screenshots::pushed $(ls | wc -l | tr -d ' ') to ci/screenshots"

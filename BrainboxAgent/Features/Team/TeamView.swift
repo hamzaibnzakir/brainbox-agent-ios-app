@@ -99,10 +99,10 @@ struct TeamView: View {
 
     private var hero: some View {
         VStack(spacing: 12) {
-            HStack(spacing: -8) {
-                ForEach(Array(workspace.visibleTeammates.prefix(5).enumerated()), id: \.element.id) { index, mate in
+            HStack(alignment: .bottom, spacing: 14) {
+                ForEach(Array(workspace.visibleTeammates.prefix(4).enumerated()), id: \.element.id) { index, mate in
                     Button { open(mate) } label: {
-                        MascotView(style: mate.mascot, mood: mood(for: mate), size: index == 0 ? 64 : 48, seed: mate.id,
+                        MascotView(style: mate.mascot, mood: mood(for: mate), size: index == 0 ? 60 : 42, seed: mate.id,
                                    hopTrigger: hopTargets[mate.id, default: 0])
                             .background(Circle().fill(BB.Palette.background).padding(-3))
                     }

@@ -44,7 +44,7 @@ struct TasksView: View {
                 }
                 if !model.isHermes {
                     EmptyStateView(systemImage: "checklist", title: "Tasks need Hermes",
-                                   message: "Every message to a Hermes teammate becomes a run on your VPS. Connect Hermes in Settings to track them here.")
+                                   message: "Every message to Hermes becomes a run on your VPS. Connect Hermes in Settings to track runs, approvals and results here.")
                         .listRowBackground(Color.clear)
                 } else if records.isEmpty {
                     EmptyStateView(systemImage: emptySymbol, title: emptyTitle, message: "Runs you start from this iPhone appear here with their live status.")
