@@ -87,6 +87,8 @@ jobs:
       - name: Install Hermes and the gateway
         run: |
           pip install -q -e ./hermes-src
+          # Hermes main imports ruamel.yaml without declaring it in its core dependencies.
+          pip install -q "ruamel.yaml==0.18.17"
           pip install -q -e "./gateway[test]"
       - name: Run Hermes' real run handlers behind the Brainbox proxy
         working-directory: gateway
