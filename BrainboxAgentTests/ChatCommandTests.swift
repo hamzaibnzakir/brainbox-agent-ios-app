@@ -32,6 +32,10 @@ final class ChatCommandTests: XCTestCase {
         let store = ChatStore(store: InMemoryConversationStore(), provider: { provider }, isOnline: { true })
         store.lifecycleClient = { client }
         store.commandCatalog = { [catalog] in catalog }
+        // As in the app (HermesWorkspace.requestOptions): the chat's model override routes the run.
+        store.requestOptions = { conversation in
+            AgentRequestOptions(sessionID: conversation?.backendSessionID, model: conversation?.modelOverride)
+        }
         return (store, transport, bodies)
     }
 

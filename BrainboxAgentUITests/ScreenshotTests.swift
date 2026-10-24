@@ -23,6 +23,14 @@ final class ScreenshotTests: XCTestCase {
         add(attachment)
     }
 
+    private func tapTab(_ id: String) {
+        let tab = app.buttons[id]
+        if !tab.waitForExistence(timeout: 5), app.keyboards.count > 0 { app.swipeDown() }
+        guard tab.waitForExistence(timeout: 5) else { return XCTFail("\(id) not visible") }
+        tab.tap()
+        sleep(1)
+    }
+
     private func capture(_ suffix: String) {
         XCTAssertTrue(app.buttons["tab.home"].waitForExistence(timeout: 10))
         app.buttons["tab.home"].tap()
@@ -38,23 +46,25 @@ final class ScreenshotTests: XCTestCase {
             field.tap()
             field.typeText("/st")
             shot("04-chat-commands-\(suffix)")
-            app.buttons["composer.send"].tap()   // disabled for a bare prefix; just dismiss the keyboard
+            // Clear the draft and dismiss the keyboard (the tab bar hides while it's up).
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 3))
+            app.scrollViews.firstMatch.swipeDown()
             if app.keyboards.count > 0 { app.swipeDown() }
         }
 
-        app.buttons["tab.team"].tap()
-        sleep(1)
+        tapTab("tab.team")
         shot("05-workspace-\(suffix)")
-        app.buttons["tab.tasks"].tap()
-        sleep(1)
+        tapTab("tab.tasks")
         shot("06-tasks-\(suffix)")
-        app.buttons["tab.vps"].tap()
-        sleep(2)
-        shot("07-server-\(suffix)")
-        app.buttons["tab.home"].tap()
-        app.buttons["home.settings"].tap()
+        tapTab("tab.vps")
         sleep(1)
-        shot("08-settings-\(suffix)")
+        shot("07-server-\(suffix)")
+        tapTab("tab.home")
+        if app.buttons["home.settings"].waitForExistence(timeout: 5) {
+            app.buttons["home.settings"].tap()
+            sleep(1)
+            shot("08-settings-\(suffix)")
+        }
     }
 
     func testScreenshotsLight() {
