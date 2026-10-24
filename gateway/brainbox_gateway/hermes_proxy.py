@@ -48,7 +48,7 @@ from .commands import CommandCatalog, CommandsUnavailable
 from .diagnostics import host_snapshot
 from .pty_terminal import TerminalConfig, TerminalManager, TerminalUnavailable, parse_client_frame
 from .push import EVENT_KINDS, Notification, PushConfig, PushService
-from .workspace_files import Workspace, WorkspaceConfig, WorkspaceError
+from .workspace_files import Workspace, WorkspaceConfig, WorkspaceError, owner_dir
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -734,7 +734,7 @@ class HermesProxy:
             return err
         path = request.query.get("path", "")
         try:
-            entries = await asyncio.to_thread(self.workspace.list, path)
+            entries = await asyncio.to_thread(self.workspace.list, path, owner_dir(device.key))
         except WorkspaceError as exc:
             return self._workspace_error(exc)
         return web.json_response({"object": "list", "path": path.strip("/"), "data": entries,
@@ -746,8 +746,11 @@ class HermesProxy:
         if err:
             return err
         rel = request.query.get("path", "")
+        owner = owner_dir(device.key)
         try:
-            path, size = await asyncio.to_thread(self.workspace.file_for_download, rel)
+            if request.query.get("id"):
+                rel = await asyncio.to_thread(self.workspace.find, request.query["id"], owner)
+            path, size = await asyncio.to_thread(self.workspace.file_for_download, rel, owner)
         except WorkspaceError as exc:
             return self._workspace_error(exc)
         self.audit.write(device=device.name, action="files.download", path=rel, size=size)
@@ -764,7 +767,7 @@ class HermesProxy:
         name = request.query.get("name", "")
         declared = request.content_length
         try:
-            directory, clean = await asyncio.to_thread(self.workspace.check_upload, area, name, declared)
+            directory, clean = await asyncio.to_thread(self.workspace.check_upload, area, name, declared, owner_dir(device.key))
             tmp, fd = await asyncio.to_thread(self.workspace.temp_upload, directory)
         except WorkspaceError as exc:
             return self._workspace_error(exc)
@@ -802,8 +805,11 @@ class HermesProxy:
         if err:
             return err
         rel = request.query.get("path", "")
+        owner = owner_dir(device.key)
         try:
-            await asyncio.to_thread(self.workspace.delete, rel)
+            if request.query.get("id"):
+                rel = await asyncio.to_thread(self.workspace.find, request.query["id"], owner)
+            await asyncio.to_thread(self.workspace.delete, rel, owner)
         except WorkspaceError as exc:
             return self._workspace_error(exc)
         self.audit.write(device=device.name, action="files.delete", path=rel)

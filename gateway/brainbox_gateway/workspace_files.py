@@ -1,7 +1,11 @@
 """The Brainbox workspace: the only part of the server's filesystem the app can see.
 
-    <root>/inbox/    files sent from the phone (attachments, uploads)
-    <root>/outbox/   files the agent leaves for the phone to download
+    <root>/inbox/<device>/   files sent from one phone (private to that device)
+    <root>/outbox/           files the agent leaves for the phone to download
+
+Each device only sees and touches its own inbox folder (``d-`` + a prefix of its token
+hash); another device's inbox answers 403. Files have stable ids derived from their path
+(``f_`` + SHA-256), so the app can refer to a file without sending a path at all.
 
 Every path the app sends is relative to ``<root>`` and must start with one of those two
 areas. Absolute paths, ``..``, backslashes, NUL/control characters, hidden names and
@@ -11,6 +15,7 @@ allow-list, then get a sanitized, non-clobbering name. Nothing here executes any
 """
 from __future__ import annotations
 
+import hashlib
 import mimetypes
 import os
 import re
@@ -85,6 +90,18 @@ def safe_name(name: str) -> str:
     return name
 
 
+def file_id(rel: str) -> str:
+    return "f_" + hashlib.sha256(rel.encode("utf-8")).hexdigest()[:24]
+
+
+FILE_ID_RE = re.compile(r"^f_[0-9a-f]{24}$")
+OWNER_RE = re.compile(r"^d-[0-9a-f]{8,24}$")
+
+
+def owner_dir(device_key: str) -> str:
+    return "d-" + device_key.lower()[:12]
+
+
 def extension(name: str) -> str:
     stem, dot, ext = name.rpartition(".")
     return ext.lower() if dot and stem else ""
@@ -114,8 +131,9 @@ class Workspace:
 
     # -- path validation -----------------------------------------------------------
 
-    def resolve(self, rel: str, *, must_exist: bool = True) -> tuple[Path, list[str]]:
-        """Validated absolute path for ``rel`` (e.g. ``inbox/report.pdf``)."""
+    def resolve(self, rel: str, *, must_exist: bool = True, owner: str | None = None) -> tuple[Path, list[str]]:
+        """Validated absolute path for ``rel`` (e.g. ``inbox/d-…/report.pdf``). With ``owner``,
+        ``inbox`` means that device's own folder and other devices' folders are refused."""
         if not isinstance(rel, str) or len(rel) > 1024 or "\x00" in rel or "\\" in rel or rel.startswith("/"):
             raise WorkspaceError(400, "invalid_path", "Invalid path.")
         parts = [p for p in rel.split("/") if p not in ("",)]
@@ -124,6 +142,16 @@ class Workspace:
         for part in parts:
             if part in (".", "..") or part.startswith(".") or any(unicodedata.category(c)[0] == "C" for c in part):
                 raise WorkspaceError(400, "invalid_path", "Invalid path.")
+        if owner is not None and parts[0] == "inbox":
+            if not OWNER_RE.fullmatch(owner):
+                raise WorkspaceError(500, "invalid_owner", "Invalid device folder.")
+            if len(parts) == 1:
+                parts = ["inbox", owner]
+                own = self._real_root() / "inbox" / owner
+                if not own.exists():
+                    own.mkdir(mode=0o750)
+            elif parts[1] != owner:
+                raise WorkspaceError(403, "not_owner", "That file belongs to another device.")
         root = self._real_root()
         current = root
         for i, part in enumerate(parts):
@@ -153,37 +181,59 @@ class Workspace:
         is_dir = stat.S_ISDIR(st.st_mode)
         if not is_dir and not stat.S_ISREG(st.st_mode):
             return None
-        return {"name": path.name, "path": rel, "kind": "directory" if is_dir else "file",
+        return {"id": None if is_dir else file_id(rel), "name": path.name, "path": rel, "kind": "directory" if is_dir else "file",
                 "size": None if is_dir else st.st_size, "modified": round(st.st_mtime, 3),
                 "mime": None if is_dir else (mimetypes.guess_type(path.name)[0] or "application/octet-stream")}
 
-    def list(self, rel: str) -> list[dict[str, Any]]:
+    def list(self, rel: str, owner: str | None = None) -> list[dict[str, Any]]:
         if rel.strip("/") == "":
             self._real_root()
             return [e for a in AREAS if (e := self._entry(self.root / a, a))]
-        path, parts = self.resolve(rel)
+        path, parts = self.resolve(rel, owner=owner)
         if not path.is_dir():
             raise WorkspaceError(400, "not_a_directory", "That path is a file.")
         prefix = "/".join(parts)
         entries = [e for child in path.iterdir() if (e := self._entry(child, f"{prefix}/{child.name}"))]
         return sorted(entries, key=lambda e: (e["kind"] != "directory", e["name"].lower()))
 
-    def file_for_download(self, rel: str) -> tuple[Path, int]:
-        path, _ = self.resolve(rel)
+    def find(self, fid: str, owner: str | None) -> str:
+        """Path of the file with id ``fid`` among this device's inbox and the outbox."""
+        if not FILE_ID_RE.fullmatch(fid or ""):
+            raise WorkspaceError(400, "invalid_id", "Invalid file id.")
+        root = self._real_root()
+        starts = ([f"inbox/{owner}"] if owner else ["inbox"]) + ["outbox"]
+        seen = 0
+        for start in starts:
+            base = root / start
+            if not base.is_dir():
+                continue
+            for dirpath, dirnames, filenames in os.walk(base, followlinks=False):
+                dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+                for name in filenames:
+                    seen += 1
+                    if seen > 20000:
+                        raise WorkspaceError(507, "too_many_files", "The workspace has too many files to search.")
+                    rel = str((Path(dirpath) / name).relative_to(root))
+                    if file_id(rel) == fid:
+                        return rel
+        raise WorkspaceError(404, "not_found", "No such file in the workspace.")
+
+    def file_for_download(self, rel: str, owner: str | None = None) -> tuple[Path, int]:
+        path, _ = self.resolve(rel, owner=owner)
         st = os.lstat(path)
         if not stat.S_ISREG(st.st_mode):
             raise WorkspaceError(400, "not_a_file", "Only files can be downloaded.")
         return path, st.st_size
 
-    def delete(self, rel: str) -> None:
-        path, parts = self.resolve(rel)
-        if len(parts) < 2:
+    def delete(self, rel: str, owner: str | None = None) -> None:
+        path, parts = self.resolve(rel, owner=owner)
+        if len(parts) < (3 if owner and parts[0] == "inbox" else 2):
             raise WorkspaceError(400, "invalid_path", "The inbox and outbox folders themselves can't be deleted.")
         if not stat.S_ISREG(os.lstat(path).st_mode):
             raise WorkspaceError(400, "not_a_file", "Only files can be deleted here.")
         path.unlink()
 
-    def check_upload(self, area: str, name: str, declared_size: int | None) -> tuple[Path, str]:
+    def check_upload(self, area: str, name: str, declared_size: int | None, owner: str | None = None) -> tuple[Path, str]:
         if area not in AREAS or area != "inbox":
             raise WorkspaceError(400, "invalid_area", "Uploads go to the inbox.")
         clean = safe_name(name)
@@ -192,7 +242,7 @@ class Workspace:
             raise WorkspaceError(415, "type_not_allowed", f"“.{ext or '?'}” files aren't accepted. Allowed: {', '.join(self.cfg.allowed_extensions)}.")
         if declared_size is not None and declared_size > self.cfg.max_upload_bytes:
             raise WorkspaceError(413, "too_large", f"Files can be at most {self.cfg.max_upload_bytes // 1_000_000} MB.")
-        directory, _ = self.resolve(area)
+        directory, _ = self.resolve(area, owner=owner)
         return directory, clean
 
     def temp_upload(self, directory: Path) -> tuple[Path, int]:
@@ -212,7 +262,7 @@ class Workspace:
             except FileExistsError:
                 continue
             os.unlink(tmp)
-            entry = self._entry(target, f"{directory.name}/{candidate}")
+            entry = self._entry(target, str(target.relative_to(self.root)))
             assert entry is not None
             return entry
         os.unlink(tmp)

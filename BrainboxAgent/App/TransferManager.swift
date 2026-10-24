@@ -125,7 +125,7 @@ final class TransferManager {
         transfer.progress = 0
         transfers.insert(transfer, at: 0)
         let id = transfer.id
-        let request = client.authorizedRequest("GET", "/brainbox/files/download", query: ["path": entry.path])
+        let request = client.authorizedRequest("GET", "/brainbox/files/download", query: entry.fileID.map { ["id": $0] } ?? ["path": entry.path])
         let progress = ProgressDelegate { [weak self] fraction in
             Task { @MainActor in self?.update(id) { $0.progress = fraction } }
         }

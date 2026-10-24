@@ -152,9 +152,17 @@ public struct WorkspaceEntry: Decodable, Hashable, Sendable, Identifiable {
     public var size: Int64?
     public var modified: Double?
     public var mime: String?
+    /// Stable server id (`f_…`) for files; nil for folders and older proxies.
+    public var fileID: String?
     public var id: String { path }
 
-    public init(name: String, path: String, kind: Kind, size: Int64? = nil, modified: Double? = nil, mime: String? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case name, path, kind, size, modified, mime
+        case fileID = "id"
+    }
+
+    public init(name: String, path: String, kind: Kind, size: Int64? = nil, modified: Double? = nil, mime: String? = nil, fileID: String? = nil) {
+        self.fileID = fileID
         self.name = name
         self.path = path
         self.kind = kind

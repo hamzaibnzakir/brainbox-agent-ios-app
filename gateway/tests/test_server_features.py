@@ -121,6 +121,11 @@ def test_workspace_refuses_traversal_and_symlinks(tmp_path):
     assert "link.txt" not in listed, "symlinks are never listed"
 
 
+def own(token=TOKEN_A):
+    from brainbox_gateway.workspace_files import owner_dir
+    return owner_dir(cfgmod.hash_token(token))
+
+
 async def test_upload_list_download_delete(setup):
     client, _fake, proxy, cfg, tmp_path = setup
     r = await client.get("/hermes/brainbox/files", headers=auth())
@@ -131,22 +136,52 @@ async def test_upload_list_download_delete(setup):
     assert r.status == 201, await r.text()
     uploaded = await r.json()
     entry = uploaded["file"]
-    assert entry["path"] == "inbox/notes.txt" and entry["size"] == 5
-    assert uploaded["absolute_path"] == str(tmp_path / "workspace" / "inbox" / "notes.txt")
+    assert entry["path"] == f"inbox/{own()}/notes.txt" and entry["size"] == 5 and entry["id"].startswith("f_")
+    assert uploaded["absolute_path"] == str(tmp_path / "workspace" / "inbox" / own() / "notes.txt")
     # Same name again never overwrites.
     r = await client.post("/hermes/brainbox/files/upload?area=inbox&name=notes.txt", data=b"again", headers=auth())
-    assert (await r.json())["file"]["path"] == "inbox/notes (2).txt"
-    assert (tmp_path / "workspace" / "inbox" / "notes.txt").read_bytes() == b"hello"
+    assert (await r.json())["file"]["path"] == f"inbox/{own()}/notes (2).txt"
+    assert (tmp_path / "workspace" / "inbox" / own() / "notes.txt").read_bytes() == b"hello"
 
-    r = await client.get("/hermes/brainbox/files/download?path=inbox/notes.txt", headers=auth())
+    # "inbox" lists this device's own folder.
+    listed = (await (await client.get("/hermes/brainbox/files?path=inbox", headers=auth())).json())["data"]
+    assert sorted(e["name"] for e in listed) == ["notes (2).txt", "notes.txt"]
+
+    # Download by stable id or by path.
+    r = await client.get(f"/hermes/brainbox/files/download?id={entry['id']}", headers=auth())
     assert r.status == 200 and await r.read() == b"hello"
     assert "attachment" in r.headers["Content-Disposition"]
-
-    r = await client.delete("/hermes/brainbox/files?path=inbox/notes.txt", headers=auth())
+    r = await client.get(f"/hermes/brainbox/files/download?path={entry['path']}", headers=auth())
     assert r.status == 200
-    assert not (tmp_path / "workspace" / "inbox" / "notes.txt").exists()
+
+    r = await client.delete(f"/hermes/brainbox/files?id={entry['id']}", headers=auth())
+    assert r.status == 200
+    assert not (tmp_path / "workspace" / "inbox" / own() / "notes.txt").exists()
     audit = (tmp_path / "audit.log").read_text()
     assert "hello" not in audit and "files.upload" in audit
+
+
+async def test_another_devices_inbox_is_private(setup):
+    client, *_rest, tmp_path = setup
+    r = await client.post("/hermes/brainbox/files/upload?area=inbox&name=secret.txt", data=b"phone A only", headers=auth())
+    entry = (await r.json())["file"]
+    # Phone B: can't list, download (path or id) or delete phone A's files.
+    listed = (await (await client.get("/hermes/brainbox/files?path=inbox", headers=auth(TOKEN_B))).json())["data"]
+    assert listed == []
+    r = await client.get(f"/hermes/brainbox/files?path=inbox/{own()}", headers=auth(TOKEN_B))
+    assert r.status == 403 and (await r.json())["error"]["code"] == "not_owner"
+    r = await client.get(f"/hermes/brainbox/files/download?path={entry['path']}", headers=auth(TOKEN_B))
+    assert r.status == 403
+    r = await client.get(f"/hermes/brainbox/files/download?id={entry['id']}", headers=auth(TOKEN_B))
+    assert r.status == 404, "ids only resolve inside your own inbox and the shared outbox"
+    r = await client.delete(f"/hermes/brainbox/files?path={entry['path']}", headers=auth(TOKEN_B))
+    assert r.status == 403
+    assert (tmp_path / "workspace" / "inbox" / own() / "secret.txt").exists()
+    # The shared outbox is readable by every device.
+    (tmp_path / "workspace" / "outbox" / "report.md").write_text("# done")
+    for token in (TOKEN_A, TOKEN_B):
+        names = [e["name"] for e in (await (await client.get("/hermes/brainbox/files?path=outbox", headers=auth(token))).json())["data"]]
+        assert names == ["report.md"]
 
 
 async def test_upload_limits_and_types(setup):
@@ -159,9 +194,11 @@ async def test_upload_limits_and_types(setup):
     assert r.status == 400
     r = await client.post("/hermes/brainbox/files/upload?area=inbox&name=empty.txt", data=b"", headers=auth())
     assert r.status == 400
-    leftovers = [p.name for p in (tmp_path / "workspace" / "inbox").iterdir()]
+    leftovers = [p.name for p in (tmp_path / "workspace" / "inbox" / own()).iterdir()]
     assert leftovers == [], f"no partial files left behind: {leftovers}"
     r = await client.get("/hermes/brainbox/files/download?path=../hermes.env", headers=auth())
+    assert r.status == 400
+    r = await client.get("/hermes/brainbox/files/download?id=../../etc", headers=auth())
     assert r.status == 400
     r = await client.get("/hermes/brainbox/files", headers={"Authorization": "Bearer nope"})
     assert r.status == 401
