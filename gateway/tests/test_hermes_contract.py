@@ -217,3 +217,41 @@ async def test_run_event_wire_shape_matches_what_the_app_parses(proxy_client):
     assert set(frames["tool.started"]) >= {"tool", "preview"}
     assert set(frames["tool.completed"]) >= {"tool", "duration", "error"}
     assert frames["run.completed"]["output"] == "final"
+
+
+# --------------------------------------------------------------------------- command helper on real Hermes
+
+@pytest.fixture
+def real_catalog(tmp_path):
+    from brainbox_gateway.commands import CommandCatalog
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "config.yaml").write_text("agent:\n  system_prompt: You are the test persona.\n")
+    catalog = CommandCatalog("/nonexistent/bin/hermes", str(home), timeout=120)
+    catalog.python = sys.executable
+    catalog.source_dir = HERMES_SRC
+    return catalog
+
+
+async def test_real_registry_exposes_args_aliases_and_busy_policy(real_catalog):
+    data = await real_catalog.catalog()
+    by_name = {c["name"]: c for c in data["native"]}
+    for name in ("help", "status", "model", "stop", "new", "queue", "steer", "bg", "btw"):
+        assert name in by_name, name
+    assert "q" in by_name["queue"]["aliases"] and by_name["queue"]["args_hint"]
+    assert by_name["help"]["executor"] is True and by_name["status"]["executor"] is False
+    assert by_name["steer"]["busy_policy"] == "dispatch"
+
+
+async def test_real_help_and_version_executors_run(real_catalog):
+    help_text = await real_catalog.execute("help", "")
+    assert help_text.get("text") and "/help" in help_text["text"] or "help" in help_text["text"].lower()
+    version = await real_catalog.execute("version", "")
+    assert version.get("text")
+
+
+async def test_real_gateway_prompt_matches_what_telegram_uses(real_catalog):
+    assert await real_catalog.persona_prompt() == "You are the test persona."
+    report = await real_catalog.parity()
+    assert report["persona_prompt_chars"] == len("You are the test persona.")
+    assert isinstance(report["toolsets"]["telegram"], list) and isinstance(report["toolsets"]["api_server"], list)

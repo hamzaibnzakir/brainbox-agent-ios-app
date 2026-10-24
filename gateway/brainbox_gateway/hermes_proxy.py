@@ -230,6 +230,9 @@ class ProxyConfig:
     files: WorkspaceConfig = field(default_factory=WorkspaceConfig)
     terminal: TerminalConfig = field(default_factory=TerminalConfig)
     push: PushConfig = field(default_factory=PushConfig)
+    # Telegram parity: add Hermes' gateway prompt (display.personality / agent.system_prompt,
+    # exactly what Telegram adds every turn) to app runs. Hermes' API server doesn't.
+    gateway_prompt: bool = True
 
     @property
     def state_db(self) -> str:
@@ -289,6 +292,7 @@ def config_from_dict(raw: dict[str, Any]) -> ProxyConfig:
         files=WorkspaceConfig.from_dict(raw.get("files", {}), state_dir),
         terminal=TerminalConfig.from_dict(raw.get("terminal", {})),
         push=PushConfig.from_dict(raw.get("push", {})),
+        gateway_prompt=bool(raw.get("parity", {}).get("gateway_prompt", True)),
     )
     validate(cfg)
     return cfg
@@ -441,6 +445,8 @@ class HermesProxy:
         app.router.add_route("GET", f"{prefix}/brainbox/runs/{{run_id}}/events", self.handle_relay_events)
         app.router.add_route("GET", f"{prefix}/brainbox/commands", self.handle_commands)
         app.router.add_route("POST", f"{prefix}/brainbox/commands/skill", self.handle_skill_command)
+        app.router.add_route("POST", f"{prefix}/brainbox/commands/run", self.handle_run_command)
+        app.router.add_route("GET", f"{prefix}/brainbox/parity", self.handle_parity)
         app.router.add_route("GET", f"{prefix}/brainbox/files", self.handle_files_list)
         app.router.add_route("GET", f"{prefix}/brainbox/files/download", self.handle_files_download)
         app.router.add_route("POST", f"{prefix}/brainbox/files/upload", self.handle_files_upload)
@@ -533,7 +539,8 @@ class HermesProxy:
 
     def _features(self, device: Device) -> dict[str, Any]:
         return {"chat_management": True, "files": self.cfg.files.enabled, "diagnostics": True, "commands": True,
-                "run_relay": True,
+                "run_relay": True, "command_exec": True, "parity": True,
+                "gateway_prompt": self.cfg.gateway_prompt,
                 "terminal": bool(self.cfg.terminal.enabled and device.terminal),
                 "push": {"enabled": self.cfg.push.enabled, "ready": self.cfg.push.enabled and self.push.ready}}
 
@@ -734,6 +741,88 @@ class HermesProxy:
             return json_error(404, "This run isn't being relayed (it may have been started before the proxy restarted). "
                                    "Follow it by status instead.", "run_not_relayed")
         return await self._serve_relay(request, run, self._resume_cursor(request))
+
+    async def handle_run_command(self, request: web.Request) -> web.Response:
+        """POST /brainbox/commands/run {name, args, session_id?} — a Hermes command run by
+        Hermes' own code: registry executors (/help, /commands, /version, /profile, …) and
+        /btw (side question on this device's conversation, history untouched)."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        try:
+            body = await request.json()
+        except (ValueError, UnicodeDecodeError):
+            return json_error(400, "Invalid JSON.", "invalid_json")
+        if not isinstance(body, dict):
+            return json_error(400, "Expected a JSON object.", "invalid_request")
+        name = str(body.get("name") or "").strip().lstrip("/").lower()
+        args = str(body.get("args") or "")
+        try:
+            if name == "btw":
+                session_id = body.get("session_id")
+                if not is_app_session(session_id) or not re.fullmatch(ID_RE, str(session_id)):
+                    return json_error(400, "/btw needs one of this app's conversations.", "invalid_session")
+                if not self.owners.may_manage(session_id, device.key, device.admin):
+                    return json_error(403, "This conversation belongs to another device.", "session_not_owned")
+                data = await self.commands.side_question(session_id, args)
+                if data.get("error") == "no_history":
+                    return web.json_response({"name": "btw", "text": "There's no conversation yet to ask about.",
+                                              "format": "plain", "source": "hermes"})
+                answer = data.get("answer")
+                if not isinstance(answer, str):
+                    return json_error(502, "Hermes returned no answer.", "empty_answer")
+                return web.json_response({"name": "btw", "text": answer, "format": "markdown", "source": "hermes"})
+            catalog = await self.commands.catalog()
+            native = next((c for c in catalog["native"] if c.get("name") == name or name in (c.get("aliases") or [])), None)
+            if native is None:
+                return json_error(404, f"Hermes has no /{name} command.", "unknown_command")
+            if not native.get("executor"):
+                return json_error(409, f"/{native['name']} needs a live Telegram/CLI session; Hermes' API can't run it.",
+                                  "command_not_executable")
+            data = await self.commands.execute(native["name"], args)
+        except ValueError as exc:
+            return json_error(400, "Invalid command request.", str(exc))
+        except CommandsUnavailable as exc:
+            return json_error(503, exc.message, exc.code)
+        if data.get("error"):
+            return json_error(409, "Hermes has no shared handler for that command.", str(data["error"]))
+        self.audit.write(device=device.name, action="command", outcome=name)
+        return web.json_response({"name": native["name"], "text": str(data.get("text") or ""),
+                                  "format": data.get("format") or "plain", "source": "hermes"})
+
+    async def handle_parity(self, request: web.Request) -> web.Response:
+        """GET /brainbox/parity — how the app's API path differs from Telegram's (read-only)."""
+        device, err = self._authenticate(request)
+        if err:
+            return err
+        try:
+            report = await self.commands.parity()
+        except CommandsUnavailable as exc:
+            return json_error(503, exc.message, exc.code)
+        report["gateway_prompt_applied"] = self.cfg.gateway_prompt
+        report["platform_hint"] = {"telegram": "Markdown rendered", "api_server": "assume plain text, keep brief"}
+        return web.json_response(report)
+
+    async def _with_gateway_prompt(self, body: bytes | None) -> bytes | None:
+        """Prepend Telegram's per-turn gateway prompt to a run's `instructions` (cache-stable)."""
+        if not self.cfg.gateway_prompt or not body:
+            return body
+        try:
+            data = json.loads(body)
+        except (ValueError, UnicodeDecodeError):
+            return body
+        if not isinstance(data, dict):
+            return body
+        try:
+            persona = await self.commands.persona_prompt()
+        except CommandsUnavailable as exc:
+            log.warning("gateway prompt unavailable, run sent without it: %s", exc.message)
+            return body
+        if not persona.strip():
+            return body
+        own = data.get("instructions")
+        data["instructions"] = persona.strip() + ("\n\n" + own.strip() if isinstance(own, str) and own.strip() else "")
+        return json.dumps(data, ensure_ascii=False).encode()
 
     async def handle_commands(self, request: web.Request) -> web.Response:
         """GET /brainbox/commands — Hermes' command registry and skill commands (read-only)."""
@@ -1139,6 +1228,8 @@ class HermesProxy:
                 # Hermes allows one consumer per run and the relay is it; serve the relay's copy.
                 return await self._serve_relay(request, run, self._resume_cursor(request))
 
+        if method == "POST" and path == "/v1/runs" and (profile is None or profile == "default"):
+            body = await self._with_gateway_prompt(body)
         upstream_path = path if not profile or profile == "default" else f"/p/{profile}{path}"
         url = self.cfg.hermes_url + upstream_path
         headers = {h: request.headers[h] for h in FORWARD_REQUEST_HEADERS if h in request.headers}
