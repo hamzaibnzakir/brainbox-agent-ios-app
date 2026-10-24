@@ -557,8 +557,10 @@ public enum HermesRunEvent: Hashable, Sendable {
     case approvalRequest(HermesApprovalRequest)
     case approvalResponded(choice: String)
     case steered
-    case subagentStarted(goal: String?)
-    case subagentCompleted(status: String?, summary: String?)
+    /// Hermes `delegate_task` child agents (they run inside this run; stopping
+    /// the run stops them — they can't be stopped one by one over the API).
+    case subagentStarted(goal: String?, id: String?)
+    case subagentCompleted(status: String?, summary: String?, id: String?)
     case completed(output: String?, usage: HermesUsage?, pendingSteer: String?)
     case failed(error: String?)
     case cancelled
@@ -598,9 +600,10 @@ public enum HermesRunEvent: Hashable, Sendable {
         case "run.steered":
             return .steered
         case "subagent.start":
-            return .subagentStarted(goal: string("goal"))
+            return .subagentStarted(goal: string("goal"), id: string("subagent_id") ?? string("delegation_id"))
         case "subagent.complete":
-            return .subagentCompleted(status: string("status"), summary: string("summary"))
+            return .subagentCompleted(status: string("status"), summary: string("summary"),
+                                      id: string("subagent_id") ?? string("delegation_id"))
         case "run.completed":
             let usage = json["usage"].flatMap { value -> HermesUsage? in
                 guard let data = try? JSONEncoder().encode(value) else { return nil }

@@ -73,10 +73,10 @@ public struct HermesRunMapper: Sendable {
         case .steered:
             return [.notice("Steering accepted")]
 
-        case .subagentStarted(let goal):
+        case .subagentStarted(let goal, _):
             return [.notice(goal.map { "Delegated: \($0)" } ?? "Delegated a subtask")]
 
-        case .subagentCompleted(let status, _):
+        case .subagentCompleted(let status, _, _):
             return [.notice("Subtask \(status ?? "finished")")]
 
         case .stopping:
