@@ -61,6 +61,38 @@ jobs:
           grep -E "[0-9]+ passed" gateway-test.log | tail -n 1 | sed 's/^/::notice title=Gateway test summary::/' || true
           exit $STATUS
 
+  hermes-contract:
+    name: Hermes contract tests (real Hermes 284d220)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out hermes-agent at the version the VPS runs
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: 284d220ba48e25f2e3623b3afe72db8f24a4c2db
+          path: hermes-src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Hermes and the gateway
+        run: |
+          pip install -q -e ./hermes-src
+          pip install -q -e "./gateway[test]"
+      - name: Run Hermes' real run handlers behind the Brainbox proxy
+        working-directory: gateway
+        env:
+          HERMES_SRC: ${{ github.workspace }}/hermes-src
+        run: |
+          STATUS=0
+          python -m pytest -q tests/test_hermes_contract.py > contract-test.log 2>&1 || STATUS=$?
+          tail -n 40 contract-test.log
+          bash ../scripts/ci/annotate-log.sh contract-test.log "Hermes contract"
+          grep -E "[0-9]+ passed" contract-test.log | tail -n 1 | sed 's/^/::notice title=Hermes contract summary::/' || true
+          if grep -q "skipped" contract-test.log && ! grep -q "passed" contract-test.log; then echo "::error::contract tests were skipped"; exit 1; fi
+          exit $STATUS
+
   ios:
     name: iOS build, tests & unsigned IPA
     runs-on: macos-15
