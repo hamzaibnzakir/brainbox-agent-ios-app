@@ -41,17 +41,6 @@ final class ScreenshotTests: XCTestCase {
         if app.buttons["suggestion.0"].waitForExistence(timeout: 5) { shot("02-chat-empty-\(suffix)") ; app.buttons["suggestion.0"].tap() }
         _ = app.descendants(matching: .any)["assistant.complete"].firstMatch.waitForExistence(timeout: 20)
         shot("03-chat-reply-\(suffix)")
-        let field = app.textFields["composer.field"].exists ? app.textFields["composer.field"] : app.textViews["composer.field"]
-        if field.waitForExistence(timeout: 3) {
-            field.tap()
-            field.typeText("/st")
-            shot("04-chat-commands-\(suffix)")
-            // Clear the draft and dismiss the keyboard (the tab bar hides while it's up).
-            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: 3))
-            app.scrollViews.firstMatch.swipeDown()
-            if app.keyboards.count > 0 { app.swipeDown() }
-        }
-
         tapTab("tab.team")
         shot("05-workspace-\(suffix)")
         tapTab("tab.tasks")
@@ -64,6 +53,18 @@ final class ScreenshotTests: XCTestCase {
             app.buttons["home.settings"].tap()
             sleep(1)
             shot("08-settings-\(suffix)")
+            app.swipeDown(velocity: .fast)   // close the Settings sheet
+            sleep(1)
+        }
+
+        // Last: slash suggestions (the keyboard stays up afterwards).
+        tapTab("tab.agent")
+        let field = app.textFields["composer.field"].exists ? app.textFields["composer.field"] : app.textViews["composer.field"]
+        if field.waitForExistence(timeout: 5) {
+            field.tap()
+            field.typeText("/st")
+            sleep(1)
+            shot("09-chat-commands-\(suffix)")
         }
     }
 
