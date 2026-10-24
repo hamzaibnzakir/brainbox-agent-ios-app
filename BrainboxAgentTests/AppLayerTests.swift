@@ -125,7 +125,7 @@ final class ChatStoreTests: XCTestCase {
         XCTAssertEqual(reply.plainText, "I did not delete anything.")
 
         let runBody = try JSONDecoder().decode(JSONValue.self, from: transport.requests(matching: "POST /hermes/v1/runs")[0].body ?? Data())
-        XCTAssertEqual(runBody["instructions"]?.stringValue, teammate.runInstructions)
+        XCTAssertEqual(runBody["instructions"]?.stringValue, HermesClientNote.compose(teammate.runInstructions))
         XCTAssertEqual(try persistence.loadAll().first?.backendSessionID, conversation.backendSessionID)
     }
 
