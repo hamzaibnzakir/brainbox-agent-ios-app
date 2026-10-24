@@ -159,18 +159,21 @@ final class ParallelRunTests: XCTestCase {
         let fake = FakeHermes()
         let engine = engine(fake, max: 2)
         let task = engine.start(title: "Mixed", prompts: [("Bad", "fail", nil, nil), ("Good", "work", nil, nil)], synthesize: false)
-        try await until("both started") { fake.created.current.count == 2 }
-        fake.released.withLock { $0["run_1"] = #"{"event":"run.failed","error":"provider error"}"# }
+        try await until("both started") { engine.task(task.id)?.agents.allSatisfy { $0.runID != nil } == true }
+        // The two runs start concurrently, so look up which run id the failing agent got.
+        let badRun = engine.task(task.id)!.agents[0].runID!
+        fake.released.withLock { $0[badRun] = #"{"event":"run.failed","error":"provider error"}"# }
         try await until("A failed") { engine.task(task.id)?.agents[0].state == .failed }
         XCTAssertEqual(engine.task(task.id)?.agents[0].error, "provider error")
         XCTAssertFalse(engine.task(task.id)!.agents[1].state.isTerminal)
-        let firstKey = fake.created.current[0].key
+        let firstKey = fake.created.current.first { $0.run == badRun }?.key
         engine.retry(agent: engine.task(task.id)!.agents[0].id, in: task.id)
         try await until("retried") { fake.created.current.count == 3 }
+        guard fake.created.current.count == 3 else { return }
         XCTAssertNotEqual(fake.created.current[2].key, firstKey, "a retry is a new run, not a replay")
     }
 
-    func testStateSurvivesEncoding() throws {
+    func testStateSurvivesEncoding() async throws {
         var task = ParallelTask(title: "t", agents: [ParallelAgent(title: "a", prompt: "p")])
         task.agents[0].runID = "run_9"
         task.agents[0].state = .running
