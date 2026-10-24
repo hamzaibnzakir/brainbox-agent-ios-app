@@ -97,6 +97,8 @@ public struct Message: Identifiable, Codable, Hashable, Sendable {
     /// What was actually sent when it differs from what's shown — e.g. the
     /// skill message Hermes built for `/skill …`, or file paths appended.
     public var sentContent: String?
+    /// Live run status while the reply is in flight (cleared when it settles).
+    public var liveness: RunLiveness?
 
     public init(
         id: UUID = UUID(),
@@ -461,6 +463,8 @@ public enum AgentEvent: Hashable, Sendable {
     case stopRequested
     case stopAcknowledged
     case stopUnconfirmed(String)
+    /// Truthful run status (phase, link health, silence) — a status indicator, never model output.
+    case liveness(RunLiveness)
     case completed
     case failed(AgentError)
 }

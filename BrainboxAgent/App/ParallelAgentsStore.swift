@@ -55,8 +55,9 @@ final class ParallelAgentsStore {
     func task(_ id: UUID) -> ParallelTask? { tasks.first { $0.id == id } }
 
     @discardableResult
-    func start(title: String, prompts: [(title: String, prompt: String, instructions: String?, model: String?)], synthesize: Bool) -> ParallelTask {
-        engine.start(title: title, prompts: prompts, synthesize: synthesize)
+    func start(title: String, prompts: [(title: String, prompt: String, instructions: String?, model: String?)], synthesize: Bool,
+               origin: UUID? = nil) -> ParallelTask {
+        engine.start(title: title, prompts: prompts, synthesize: synthesize, originConversationID: origin)
     }
 
     func cancel(agent: UUID, in task: UUID) { engine.cancel(agent: agent, in: task) }

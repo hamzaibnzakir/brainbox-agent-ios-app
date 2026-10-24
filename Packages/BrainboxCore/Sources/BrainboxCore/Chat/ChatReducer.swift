@@ -75,10 +75,17 @@ public enum ChatReducer {
             if message.stop != .acknowledged { message.stop = .acknowledged }
         case .stopUnconfirmed(let reason):
             message.stop = .unconfirmed(reason)
+        case .liveness(let liveness):
+            // Late status after the reply settled is stale: ignore it.
+            switch message.state {
+            case .complete, .cancelled, .failed: break
+            default: message.liveness = liveness
+            }
         case .completed:
             if message.stop != nil { message.stop = .finishedFirst }
             message.state = .complete
             message.pendingApproval = nil
+            message.liveness = nil
             finishRunningTools(in: &message, as: .succeeded)
             effects.finished = true
         case .failed(let error):
@@ -86,6 +93,7 @@ public enum ChatReducer {
             if error == .cancelled { message.stop = nil }
             message.state = error == .cancelled ? .cancelled : .failed(error)
             message.pendingApproval = nil
+            message.liveness = nil
             finishRunningTools(in: &message, as: error == .cancelled ? .cancelled : .failed)
             effects.finished = true
         }

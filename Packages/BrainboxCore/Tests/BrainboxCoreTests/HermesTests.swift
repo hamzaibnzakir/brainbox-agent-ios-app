@@ -389,7 +389,7 @@ final class HermesProviderTests: XCTestCase {
         XCTAssertEqual(sessionBody["id"]?.stringValue, HermesAgentProvider.sessionID(for: conversationID))
         let runBody = try JSONDecoder().decode(JSONValue.self, from: transport.requests(matching: "POST /hermes/v1/runs")[0].body ?? Data())
         XCTAssertEqual(runBody["session_id"]?.stringValue, HermesAgentProvider.sessionID(for: conversationID))
-        XCTAssertEqual(runBody["instructions"]?.stringValue, "You are the ops teammate.")
+        XCTAssertEqual(runBody["instructions"]?.stringValue, HermesClientNote.compose("You are the ops teammate."))
         XCTAssertEqual(transport.requests(matching: "POST /hermes/v1/runs")[0].headers["Idempotency-Key"], request.requestID.uuidString.lowercased())
     }
 

@@ -12,6 +12,8 @@ struct MessageRow: View {
     /// Stop again / stop following, for an unconfirmed stop on the live reply.
     var onStopAgain: (() -> Void)? = nil
     var onStopFollowing: (() -> Void)? = nil
+    /// Re-open the live stream (shown with the silence warning).
+    var onReconnect: (() -> Void)? = nil
 
     var body: some View {
         switch message.role {
@@ -109,8 +111,8 @@ struct MessageRow: View {
                 Spacer()
             }
 
-            if message.state == .sending && message.content.isEmpty {
-                ThinkingLine()
+            if message.state == .sending && message.content.isEmpty && message.liveness == nil {
+                ThinkingLine(label: "Connecting")
                     .transition(.bbRise)
             }
 
@@ -147,6 +149,11 @@ struct MessageRow: View {
 
             if message.state == .streaming && message.pendingApproval == nil {
                 StreamingCaret().transition(.opacity)
+            }
+
+            if let liveness = message.liveness, !message.state.isTerminal {
+                RunStatusLine(liveness: liveness, onReconnect: onReconnect)
+                    .transition(.bbRise)
             }
 
             if let stop = message.stop {
@@ -207,12 +214,13 @@ struct MessageRow: View {
 
 /// "Thinking" placeholder: shimmering label with three staggered dots.
 struct ThinkingLine: View {
+    var label: String = "Thinking"
     @State private var phase = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         HStack(spacing: 8) {
-            Text("Thinking")
+            Text(label)
                 .font(BB.Font.callout)
                 .foregroundStyle(BB.Palette.textSecondary)
                 .bbShimmer()
@@ -228,7 +236,83 @@ struct ThinkingLine: View {
             }
         }
         .onAppear { phase = true }
-        .accessibilityLabel("Agent is thinking")
+        .accessibilityLabel(label)
+    }
+}
+
+/// Run status from real signals only — a status indicator, never model output.
+/// Shows the phase, the link, time since Hermes' last event, and an honest warning
+/// after three minutes without one.
+struct RunStatusLine: View {
+    let liveness: RunLiveness
+    var onReconnect: (() -> Void)?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { context in
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 6) {
+                    Image(systemName: icon).font(.system(size: 10, weight: .semibold))
+                    Text(statusText(now: context.date))
+                        .lineLimit(1)
+                }
+                .font(BB.Font.caption)
+                .foregroundStyle(BB.Palette.textTertiary)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("Status: " + statusText(now: context.date))
+                .accessibilityIdentifier("run.status")
+
+                if let note = liveness.upstreamNote {
+                    Label(note, systemImage: "antenna.radiowaves.left.and.right.slash")
+                        .font(BB.Font.caption).foregroundStyle(BB.Palette.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                if let warning = liveness.silenceWarning(now: context.date) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Label(warning, systemImage: "clock.badge.exclamationmark")
+                            .font(BB.Font.caption)
+                            .foregroundStyle(BB.Palette.warning)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let onReconnect {
+                            Button("Reconnect", action: onReconnect)
+                                .font(BB.Font.subhead)
+                                .foregroundStyle(BB.Palette.textPrimary)
+                                .buttonStyle(.pressableSubtle)
+                                .accessibilityIdentifier("run.reconnect")
+                        }
+                    }
+                    .padding(10)
+                    .background(RoundedRectangle(cornerRadius: BB.Radius.s, style: .continuous).fill(BB.Palette.surfaceHigh))
+                    .accessibilityIdentifier("run.silence")
+                }
+            }
+        }
+    }
+
+    private var icon: String {
+        switch liveness.transport {
+        case .live: return liveness.phase == .runningTool ? "gearshape" : "circle.fill"
+        case .reconnecting: return "arrow.triangle.2.circlepath"
+        case .polling: return "arrow.clockwise"
+        case .disconnected: return "wifi.slash"
+        }
+    }
+
+    private func statusText(now: Date) -> String {
+        var parts = [liveness.label]
+        if let transport = liveness.transportLabel { parts.append(transport) }
+        if let last = liveness.lastEventAt {
+            let seconds = max(0, Int(now.timeIntervalSince(last)))
+            if seconds >= 5 { parts.append("last event \(Self.ago(seconds))") }
+        } else {
+            let seconds = max(0, Int(now.timeIntervalSince(liveness.startedAt)))
+            if seconds >= 5 { parts.append("no events yet · \(Self.ago(seconds))") }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    static func ago(_ seconds: Int) -> String {
+        seconds < 60 ? "\(seconds)s ago" : "\(seconds / 60)m \(seconds % 60)s ago"
     }
 }
 

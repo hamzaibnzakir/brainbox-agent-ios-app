@@ -60,6 +60,7 @@ struct AgentView: View {
                     isOnline: model.network.isOnline,
                     focused: $composerFocused,
                     suggestions: SlashCommandRouter.suggestions(for: draft, catalog: model.hermes.commandCatalog),
+                    argumentHelp: SlashCommandRouter.argumentHelp(for: draft, catalog: model.hermes.commandCatalog),
                     canAttach: model.isHermes,
                     canInject: chat.canSteer,
                     onSend: send,
@@ -293,7 +294,8 @@ struct AgentView: View {
                                 onCopy: copy,
                                 onReviewApproval: { reviewing = $0 },
                                 onStopAgain: message.id == chat.activeMessageID ? { chat.stop() } : nil,
-                                onStopFollowing: message.id == chat.activeMessageID ? { chat.stopFollowing() } : nil
+                                onStopFollowing: message.id == chat.activeMessageID ? { chat.stopFollowing() } : nil,
+                                onReconnect: { chat.reconnectLiveRuns() }
                             )
                             .id(message.id)
                             .transition(message.role == .user
@@ -403,6 +405,12 @@ struct AgentView: View {
                                    synthesize: true)
                 model.selectedTab = .team
                 model.toasts.show("Started \(tasks.count) agents")
+            case .background(let prompt, let origin):
+                let mate = currentTeammate
+                model.agents.start(title: "Background: " + String(prompt.prefix(50)),
+                                   prompts: [(title: String(prompt.prefix(40)), prompt: prompt, instructions: mate.runInstructions, model: mate.model)],
+                                   synthesize: false, origin: origin)
+                model.toasts.show("Running in the background — the result will appear in this chat")
             }
         }
     }

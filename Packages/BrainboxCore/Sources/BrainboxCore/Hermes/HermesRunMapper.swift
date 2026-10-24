@@ -9,6 +9,11 @@ import Foundation
 public struct HermesRunMapper: Sendable {
     public let runID: String
     public private(set) var streamedText = ""
+    private var streamedCount = 0
+    /// Text the user already has (re-attaching after a relaunch). Replayed deltas
+    /// up to this length are not shown again.
+    private let alreadyShown: String
+    private let alreadyShownCount: Int
     public private(set) var finished = false
     public private(set) var pendingApproval: AgentApproval?
     private var runningTools: [String: [String]] = [:] // tool name → call ids (FIFO)
@@ -16,23 +21,38 @@ public struct HermesRunMapper: Sendable {
     private var sentStreaming = false
     private var now: @Sendable () -> Date
 
-    public init(runID: String, now: @escaping @Sendable () -> Date = { Date() }) {
+    public init(runID: String, alreadyShown: String = "", now: @escaping @Sendable () -> Date = { Date() }) {
         self.runID = runID
+        self.alreadyShown = alreadyShown
+        self.alreadyShownCount = alreadyShown.count
         self.now = now
     }
+
+    /// Text evicted from the relay's buffer, delivered as one block (same as deltas).
+    public mutating func applySnapshot(_ text: String) -> [AgentEvent] {
+        map(.messageDelta(text))
+    }
+
+    /// What the user has seen of this reply's text so far.
+    var visibleText: String { streamedCount >= alreadyShownCount ? streamedText : alreadyShown }
 
     public mutating func map(_ event: HermesRunEvent) -> [AgentEvent] {
         guard !finished else { return [] }
         switch event {
         case .messageDelta(let delta):
             guard !delta.isEmpty else { return [] }
+            let before = streamedCount
             streamedText += delta
+            streamedCount += delta.count
+            // Re-attached: skip what the user already has.
+            guard streamedCount > alreadyShownCount else { return [] }
+            let fresh = before >= alreadyShownCount ? delta : String(streamedText.dropFirst(alreadyShownCount))
             var out: [AgentEvent] = []
             if !sentStreaming {
                 sentStreaming = true
                 out.append(.status(.streaming))
             }
-            out.append(.textDelta(delta))
+            out.append(.textDelta(fresh))
             return out
 
         case .toolStarted(let tool, let preview):
@@ -85,8 +105,9 @@ public struct HermesRunMapper: Sendable {
         case .completed(let output, _, let pendingSteer):
             finished = true
             var out: [AgentEvent] = []
-            if let remainder = Self.remainder(of: output, after: streamedText) {
-                streamedText += remainder
+            if let remainder = Self.remainder(of: output, after: visibleText) {
+                streamedText = visibleText + remainder
+                streamedCount = streamedText.count
                 out.append(.textDelta(remainder))
             }
             if let pendingSteer, !pendingSteer.isEmpty {

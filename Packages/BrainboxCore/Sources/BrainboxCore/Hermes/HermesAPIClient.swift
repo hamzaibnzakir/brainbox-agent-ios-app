@@ -38,7 +38,7 @@ public struct HermesConfiguration: Hashable, Sendable {
 /// No endpoint outside that verified set is called.
 public final class HermesAPIClient: @unchecked Sendable {
     public let configuration: HermesConfiguration
-    private let transport: HTTPTransport
+    let transport: HTTPTransport
     let tokenProvider: @Sendable () -> String?
 
     public init(configuration: HermesConfiguration, transport: HTTPTransport, tokenProvider: @escaping @Sendable () -> String?) {
@@ -77,7 +77,7 @@ public final class HermesAPIClient: @unchecked Sendable {
         return segment.addingPercentEncoding(withAllowedCharacters: allowed) ?? segment
     }
 
-    private func headers(json: Bool, extra: [String: String] = [:]) -> [String: String] {
+    func headers(json: Bool, extra: [String: String] = [:]) -> [String: String] {
         var headers = extra
         headers["Accept"] = headers["Accept"] ?? "application/json"
         if json { headers["Content-Type"] = "application/json" }

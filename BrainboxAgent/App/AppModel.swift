@@ -112,7 +112,10 @@ final class AppModel {
         chat.provider = { [unowned self] in self.suite.agent }
         chat.isOnline = { [unowned self] in self.network.isOnline }
         chat.onReplyFinished = { [weak self] message in self?.replyFinished(message) }
-        agents.onTaskChange = { [weak self] task in self?.notifications.parallelTaskChanged(task) }
+        agents.onTaskChange = { [weak self] task in
+            self?.notifications.parallelTaskChanged(task)
+            self?.chat.deliverBackgroundResult(task)
+        }
         hermes.onRunStateChange = { [weak self] run in
             self?.notifications.runChanged(runID: run.id, title: run.title, state: run.state)
         }
@@ -154,6 +157,9 @@ final class AppModel {
             gate.noteForegrounded()
             Task { await notifications.refreshPermission() }
             gateway?.reconnectNow()
+            // iOS suspends sockets in the background: re-open live run streams now (the relay
+            // resumes them from the last event, so nothing is lost or repeated).
+            chat.reconnectLiveRuns()
             if isHermes, !connectionState.isConnected { Task { await connect() } }
         default:
             break
@@ -162,6 +168,7 @@ final class AppModel {
 
     private func handleNetworkReturn() {
         gateway?.reconnectNow()
+        chat.reconnectLiveRuns()
         if settings.providerKind != .remote, !connectionState.isConnected {
             Task { await connect() }
         }

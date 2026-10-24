@@ -83,8 +83,12 @@ public struct ParallelTask: Codable, Hashable, Sendable, Identifiable {
     /// Combines the agents' results once they've all settled (nil = not wanted).
     public var synthesis: ParallelAgent?
     public var wantsSynthesis: Bool
+    /// `/bg`: the chat the result is posted back to when the task settles.
+    public var originConversationID: UUID?
 
-    public init(id: UUID = UUID(), title: String, createdAt: Date = Date(), agents: [ParallelAgent], wantsSynthesis: Bool = true) {
+    public init(id: UUID = UUID(), title: String, createdAt: Date = Date(), agents: [ParallelAgent], wantsSynthesis: Bool = true,
+                originConversationID: UUID? = nil) {
+        self.originConversationID = originConversationID
         self.id = id
         self.title = title
         self.createdAt = createdAt
@@ -140,9 +144,10 @@ public final class ParallelRunEngine {
 
     @discardableResult
     public func start(title: String, prompts: [(title: String, prompt: String, instructions: String?, model: String?)],
-                      synthesize: Bool = true) -> ParallelTask {
+                      synthesize: Bool = true, originConversationID: UUID? = nil) -> ParallelTask {
         let agents = prompts.map { ParallelAgent(title: $0.title, prompt: $0.prompt, instructions: $0.instructions, model: $0.model) }
-        let task = ParallelTask(title: title, agents: agents, wantsSynthesis: synthesize && agents.count > 1)
+        let task = ParallelTask(title: title, agents: agents, wantsSynthesis: synthesize && agents.count > 1,
+                                originConversationID: originConversationID)
         tasks.insert(task, at: 0)
         onChange(task)
         schedule()
@@ -280,7 +285,7 @@ public final class ParallelRunEngine {
         for attempt in 1...8 {
             if self.agent(agent.id, in: taskID)?.cancelRequested == true { throw AgentError.cancelled }
             do {
-                let options = HermesAPIClient.RunOptions(sessionID: agent.sessionID, instructions: agent.instructions, model: agent.model,
+                let options = HermesAPIClient.RunOptions(sessionID: agent.sessionID, instructions: HermesClientNote.compose(agent.instructions), model: agent.model,
                                                          idempotencyKey: agent.idempotencyKey)
                 let accepted = try await client.createRun(input: agent.prompt, options: options)
                 update(agent.id, in: taskID) { a in

@@ -59,6 +59,7 @@ struct Composer: View {
     var isOnline: Bool
     var focused: FocusState<Bool>.Binding
     var suggestions: [CommandSuggestion]
+    var argumentHelp: CommandArgumentHelp? = nil
     var canAttach: Bool
     var canInject: Bool
     var onSend: () -> Void
@@ -82,6 +83,11 @@ struct Composer: View {
                     text = suggestion.completion
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let help = argumentHelp {
+                CommandArgumentHelpView(help: help) { option in
+                    text = "/\(help.name) \(option) "
+                }
+                .transition(.opacity)
             }
             if !attachments.isEmpty {
                 PendingAttachmentRow(attachments: $attachments)
@@ -191,43 +197,80 @@ struct CommandSuggestionList: View {
     let pick: (CommandSuggestion) -> Void
 
     var body: some View {
-        VStack(spacing: 0) {
-            ForEach(suggestions) { suggestion in
-                Button { pick(suggestion) } label: {
-                    VStack(alignment: .leading, spacing: 2) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("/" + suggestion.name).font(BB.Font.mono).foregroundStyle(suggestion.kind == .unavailable ? BB.Palette.textTertiary : BB.Palette.textPrimary)
-                        if !suggestion.argsHint.isEmpty {
-                            Text(suggestion.argsHint).font(BB.Font.monoSmall).foregroundStyle(BB.Palette.textTertiary)
+        ScrollView {
+            LazyVStack(spacing: 0) {
+                ForEach(suggestions) { suggestion in
+                    Button { pick(suggestion) } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text("/" + suggestion.name).font(BB.Font.mono)
+                                    .foregroundStyle(suggestion.kind == .unavailable ? BB.Palette.textTertiary : BB.Palette.textPrimary)
+                                if !suggestion.argsHint.isEmpty {
+                                    Text(suggestion.argsHint).font(BB.Font.monoSmall).foregroundStyle(BB.Palette.textTertiary).lineLimit(1)
+                                }
+                                Spacer(minLength: 8)
+                                Text(suggestion.badge).font(BB.Font.label).foregroundStyle(BB.Palette.textTertiary)
+                            }
+                            Text(suggestion.detail + (suggestion.aliases.isEmpty ? "" : "  ·  /" + suggestion.aliases.joined(separator: " /")))
+                                .font(BB.Font.caption)
+                                .foregroundStyle(BB.Palette.textSecondary)
+                                .lineLimit(2)
                         }
-                        Spacer(minLength: 8)
-                        Text(kindLabel(suggestion.kind)).font(BB.Font.label).foregroundStyle(BB.Palette.textTertiary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 9)
+                        .contentShape(Rectangle())
                     }
-                    Text(suggestion.detail)
-                        .font(BB.Font.caption)
-                        .foregroundStyle(BB.Palette.textSecondary)
-                        .lineLimit(1)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 9)
-                    .contentShape(Rectangle())
+                    .buttonStyle(.pressableSubtle)
+                    .accessibilityIdentifier("command.\(suggestion.name)")
+                    if suggestion.id != suggestions.last?.id { Divider().overlay(BB.Palette.stroke) }
                 }
-                .buttonStyle(.pressableSubtle)
-                .accessibilityIdentifier("command.\(suggestion.name)")
-                if suggestion.id != suggestions.last?.id { Divider().overlay(BB.Palette.stroke) }
             }
         }
+        .scrollIndicators(.visible)
+        .frame(maxHeight: min(CGFloat(suggestions.count) * 58, 290))
         .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(BB.Palette.surface))
         .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(BB.Palette.stroke))
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .accessibilityIdentifier("command.picker")
     }
+}
 
-    private func kindLabel(_ kind: CommandSuggestion.Kind) -> String {
-        switch kind {
-        case .brainbox: return "APP"
-        case .skill: return "SKILL"
-        case .unavailable: return "CLI ONLY"
+/// Shown while typing a command's arguments: what it takes, and matching choices.
+struct CommandArgumentHelpView: View {
+    let help: CommandArgumentHelp
+    let pick: (String) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("/\(help.name)").font(BB.Font.mono).foregroundStyle(BB.Palette.textPrimary)
+                if !help.argsHint.isEmpty {
+                    Text(help.argsHint).font(BB.Font.monoSmall).foregroundStyle(BB.Palette.textTertiary).lineLimit(1)
+                }
+            }
+            Text(help.summary).font(BB.Font.caption).foregroundStyle(BB.Palette.textSecondary).lineLimit(2)
+            if !help.options.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(help.options, id: \.self) { option in
+                            Button { pick(option) } label: {
+                                Text(option).font(BB.Font.monoSmall)
+                                    .padding(.horizontal, 10).padding(.vertical, 5)
+                                    .background(Capsule().fill(BB.Palette.surfaceHigh))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(BB.Palette.textPrimary)
+                        }
+                    }
+                }
+            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(BB.Palette.surface))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(BB.Palette.stroke))
+        .accessibilityIdentifier("command.argumentHelp")
     }
 }
 

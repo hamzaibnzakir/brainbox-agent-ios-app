@@ -145,10 +145,25 @@ public struct HermesSession: Decodable, Hashable, Sendable, Identifiable {
     /// Hermes lists a compressed conversation under its newest continuation
     /// ("tip") id and reports the original id here (`_lineage_root_id`).
     public var lineageRootID: String?
+    // Token accounting Hermes keeps per session (what Telegram's /status and /usage show).
+    public var inputTokens: Int?
+    public var outputTokens: Int?
+    public var cacheReadTokens: Int?
+    public var reasoningTokens: Int?
+    public var apiCallCount: Int?
+    public var estimatedCostUSD: Double?
+    public var actualCostUSD: Double?
 
     enum CodingKeys: String, CodingKey {
         case id, source, model, title, preview, pinned, archived
         case lineageRootID = "_lineage_root_id"
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cacheReadTokens = "cache_read_tokens"
+        case reasoningTokens = "reasoning_tokens"
+        case apiCallCount = "api_call_count"
+        case estimatedCostUSD = "estimated_cost_usd"
+        case actualCostUSD = "actual_cost_usd"
         case startedAt = "started_at"
         case endedAt = "ended_at"
         case endReason = "end_reason"
@@ -196,6 +211,13 @@ public struct HermesSession: Decodable, Hashable, Sendable, Identifiable {
         pinned = try? c.decodeIfPresent(Bool.self, forKey: .pinned)
         archived = try? c.decodeIfPresent(Bool.self, forKey: .archived)
         lineageRootID = try? c.decodeIfPresent(String.self, forKey: .lineageRootID)
+        inputTokens = HermesDecoding.number(c, .inputTokens).map { Int($0) }
+        outputTokens = HermesDecoding.number(c, .outputTokens).map { Int($0) }
+        cacheReadTokens = HermesDecoding.number(c, .cacheReadTokens).map { Int($0) }
+        reasoningTokens = HermesDecoding.number(c, .reasoningTokens).map { Int($0) }
+        apiCallCount = HermesDecoding.number(c, .apiCallCount).map { Int($0) }
+        estimatedCostUSD = HermesDecoding.number(c, .estimatedCostUSD)
+        actualCostUSD = HermesDecoding.number(c, .actualCostUSD)
     }
 
     /// The id the conversation started with: the lineage root for a compressed

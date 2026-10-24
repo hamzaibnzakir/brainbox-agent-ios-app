@@ -192,6 +192,11 @@ final class ChatStore {
         try await runController.respond(to: approval, choice: choice)
     }
 
+    /// Re-open live run streams right away (foreground, network back, or "Reconnect").
+    func reconnectLiveRuns() {
+        runController?.reconnectActiveRuns()
+    }
+
     /// Pending approvals across all conversations (Tasks + Team badges).
     var pendingApprovals: [(conversationID: UUID, approval: AgentApproval)] {
         var result: [(conversationID: UUID, approval: AgentApproval)] = []
@@ -480,6 +485,8 @@ final class ChatStore {
         case handled(String?)
         case navigate(CommandDestination)
         case parallel([String])
+        /// `/bg`: run this prompt as a separate background session, result posted back here.
+        case background(prompt: String, origin: UUID)
         case refused(String)
     }
 
@@ -520,8 +527,20 @@ final class ChatStore {
             }
         case .app(let command, let argument):
             return await perform(command, argument: argument)
+        case .hermes(let name, let argument):
+            guard let client = lifecycleClient() else {
+                return .refused("/\(name) runs with Hermes' own handler on the Brainbox proxy, which isn't connected.")
+            }
+            do {
+                let reply = try await client.runHermesCommand(name: name, arguments: argument)
+                addCommandOutput("/\(name)", reply.text.isEmpty ? "(Hermes returned no text.)" : reply.text)
+                return .handled(nil)
+            } catch {
+                return .refused("/\(name) failed: \(error.asAgentError.message)")
+            }
         case .unavailable, .missingArgument, .unknown:
-            return .refused(SlashCommandRouter.explanation(for: parsed) ?? "That command can't run here.")
+            return .refused(SlashCommandRouter.explanation(for: parsed, catalogIsLive: commandCatalog()?.isLive ?? false)
+                            ?? "That command can't run here.")
         }
     }
 
@@ -582,16 +601,49 @@ final class ChatStore {
                 return .refused(error.asAgentError.message)
             }
         case .status:
-            var lines = [statusSummary()]
-            if let conversationID = activeConversationID, let messageID = activeMessageID, let reply = message(conversationID, messageID) {
-                lines.append("Reply running" + (reply.runID.map { " (run \($0))" } ?? "") + (reply.stop.map { " · stop: \(Self.describe($0))" } ?? ""))
-            } else {
-                lines.append("No reply running.")
+            let session = await currentServerSession()
+            var runID: String?
+            var liveness: RunLiveness?
+            if let conversationID = activeConversationID, conversationID == currentID, let messageID = activeMessageID,
+               let reply = message(conversationID, messageID) {
+                runID = reply.runID ?? "starting"
+                liveness = reply.liveness
             }
-            if let model = current?.modelOverride { lines.append("Model for this chat: \(model)") }
-            if let queued = currentID.flatMap({ queuedInstructions[$0] }), !queued.isEmpty { lines.append("\(queued.count) queued instruction(s)") }
-            addCommandOutput("/status", lines.filter { !$0.isEmpty }.joined(separator: "\n"))
+            let queued = currentID.flatMap { queuedInstructions[$0]?.count } ?? 0
+            addCommandOutput("/status", SessionReport.status(session: session.record, sessionID: session.id, modelOverride: current?.modelOverride,
+                                                             runID: runID, liveness: liveness, queued: queued, connection: statusSummary()))
             return .handled(nil)
+        case .usage:
+            let session = await currentServerSession()
+            guard let record = session.record else {
+                return .refused(session.id == nil ? "Usage is tracked by Hermes per conversation; this chat isn't on Hermes."
+                                                  : "Hermes has no usage for this chat yet.")
+            }
+            addCommandOutput("/usage", SessionReport.usage(session: record))
+            return .handled(nil)
+        case .bg:
+            if currentID == nil { newConversation() }
+            guard let origin = currentID else { return .refused("Open a chat first.") }
+            return .background(prompt: argument, origin: origin)
+        case .btw:
+            guard let conversation = current, let serverID = AppSessionID.serverID(for: conversation) else {
+                return .refused("/btw asks about one of your Hermes chats — open one first.")
+            }
+            guard let client = lifecycleClient() else {
+                return .refused("/btw runs Hermes' side-question handler on the Brainbox proxy, which isn't connected.")
+            }
+            let question = argument
+            let conversationID = conversation.id
+            // Like Telegram: answered on a transcript snapshot, the running reply isn't touched.
+            Task { [weak self] in
+                do {
+                    let reply = try await client.runHermesCommand(name: "btw", arguments: question, sessionID: serverID)
+                    self?.addCommandOutput("/btw " + question, reply.text, to: conversationID)
+                } catch {
+                    self?.addCommandOutput("/btw " + question, "Hermes couldn't answer: \(error.asAgentError.message)", to: conversationID)
+                }
+            }
+            return .handled("Asking on the side — the answer appears here.")
         case .skills:
             guard let catalog = commandCatalog() else { return .refused("Hermes' skill list isn't available (needs the Brainbox proxy).") }
             let list = catalog.skills.isEmpty ? "Hermes has no skill commands installed."
@@ -599,10 +651,17 @@ final class ChatStore {
             addCommandOutput("/skills", list)
             return .handled(nil)
         case .help:
-            var text = AppCommand.allCases.map { "/\($0.rawValue)\($0.argsHint.isEmpty ? "" : " " + $0.argsHint) — \($0.summary)" }.joined(separator: "\n")
-            if let skills = commandCatalog()?.skills, !skills.isEmpty { text += "\n\nPlus \(skills.count) Hermes skill command(s) — type /skills." }
-            text += "\n\nOther Hermes commands (e.g. /compress) only work in the Hermes CLI or Telegram; Brainbox explains instead of sending them."
-            addCommandOutput("/help", text)
+            var sections: [String] = []
+            if let client = lifecycleClient(), let reply = try? await client.runHermesCommand(name: "help", arguments: argument) {
+                sections.append(reply.text)
+                sections.append("---")
+            }
+            sections.append("**In this app**\n" + AppCommand.allCases.map {
+                "`/\($0.rawValue)\($0.argsHint.isEmpty ? "" : " " + $0.argsHint)` — \($0.summary)"
+            }.joined(separator: "\n"))
+            if let skills = commandCatalog()?.skills, !skills.isEmpty { sections.append("Plus \(skills.count) Hermes skill command(s) — type /skills.") }
+            sections.append("Commands that need Telegram's live session (e.g. /compress, /personality) are explained instead of being sent to the model. Type / to search everything.")
+            addCommandOutput("/help", sections.joined(separator: "\n\n"))
             return .handled(nil)
         case .archive:
             guard let id = currentID else { return .refused("Open a chat first.") }
@@ -650,11 +709,35 @@ final class ChatStore {
     }
 
     /// Local command output (never sent to the agent or stored on the server).
-    private func addCommandOutput(_ command: String, _ text: String) {
-        if current == nil { newConversation() }
-        guard let id = currentID else { return }
+    private func addCommandOutput(_ command: String, _ text: String, to conversationID: UUID? = nil) {
+        if conversationID == nil, current == nil { newConversation() }
+        guard let id = conversationID ?? currentID, conversations.contains(where: { $0.id == id }) else { return }
         mutateConversation(id) { $0.messages.append(Message(role: .system, content: "**\(command)**\n\n" + text, state: .complete)) }
         persist(id)
+    }
+
+    /// Hermes' record of the current chat (`GET /api/sessions/{id}`), when it has one.
+    private func currentServerSession() async -> (id: String?, record: HermesSession?) {
+        guard let conversation = current, let serverID = AppSessionID.serverID(for: conversation) else { return (nil, nil) }
+        guard let client = lifecycleClient() else { return (serverID, nil) }
+        return (serverID, try? await client.session(id: serverID))
+    }
+
+    /// `/bg` finished: post its result into the chat it was started from (once).
+    func deliverBackgroundResult(_ task: ParallelTask) {
+        guard task.isFinished, let origin = task.originConversationID, let agent = task.agents.first else { return }
+        let key = "bb.bg.delivered"
+        var delivered = UserDefaults.standard.stringArray(forKey: key) ?? []
+        guard !delivered.contains(task.id.uuidString) else { return }
+        delivered.append(task.id.uuidString)
+        UserDefaults.standard.set(Array(delivered.suffix(200)), forKey: key)
+        let body: String
+        switch agent.state {
+        case .completed: body = agent.output.isEmpty ? "(The background run finished without text output.)" : agent.output
+        case .cancelled: body = "Stopped before finishing." + (agent.output.isEmpty ? "" : "\n\n" + agent.output)
+        default: body = "Didn't finish: \(agent.error ?? agent.state.rawValue)."
+        }
+        addCommandOutput("/bg " + String(agent.prompt.prefix(60)) + (agent.prompt.count > 60 ? "…" : ""), body, to: origin)
     }
 
     static func describe(_ phase: StopPhase) -> String {

@@ -8,7 +8,8 @@ import BrainboxCore
 @MainActor
 final class ChatCommandTests: XCTestCase {
     private let catalog = HermesCommandCatalog(
-        native: [.init(name: "compress", description: "Compress the conversation context", aliases: ["compact"])],
+        native: [.init(name: "compress", description: "Compress the conversation context", aliases: ["compact"]),
+                 .init(name: "version", description: "Show Hermes Agent version", aliases: ["v"], executor: true)],
         skills: [.init(name: "demo-skill", description: "Demo")])
 
     private func makeStore() -> (ChatStore, MockHTTPTransport, Locked<[JSONValue]>) {
@@ -86,6 +87,63 @@ final class ChatCommandTests: XCTestCase {
         do { let outcome = await store.submit("/files"); XCTAssertEqual(outcome, .navigate(.files)) }
         do { let outcome = await store.submit("/parallel a | b"); XCTAssertEqual(outcome, .parallel(["a", "b"])) }
         XCTAssertTrue(bodies.current.isEmpty)
+    }
+
+    func testHermesHandlerCommandsRunOnTheProxyNotTheModel() async throws {
+        let (store, transport, bodies) = makeStore()
+        transport.on("POST /hermes/brainbox/commands/run") { request in
+            let body = try JSONDecoder().decode(JSONValue.self, from: request.body ?? Data())
+            switch body["name"]?.stringValue {
+            case "version": return MockHTTPTransport.json(#"{"name":"version","text":"Hermes Agent v0.21.2","format":"plain"}"#)
+            case "btw":
+                XCTAssertTrue(body["session_id"]?.stringValue?.hasPrefix("ios_") ?? false)
+                return MockHTTPTransport.json(#"{"name":"btw","text":"You picked nginx earlier.","format":"markdown"}"#)
+            default: return MockHTTPTransport.json(#"{"error":{"message":"x","code":"unknown_command"}}"#, status: 404)
+            }
+        }
+        do { let outcome = await store.submit("/v"); XCTAssertEqual(outcome, .handled(nil)) }
+        XCTAssertTrue(store.current?.messages.last?.content.contains("Hermes Agent v0.21.2") ?? false)
+
+        store.newConversation()
+        guard case .handled = await store.submit("/btw what did we pick?") else { return XCTFail() }
+        let deadline = Date().addingTimeInterval(3)
+        while !(store.current?.messages.contains { $0.content.contains("You picked nginx") } ?? false) && Date() < deadline {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        XCTAssertTrue(store.current?.messages.contains { $0.role == .system && $0.content.contains("You picked nginx") } ?? false)
+        XCTAssertTrue(bodies.current.isEmpty, "neither command started a model run")
+    }
+
+    func testStatusAndUsageReadHermesSessionRecord() async throws {
+        let (store, transport, _) = makeStore()
+        store.newConversation()
+        let id = try XCTUnwrap(store.currentID)
+        transport.on("GET /hermes/api/sessions/\(HermesAgentProvider.sessionID(for: id))") { _ in
+            MockHTTPTransport.json(#"{"object":"hermes.session","session":{"id":"ios_x","model":"claude-sonnet","title":"Deploy","input_tokens":1200,"output_tokens":300,"message_count":4,"estimated_cost_usd":0.0123}}"#)
+        }
+        guard case .handled = await store.submit("/status") else { return XCTFail() }
+        let status = try XCTUnwrap(store.current?.messages.last?.content)
+        XCTAssertTrue(status.contains("Model: claude-sonnet") && status.contains("Tokens: 1,500") && status.contains("Agent running: no"), status)
+        guard case .handled = await store.submit("/usage") else { return XCTFail() }
+        XCTAssertTrue(store.current?.messages.last?.content.contains("Input tokens: 1,200") ?? false)
+    }
+
+    func testBackgroundCommandRunsSeparately() async throws {
+        let (store, _, bodies) = makeStore()
+        store.newConversation()
+        let origin = try XCTUnwrap(store.currentID)
+        let outcome = await store.submit("/bg summarise the logs")
+        XCTAssertEqual(outcome, .background(prompt: "summarise the logs", origin: origin))
+        XCTAssertTrue(bodies.current.isEmpty, "the current chat's session isn't used")
+        // When the background task settles, its result is posted back once.
+        var agent = ParallelAgent(title: "s", prompt: "summarise the logs")
+        agent.state = .completed
+        agent.output = "Logs are clean."
+        let task = ParallelTask(title: "Background", agents: [agent], wantsSynthesis: false, originConversationID: origin)
+        store.deliverBackgroundResult(task)
+        store.deliverBackgroundResult(task)
+        let posted = store.current?.messages.filter { $0.content.contains("Logs are clean.") } ?? []
+        XCTAssertEqual(posted.count, 1)
     }
 
     func testModelCommandIsValidatedAndUsedForRuns() async throws {

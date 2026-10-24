@@ -19,6 +19,8 @@ public protocol RunControllingProvider: AgentProvider {
     func requestStop(requestID: UUID) async -> StopRequestResult
     /// Live feed of run activity for the Tasks screen.
     func runActivity() -> AsyncStream<RunActivity>
+    /// Re-open live run streams now (app returned to the foreground, or "Reconnect").
+    func reconnectActiveRuns()
     var compatibility: HermesCompatibilityReport? { get }
     var client: HermesAPIClient { get }
 }
@@ -82,13 +84,49 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         var awaitingRunID: Set<UUID> = []
         /// Stop requested before the run id was known; applied on arrival.
         var pendingStops: Set<UUID> = []
+        /// Live followers by run id (for foreground reconnects).
+        var followers: [String: HermesRunFollower] = [:]
     }
+    private let clock: RunClock
+    private let followerConfig: HermesRunFollower.Config
 
     public init(client: HermesAPIClient, pause: @escaping @Sendable (TimeInterval) async throws -> Void = { seconds in
         try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
-    }) {
+    }, clock: RunClock = SystemRunClock(), silenceThreshold: TimeInterval = 180, watchdogInterval: TimeInterval = 5,
+                stallTimeout: TimeInterval = 45) {
         self.client = client
         self.pause = pause
+        self.clock = clock
+        var config = HermesRunFollower.Config()
+        config.silenceThreshold = silenceThreshold
+        config.watchdogInterval = watchdogInterval
+        config.stallTimeout = stallTimeout
+        self.followerConfig = config
+    }
+
+    /// The app came back to the foreground (or the user tapped Reconnect): re-open every
+    /// live run stream now instead of waiting for a backoff or a stalled-socket timeout.
+    public func reconnectActiveRuns() {
+        let followers = state.withLock { Array($0.followers.values) }
+        for follower in followers { follower.nudge() }
+    }
+
+    /// Follows a run to its end, publishing activity for the Tasks screen.
+    private func follow(runID: String, client: HermesAPIClient, alreadyShown: String,
+                        context: (sessionID: String?, conversationID: UUID?),
+                        continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation) async {
+        let follower = HermesRunFollower(
+            runID: runID, client: client, clock: clock, config: followerConfig, alreadyShown: alreadyShown,
+            pause: pause, continuation: continuation,
+            publish: { [weak self] event, runState in
+                self?.publish(RunActivity(runID: runID, sessionID: context.sessionID, conversationID: context.conversationID,
+                                          event: event, state: runState))
+            },
+            onStatus: { [weak self] agentStatus in self?.status.send(agentStatus) })
+        state.withLock { $0.followers[runID] = follower }
+        await follower.run()
+        state.withLock { _ = $0.followers.removeValue(forKey: runID) }
+        if !follower.finished && Task.isCancelled { continuation.yield(.failed(.cancelled)) }
     }
 
     deinit { state.withLock { $0.heartbeat?.cancel() } }
@@ -255,7 +293,7 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
             }
             let runOptions = HermesAPIClient.RunOptions(
                 sessionID: sessionID,
-                instructions: options?.instructions,
+                instructions: HermesClientNote.compose(options?.instructions),
                 model: options?.model,
                 provider: options?.provider,
                 idempotencyKey: requestID.uuidString.lowercased(),
@@ -297,30 +335,8 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         publish(RunActivity(runID: runID, sessionID: sessionID, conversationID: request.conversationID,
                             teammateID: options?.teammateID, title: Conversation.suggestedTitle(from: request.content), state: .running))
 
-        var mapper = HermesRunMapper(runID: runID)
-        let context = (sessionID: sessionID, conversationID: request.conversationID)
-        do {
-            for try await event in client.runEvents(id: runID) {
-                publish(RunActivity(runID: runID, sessionID: context.sessionID, conversationID: context.conversationID, event: event, state: Self.state(after: event)))
-                for mapped in mapper.map(event) {
-                    if case .status(let s) = mapped { status.send(s) }
-                    continuation.yield(mapped)
-                }
-                if mapper.finished { break }
-            }
-        } catch {
-            if Task.isCancelled {
-                continuation.yield(.failed(.cancelled))
-                continuation.finish()
-                return
-            }
-            // Fall through to recovery: the run keeps going server-side.
-        }
-
-        if !mapper.finished {
-            continuation.yield(.notice("Live stream interrupted — following the run by status."))
-            await poll(runID: runID, mapper: &mapper, continuation: continuation, context: context)
-        }
+        let context = (sessionID: Optional(sessionID), conversationID: Optional(request.conversationID))
+        await follow(runID: runID, client: client, alreadyShown: "", context: context, continuation: continuation)
         state.withLock { s in
             _ = s.runs.removeValue(forKey: request.requestID)
             _ = s.runClients.removeValue(forKey: runID)
@@ -328,43 +344,14 @@ public final class HermesAgentProvider: RunControllingProvider, @unchecked Senda
         continuation.finish()
     }
 
-    /// Polls `GET /v1/runs/{id}` until the run settles. Used after a dropped
-    /// event stream and when resuming after relaunch.
-    private func poll(runID: String, mapper: inout HermesRunMapper,
-                      continuation: AsyncThrowingStream<AgentEvent, Error>.Continuation,
-                      context: (sessionID: String?, conversationID: UUID?)) async {
-        var failures = 0
-        while !mapper.finished {
-            if Task.isCancelled { continuation.yield(.failed(.cancelled)); return }
-            do {
-                let status = try await client(forRun: runID).runStatus(id: runID)
-                failures = 0
-                for mapped in mapper.reconcile(status) { continuation.yield(mapped) }
-                publish(RunActivity(runID: runID, sessionID: status.sessionID ?? context.sessionID, conversationID: context.conversationID, state: status.status))
-                if mapper.finished { return }
-            } catch AgentError.remote(let code, _) where code == "run_not_found" {
-                continuation.yield(.failed(.remote(code: "run_expired", message: "Hermes no longer tracks this run (status is kept only briefly after it ends). Its reply is in the session history.")))
-                return
-            } catch {
-                failures += 1
-                if failures >= 20 {
-                    continuation.yield(.failed(.remote(code: "run_detached", message: "Lost contact with this run. It may still be running on the VPS — check Tasks.")))
-                    return
-                }
-            }
-            do { try await self.pause(min(client.configuration.pollInterval * Double(max(failures, 1)), 15)) } catch {
-                continuation.yield(.failed(.cancelled)); return
-            }
-        }
-    }
-
     public func resume(runID: String, alreadyStreamed: String) -> AsyncThrowingStream<AgentEvent, Error> {
         AsyncThrowingStream { continuation in
             let task = Task { [weak self] in
                 guard let self else { continuation.finish(); return }
-                var mapper = HermesRunMapper(runID: runID)
-                if !alreadyStreamed.isEmpty { _ = mapper.map(.messageDelta(alreadyStreamed)) }
-                await self.poll(runID: runID, mapper: &mapper, continuation: continuation, context: (nil, nil))
+                // Through the relay the stream is replayed from the start and only unseen text
+                // is shown; without it the run is followed by status.
+                await self.follow(runID: runID, client: self.client(forRun: runID), alreadyShown: alreadyStreamed,
+                                  context: (sessionID: nil, conversationID: nil), continuation: continuation)
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
