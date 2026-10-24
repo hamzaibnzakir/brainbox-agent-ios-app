@@ -167,13 +167,13 @@ final class HermesRunFollower: @unchecked Sendable {
             case .event(let event):
                 if s.mapper.finished { return true }
                 _ = s.tracker.frameReceived(at: now)
-                let livenessChanged = s.tracker.observe(event, at: now)
+                // Status first: the reply's terminal event must be the last thing emitted.
+                if s.tracker.observe(event, at: now) { emitLiveness(&s) }
                 publish(event, HermesAgentProvider.state(after: event))
                 for mapped in s.mapper.map(event) {
                     if case .status(let agentStatus) = mapped { onStatus(agentStatus) }
                     continuation.yield(mapped)
                 }
-                if livenessChanged { emitLiveness(&s) }
                 return s.mapper.finished
             }
         }
@@ -216,20 +216,19 @@ final class HermesRunFollower: @unchecked Sendable {
                     let marker = "\(status.updatedAt ?? 0)|\(status.lastEvent ?? "")"
                     let moved = s.lastPolledMarker != nil && s.lastPolledMarker != marker
                     s.lastPolledMarker = marker
-                    if s.tracker.polled(status: status.status.rawValue, changedOnServer: moved, at: now) { emitLiveness(&s) }
+                    var changed = s.tracker.polled(status: status.status.rawValue, changedOnServer: moved, at: now)
+                    let terminal: HermesRunEvent? = {
+                        switch status.status {
+                        case .completed: return .completed(output: status.output, usage: status.usage, pendingSteer: status.pendingSteer)
+                        case .failed: return .failed(error: status.error)
+                        case .cancelled: return .cancelled
+                        case .interrupted: return .interrupted(error: status.error)
+                        default: return nil
+                        }
+                    }()
+                    if let terminal, s.tracker.observe(terminal, at: now) { changed = true }
+                    if changed { emitLiveness(&s) }
                     for mapped in s.mapper.reconcile(status) { continuation.yield(mapped) }
-                    if s.mapper.finished {
-                        let terminal: HermesRunEvent? = {
-                            switch status.status {
-                            case .completed: return .completed(output: status.output, usage: status.usage, pendingSteer: status.pendingSteer)
-                            case .failed: return .failed(error: status.error)
-                            case .cancelled: return .cancelled
-                            case .interrupted: return .interrupted(error: status.error)
-                            default: return nil
-                            }
-                        }()
-                        if let terminal, s.tracker.observe(terminal, at: now) { emitLiveness(&s) }
-                    }
                 }
                 publish(nil, status.status)
                 if finished { return }
