@@ -27,6 +27,8 @@ final class HermesWorkspace {
     private(set) var overviewUpdated: Date?
     /// Hermes' slash commands and skills (via the proxy), for the composer.
     private(set) var commandCatalog: HermesCommandCatalog?
+    /// Telegram-vs-API facts from the proxy (busy-input mode, remaining differences).
+    private(set) var parity: HermesParityReport?
 
     /// What the proxy offers this device (nil = unknown / not behind the proxy).
     var features: BrainboxFeatures? { gatewayInfo?.features }
@@ -65,6 +67,7 @@ final class HermesWorkspace {
         overview = nil
         overviewError = nil
         commandCatalog = nil
+        parity = nil
         guard let provider else { return }
         activityTask = Task { [weak self] in
             for await activity in provider.runActivity() {
@@ -81,6 +84,7 @@ final class HermesWorkspace {
         gatewayInfo = try? await client.gatewayInfo()
         if gatewayInfo != nil { profiles = (try? await client.gatewayProfiles()) ?? [] }
         if gatewayInfo?.features?.commands == true { commandCatalog = try? await client.commandCatalog() }
+        if gatewayInfo?.features?.parity == true { parity = try? await client.parityReport() }
         if report?.supports(.toolsets) == true { toolsets = (try? await client.toolsets()) ?? [] }
         if report?.supports(.skills) == true { skills = (try? await client.skills()) ?? [] }
     }

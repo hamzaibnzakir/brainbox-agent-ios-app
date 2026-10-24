@@ -88,9 +88,14 @@ public struct HermesParityReport: Decodable, Hashable, Sendable {
     public var providerRouting: Bool
     public var prefillMessages: Int
     public var gatewayPromptApplied: Bool
+    /// What Telegram does with a message sent while the agent works: interrupt | queue | steer.
+    public var busyInputMode: String?
+    public var hermesVersion: String?
 
     enum CodingKeys: String, CodingKey {
         case toolsets, model
+        case busyInputMode = "busy_input_mode"
+        case hermesVersion = "hermes_version"
         case personaPromptChars = "persona_prompt_chars"
         case providerRouting = "provider_routing"
         case prefillMessages = "prefill_messages"

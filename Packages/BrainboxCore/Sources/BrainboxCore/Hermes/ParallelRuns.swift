@@ -386,7 +386,9 @@ public final class ParallelRunEngine {
                 a.state = .lost
                 a.error = error ?? "Hermes restarted before this run finished."
                 a.finishedAt = Date()
-            case .reasoning, .steered, .unknown:
+            case .interim(let text, let alreadyStreamed):
+                if !alreadyStreamed, !text.isEmpty { a.output += text + "\n\n" }
+            case .reasoning, .steered, .unknown, .queued:
                 break
             }
             if a.activity.count > 50 { a.activity.removeFirst(a.activity.count - 50) }

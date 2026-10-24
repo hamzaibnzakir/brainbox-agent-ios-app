@@ -146,6 +146,66 @@ final class ChatCommandTests: XCTestCase {
         XCTAssertEqual(posted.count, 1)
     }
 
+    /// A run whose event stream stays open until `release` is set.
+    private func longRunStore(busyMode: String?) -> (ChatStore, MockHTTPTransport, Locked<[JSONValue]>, Locked<Bool>) {
+        let (store, transport, bodies) = makeStore()
+        let release = Locked(false)
+        transport.onStream("GET /hermes/v1/runs/run_1/events") { _ in
+            let stream = AsyncThrowingStream<Data, Error> { continuation in
+                let task = Task {
+                    continuation.yield(Data("id: 1\ndata: {\"event\":\"message.delta\",\"run_id\":\"run_1\",\"delta\":\"working\"}\n\n".utf8))
+                    while !release.current && !Task.isCancelled { try? await Task.sleep(nanoseconds: 5_000_000) }
+                    continuation.yield(Data("id: 2\ndata: {\"event\":\"run.completed\",\"run_id\":\"run_1\",\"output\":\"working\"}\n\n".utf8))
+                    continuation.finish()
+                }
+                continuation.onTermination = { _ in task.cancel() }
+            }
+            return HTTPStreamResponse(status: 200, headers: ["Content-Type": "text/event-stream"], chunks: stream)
+        }
+        store.busyInputMode = { busyMode }
+        return (store, transport, bodies, release)
+    }
+
+    func testMessageWhileBusyFollowsTelegramsQueueMode() async throws {
+        let (store, _, bodies, release) = longRunStore(busyMode: "queue")
+        let started = await store.submit("start the long job")
+        XCTAssertEqual(started, .sent)
+        let deadline = Date().addingTimeInterval(3)
+        while store.activeRunID == nil && Date() < deadline { try await Task.sleep(nanoseconds: 5_000_000) }
+        guard case .handled(let ack) = await store.submit("and then summarise") else { return XCTFail("not applied") }
+        XCTAssertTrue(ack?.contains("Queued") ?? false)
+        XCTAssertEqual(store.queuedInstructions[store.currentID!]?.map(\.text), ["and then summarise"])
+        XCTAssertEqual(bodies.current.count, 1, "nothing extra was sent while the reply runs")
+        release.withLock { $0 = true }
+        let sentLater = Date().addingTimeInterval(5)
+        while bodies.current.count < 2 && Date() < sentLater { try await Task.sleep(nanoseconds: 10_000_000) }
+        XCTAssertEqual(bodies.current.last?["input"]?.stringValue, "and then summarise", "sent once, after the reply ended")
+        release.withLock { $0 = true }
+    }
+
+    func testMessageWhileBusyWithUnknownModeIsRefusedNotLost() async throws {
+        let (store, _, bodies, release) = longRunStore(busyMode: nil)
+        let started = await store.submit("start")
+        XCTAssertEqual(started, .sent)
+        guard case .refused = await store.submit("follow-up") else { return XCTFail() }
+        XCTAssertEqual(bodies.current.count, 1)
+        release.withLock { $0 = true }
+    }
+
+    func testDoubleTappedCommandRunsOnce() async throws {
+        let (store, transport, _) = makeStore()
+        let calls = Locked(0)
+        transport.on("POST /hermes/brainbox/commands/run") { _ in
+            calls.withLock { $0 += 1 }
+            try await Task.sleep(nanoseconds: 100_000_000)
+            return MockHTTPTransport.json(#"{"name":"version","text":"v1","format":"plain"}"#)
+        }
+        async let first = store.submit("/version")
+        async let second = store.submit("/version")
+        _ = await (first, second)
+        XCTAssertEqual(calls.current, 1)
+    }
+
     func testModelCommandIsValidatedAndUsedForRuns() async throws {
         let (store, _, bodies) = makeStore()
         guard case .refused = await store.submit("/model gpt-imaginary") else { return XCTFail("unknown model must be refused") }

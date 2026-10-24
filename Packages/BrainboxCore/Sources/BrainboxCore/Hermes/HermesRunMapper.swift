@@ -18,6 +18,7 @@ public struct HermesRunMapper: Sendable {
     public private(set) var pendingApproval: AgentApproval?
     private var runningTools: [String: [String]] = [:] // tool name → call ids (FIFO)
     private var toolCounter = 0
+    private var commentaryShown = false
     private var sentStreaming = false
     private var now: @Sendable () -> Date
 
@@ -54,6 +55,18 @@ public struct HermesRunMapper: Sendable {
             }
             out.append(.textDelta(fresh))
             return out
+
+        case .interim(let text, let alreadyStreamed):
+            // Commentary that wasn't streamed (non-streaming providers, Codex commentary). Shown
+            // as its own paragraph; kept out of `streamedText` so the final answer still arrives.
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !alreadyStreamed, !trimmed.isEmpty else { return [] }
+            commentaryShown = true
+            sentStreaming = false
+            return [.textDelta(trimmed + "\n\n")]
+
+        case .queued:
+            return []
 
         case .toolStarted(let tool, let preview):
             toolCounter += 1
@@ -105,7 +118,7 @@ public struct HermesRunMapper: Sendable {
         case .completed(let output, _, let pendingSteer):
             finished = true
             var out: [AgentEvent] = []
-            if let remainder = Self.remainder(of: output, after: visibleText) {
+            if let remainder = Self.remainder(of: output, after: visibleText) ?? (commentaryShown && streamedCount == 0 && alreadyShownCount == 0 ? output.flatMap { $0.isEmpty ? nil : $0 } : nil) {
                 streamedText = visibleText + remainder
                 streamedCount = streamedText.count
                 out.append(.textDelta(remainder))

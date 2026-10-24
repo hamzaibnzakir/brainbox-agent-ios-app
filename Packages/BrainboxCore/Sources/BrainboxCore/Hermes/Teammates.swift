@@ -300,6 +300,8 @@ public struct RunRecord: Codable, Hashable, Sendable, Identifiable {
     static func entry(for event: HermesRunEvent, at date: Date) -> RunTimelineEntry? {
         switch event {
         case .messageDelta(let delta): return RunTimelineEntry(date: date, kind: .output, title: "Writing reply", detail: delta)
+        case .interim(let text, _): return RunTimelineEntry(date: date, kind: .output, title: "Update", detail: String(text.prefix(500)))
+        case .queued(let message): return RunTimelineEntry(date: date, kind: .output, title: "Queued by Hermes", detail: message)
         case .toolStarted(let tool, let preview): return RunTimelineEntry(date: date, kind: .toolStarted, title: "Started \(tool)", detail: preview)
         case .toolCompleted(let tool, let duration, let isError):
             let detail = duration.map { String(format: "%.1fs", $0) }

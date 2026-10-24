@@ -573,6 +573,11 @@ public enum HermesApprovalChoice: String, Codable, Hashable, Sendable, CaseItera
 /// One structured event from `GET /v1/runs/{run_id}/events`.
 public enum HermesRunEvent: Hashable, Sendable {
     case messageDelta(String)
+    /// Mid-turn assistant commentary (newer Hermes `message.interim`). `alreadyStreamed`
+    /// means the same text already arrived as deltas.
+    case interim(text: String, alreadyStreamed: Bool)
+    /// Hermes accepted the run but holds it (newer Hermes `run.queued`, e.g. while draining).
+    case queued(message: String?)
     case toolStarted(tool: String, preview: String?)
     case toolCompleted(tool: String, duration: Double?, isError: Bool)
     case reasoning(String)
@@ -606,6 +611,10 @@ public enum HermesRunEvent: Hashable, Sendable {
         switch name {
         case "message.delta":
             return .messageDelta(string("delta") ?? "")
+        case "message.interim":
+            return .interim(text: string("text") ?? "", alreadyStreamed: json["already_streamed"]?.boolValue ?? false)
+        case "run.queued":
+            return .queued(message: string("message"))
         case "tool.started":
             return .toolStarted(tool: string("tool") ?? "tool", preview: string("preview"))
         case "tool.completed":

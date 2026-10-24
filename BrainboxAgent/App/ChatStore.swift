@@ -492,6 +492,30 @@ final class ChatStore {
 
     /// Hermes' command registry + skills (from the proxy), when connected.
     @ObservationIgnored var commandCatalog: () -> HermesCommandCatalog? = { nil }
+    /// Telegram's `display.busy_input_mode` from the proxy's parity report ("interrupt",
+    /// "queue" or "steer"); nil when unknown, in which case nothing is assumed.
+    @ObservationIgnored var busyInputMode: () -> String? = { nil }
+
+    func busyMode() -> SteerMode? {
+        switch busyInputMode() {
+        case "queue": return .queue
+        case "steer": return canSteer ? .inject : .queue
+        case "interrupt": return .interrupt
+        default: return nil
+        }
+    }
+
+    static func busyAck(_ mode: SteerMode) -> String {
+        switch mode {
+        case .inject: return "Steering sent — the agent reads it at its next step (your Telegram busy mode)."
+        case .queue: return "Queued for after this reply (your Telegram busy mode)."
+        case .interrupt: return "Stopping the current reply, then sending this (your Telegram busy mode)."
+        }
+    }
+
+    /// Commands currently being handled, so a double tap doesn't run one twice.
+    @ObservationIgnored private var commandsInFlight: Set<String> = []
+
     /// Short real-state summary for /status (connection, server).
     @ObservationIgnored var statusSummary: () -> String = { "" }
 
@@ -500,6 +524,12 @@ final class ChatStore {
     func submit(_ rawText: String, attachments: [MessageAttachment] = [], imageDataURLs: [String] = [],
                 attachmentNote: String? = nil) async -> SubmitOutcome {
         let parsed = SlashCommandRouter.parse(rawText, catalog: commandCatalog())
+        if case .text = parsed {} else {
+            let key = rawText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !commandsInFlight.contains(key) else { return .handled(nil) }
+            commandsInFlight.insert(key)
+        }
+        defer { commandsInFlight.remove(rawText.trimmingCharacters(in: .whitespacesAndNewlines)) }
         if !attachments.isEmpty {
             if case .text = parsed {} else {
                 return .refused("Attachments can only be sent with a normal message, not with a command.")
@@ -507,8 +537,24 @@ final class ChatStore {
         }
         switch parsed {
         case .text(let text):
-            guard !isStreaming else {
-                return .refused("A reply is still running. Use Steer, “Send after this”, or Stop first.")
+            if isStreaming {
+                // Telegram applies its configured busy-input mode to a message sent while the
+                // agent works (interrupt by default, or queue / steer). Do the same, for this chat's run.
+                guard currentID == activeConversationID, let mode = busyMode() else {
+                    return .refused(currentID == activeConversationID
+                        ? "A reply is still running. Use Steer, “Send after this”, or Stop first."
+                        : "Another chat's reply is still running. Wait for it, stop it, or use /bg to run this separately.")
+                }
+                do {
+                    try await steer(text, mode: mode)
+                    return .handled(Self.busyAck(mode))
+                } catch where mode == .inject {
+                    // Hermes only accepts steering while a tool loop runs; Telegram falls back too.
+                    try? await steer(text, mode: .queue)
+                    return .handled("Hermes couldn't take it as steering right now, so it's queued for after this reply.")
+                } catch {
+                    return .refused(error.asAgentError.message)
+                }
             }
             let sent = attachmentNote.map { text.isEmpty ? $0 : text + $0 }
             send(text, sentContent: sent, attachments: attachments, imageDataURLs: imageDataURLs)

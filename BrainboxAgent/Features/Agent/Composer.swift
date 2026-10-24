@@ -62,6 +62,8 @@ struct Composer: View {
     var argumentHelp: CommandArgumentHelp? = nil
     var canAttach: Bool
     var canInject: Bool
+    /// Telegram's busy-input mode, when known: the default action for a message typed mid-reply.
+    var busyMode: ChatStore.SteerMode? = nil
     var onSend: () -> Void
     var onStop: () -> Void
     var onSteer: (ChatStore.SteerMode) -> Void
@@ -136,10 +138,10 @@ struct Composer: View {
                             .frame(width: 36, height: 36)
                             .background(Circle().fill(BB.Palette.signal))
                     } primaryAction: {
-                        onSteer(canInject ? .inject : .queue)
+                        onSteer(primaryMode)
                     }
                     .padding(.vertical, 5)
-                    .accessibilityLabel(canInject ? "Steer now (hold for more options)" : "Send after this reply (hold for more options)")
+                    .accessibilityLabel("\(primaryMode.title) (hold for more options)")
                     .accessibilityIdentifier("composer.steer")
                 }
 
@@ -181,6 +183,11 @@ struct Composer: View {
         .fileImporter(isPresented: $importing, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { onPickFiles(urls) }
         }
+    }
+
+    private var primaryMode: ChatStore.SteerMode {
+        if let busyMode { return busyMode == .inject && !canInject ? .queue : busyMode }
+        return canInject ? .inject : .queue
     }
 
     private func symbol(for mode: ChatStore.SteerMode) -> String {

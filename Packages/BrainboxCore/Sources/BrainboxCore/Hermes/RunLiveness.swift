@@ -15,6 +15,8 @@ public enum RunPhase: String, Codable, Hashable, Sendable {
     case connecting
     /// Hermes accepted the run; no agent event has arrived yet.
     case started
+    /// Hermes is holding the run before starting it (newer Hermes `run.queued`).
+    case queued
     /// Text is streaming.
     case responding
     /// A tool reported start and hasn't reported completion.
@@ -76,6 +78,7 @@ public struct RunLiveness: Codable, Hashable, Sendable {
         switch phase {
         case .connecting: return "Connecting"
         case .started: return "Started · waiting for the agent"
+        case .queued: return "Queued by Hermes" + (serverStatus.map { " · \($0)" } ?? "")
         case .responding: return "Responding"
         case .runningTool: return "Running \(toolName.map { RunLiveness.toolTitle($0) } ?? "a tool")"
         case .working: return "Working"
@@ -187,8 +190,11 @@ public struct RunTracker: Sendable {
         l.lastEventAt = date
         l.silentSince = nil
         switch event {
-        case .messageDelta:
+        case .messageDelta, .interim:
             if l.phase != .stopping { l.phase = .responding }
+        case .queued(let message):
+            l.phase = .queued
+            if let message, !message.isEmpty { l.serverStatus = message }
         case .toolStarted(let tool, _):
             runningTools.append(tool)
             if l.phase != .stopping { l.phase = .runningTool; l.toolName = tool }

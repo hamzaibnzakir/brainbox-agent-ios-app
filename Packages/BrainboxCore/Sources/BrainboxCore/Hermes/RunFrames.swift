@@ -43,6 +43,10 @@ public struct HermesRunFrame: Hashable, Sendable {
         case "brainbox.upstream":
             return HermesRunFrame(seq: seq, runID: runID, kind: .upstream(state: json["state"]?.stringValue ?? "",
                                                                           detail: json["detail"]?.stringValue))
+        case "replay.truncated":
+            // Newer Hermes evicted events before this client read them; the final output still arrives.
+            return HermesRunFrame(seq: seq, runID: runID, kind: .upstream(state: "truncated",
+                detail: "Some live events were dropped by Hermes before they reached the app; the final answer is unaffected."))
         case "brainbox.snapshot":
             return HermesRunFrame(seq: seq, runID: runID, kind: .snapshot(text: json["text"]?.stringValue ?? ""))
         default:

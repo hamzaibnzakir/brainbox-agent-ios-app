@@ -124,6 +124,7 @@ final class AppModel {
         }
         chat.activeTeammateID = { [unowned self] in self.hermes.activeTeammateID }
         chat.commandCatalog = { [unowned self] in self.hermes.commandCatalog }
+        chat.busyInputMode = { [unowned self] in self.hermes.parity?.busyInputMode }
         chat.statusSummary = { [unowned self] in
             var parts = ["Backend: \(self.settings.providerKind.displayName) — \(self.connectionState.label)"]
             if let info = self.hermes.gatewayInfo { parts.append("Brainbox proxy v\(info.version ?? "?")") }

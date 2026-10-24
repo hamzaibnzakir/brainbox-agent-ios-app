@@ -63,6 +63,7 @@ struct AgentView: View {
                     argumentHelp: SlashCommandRouter.argumentHelp(for: draft, catalog: model.hermes.commandCatalog),
                     canAttach: model.isHermes,
                     canInject: chat.canSteer,
+                    busyMode: chat.busyMode(),
                     onSend: send,
                     onStop: { chat.stop() },
                     onSteer: steer,

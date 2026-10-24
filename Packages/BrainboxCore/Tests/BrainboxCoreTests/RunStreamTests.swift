@@ -358,3 +358,61 @@ final class RunTrackerTests: XCTestCase {
         XCTAssertFalse(try JSONDecoder().decode(BrainboxFeatures.self, from: Data("{}".utf8)).runRelay, "older proxies")
     }
 }
+
+/// Events added in newer Hermes (main, Oct 2026): message.interim, run.queued,
+/// replay.truncated, and its own Last-Event-ID resume numbered from 0.
+final class NewerHermesEventTests: XCTestCase {
+    private func text(_ events: [AgentEvent]) -> String {
+        var message = Message(role: .assistant, content: "", state: .sending)
+        for event in events { ChatReducer.apply(event, to: &message) }
+        return message.plainText
+    }
+
+    func testInterimCommentaryWithoutDeltasStillKeepsTheFinalAnswer() {
+        var mapper = HermesRunMapper(runID: "r")
+        XCTAssertEqual(mapper.map(.interim(text: "Checking the nginx logs…", alreadyStreamed: false)),
+                       [.textDelta("Checking the nginx logs…\n\n")])
+        _ = mapper.map(.toolStarted(tool: "terminal", preview: "tail"))
+        let end = mapper.map(.completed(output: "Nginx is fine.", usage: nil, pendingSteer: nil))
+        XCTAssertTrue(end.contains(.textDelta("Nginx is fine.")), "the answer isn't swallowed by the commentary")
+    }
+
+    func testInterimAlreadyStreamedIsNotShownTwice() {
+        var mapper = HermesRunMapper(runID: "r")
+        _ = mapper.map(.messageDelta("Let me look."))
+        XCTAssertEqual(mapper.map(.interim(text: "Let me look.", alreadyStreamed: true)), [])
+    }
+
+    func testQueuedRunShowsHermesReason() {
+        var tracker = RunTracker(startedAt: Date(timeIntervalSince1970: 0))
+        _ = tracker.observe(.queued(message: "Gateway is draining; the run starts after restart."), at: Date(timeIntervalSince1970: 1))
+        XCTAssertEqual(tracker.liveness.phase, .queued)
+        XCTAssertTrue(tracker.liveness.label.contains("draining"))
+        XCTAssertEqual(HermesRunEvent.parse(data: #"{"event":"run.queued","message":"busy"}"#), .queued(message: "busy"))
+        XCTAssertEqual(HermesRunEvent.parse(data: #"{"event":"message.interim","text":"hi","already_streamed":true}"#),
+                       .interim(text: "hi", alreadyStreamed: true))
+        guard case .upstream(let state, _)? = HermesRunFrame.parse(SSEEvent(data: #"{"event":"replay.truncated","run_id":"r","oldest_retained_seq":5}"#))?.kind
+        else { return XCTFail("replay.truncated not parsed") }
+        XCTAssertEqual(state, "truncated")
+    }
+
+    func testNativeHermesSequenceFromZeroResumes() async throws {
+        let transport = MockHTTPTransport()
+        transport.on("POST /hermes/api/sessions") { _ in MockHTTPTransport.json(#"{"session":{"id":"ios_x"}}"#, status: 201) }
+        transport.on("POST /hermes/v1/runs") { _ in MockHTTPTransport.json(#"{"run_id":"run_n","status":"started"}"#, status: 202) }
+        let lastIDs = Locked<[String?]>([])
+        transport.onStream("GET /hermes/v1/runs/run_n/events") { request in
+            let n = lastIDs.withLock { $0.append(request.headers["Last-Event-ID"]); return $0.count }
+            if n == 1 {
+                return MockHTTPTransport.sse([": open\n\n", relay(0, #"{"event":"message.delta","run_id":"run_n","delta":"A","seq":0}"#)],
+                                             failAtEnd: URLError(.networkConnectionLost))
+            }
+            return MockHTTPTransport.sse([relay(1, #"{"event":"message.delta","run_id":"run_n","delta":"B","seq":1}"#),
+                                          relay(2, #"{"event":"run.completed","run_id":"run_n","output":"AB","seq":2}"#)])
+        }
+        let provider = HermesAgentProvider(client: HermesFixtures.client(transport), pause: { _ in })
+        let events = try await collect(provider.send(AgentRequest(conversationID: UUID(), content: "x")))
+        XCTAssertEqual(lastIDs.current, [nil, "0"])
+        XCTAssertEqual(text(events), "AB")
+    }
+}

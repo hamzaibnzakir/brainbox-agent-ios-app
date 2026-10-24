@@ -1,8 +1,19 @@
 # Hermes parity: live streaming, commands, and Telegram behaviour
 
-Verified against hermes-agent **284d220** (the version on the VPS), by reading its source and
-by running its real `/v1/runs` handlers in `gateway/tests/test_hermes_contract.py`.
-Nothing here has been verified on the live VPS yet.
+Verified against hermes-agent **284d220** (v0.21.2 — the version last seen on the VPS) **and** Hermes
+`main` at 1c0cd66 (24 Oct 2026), by reading their source and by running their real `/v1/runs` handlers
+in `gateway/tests/test_hermes_contract.py` (CI runs both). The VPS's current version could not be
+re-checked from here (no access); Diagnostics shows it once the proxy is updated. Nothing here has been
+verified on the live VPS yet.
+
+### What changed in newer Hermes (and how the app handles both)
+
+| | 284d220 | main (Oct 2026) | App / proxy |
+|---|---|---|---|
+| Dropped event stream | queue deleted, 404 on re-subscribe | per-run backlog, `seq` + `Last-Event-ID` resume, `replay.truncated` | Relay resumes upstream when Hermes numbers events, else follows by status; app resumes either way |
+| Mid-turn commentary | only if streamed as deltas | `message.interim` (`text`, `already_streamed`) | Shown as its own paragraph; never swallows the final answer |
+| Held runs | — | `run.queued` with a reason | Status line "Queued by Hermes · reason" |
+| API-server platform hint | plain text, brief | unchanged | Client note (below) |
 
 ## Confirmed root causes
 
@@ -32,6 +43,8 @@ Nothing here has been verified on the live VPS yet.
 | Agent loop, retries, timeouts | `AIAgent.run_conversation` | Same function, same `max_iterations` | Same |
 | Approvals | Inline buttons | `approval.request` events + `/approval` | Same core (`tools.approval`) |
 | Background jobs | `/bg` spawns a fresh session | App `/bg` starts a separate run in its own session; result posted back | Equivalent |
+| Message sent while the agent works | `display.busy_input_mode`: interrupt (default), queue or steer (`gateway/run_busy.py`) | Same mode, read from your config by the proxy; applied to messages typed mid-reply (steer falls back to queue when Hermes isn't accepting steering) | Same |
+| Mid-turn commentary | `interim_assistant_callback` → separate messages | 284d220: only streamed deltas; newer: `message.interim` | Same once Hermes is updated |
 | Interruption | `/stop` → interrupt | `POST /v1/runs/{id}/stop` → hard interrupt + reap that run's processes | Same; one run's stop never touches another (tested) |
 | Images | Vision enrichment for non-vision models | Sent as `image_url` parts to the model directly | **Difference in Hermes** — a non-vision main model will say it can't see images |
 
