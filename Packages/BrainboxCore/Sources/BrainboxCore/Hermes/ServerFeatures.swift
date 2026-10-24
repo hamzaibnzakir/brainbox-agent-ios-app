@@ -27,10 +27,21 @@ public struct BrainboxFeatures: Decodable, Hashable, Sendable {
     public var diagnostics: Bool
     public var terminal: Bool
     public var push: Push
+    /// Resumable, sequenced run events (`/brainbox/runs/{id}/events`).
+    public var runRelay = false
+    /// Hermes command handlers + /btw on the proxy.
+    public var commandExec = false
+    /// Telegram-vs-API parity report.
+    public var parity = false
+    /// The proxy adds Telegram's gateway prompt to runs.
+    public var gatewayPrompt = false
 
     enum CodingKeys: String, CodingKey {
-        case files, diagnostics, terminal, push, commands
+        case files, diagnostics, terminal, push, commands, parity
         case chatManagement = "chat_management"
+        case runRelay = "run_relay"
+        case commandExec = "command_exec"
+        case gatewayPrompt = "gateway_prompt"
     }
 
     public init(chatManagement: Bool = false, commands: Bool = false, files: Bool = false, diagnostics: Bool = false, terminal: Bool = false, push: Push = Push()) {
@@ -50,6 +61,61 @@ public struct BrainboxFeatures: Decodable, Hashable, Sendable {
         diagnostics = (try? c.decode(Bool.self, forKey: .diagnostics)) ?? false
         terminal = (try? c.decode(Bool.self, forKey: .terminal)) ?? false
         push = (try? c.decode(Push.self, forKey: .push)) ?? Push()
+        runRelay = (try? c.decode(Bool.self, forKey: .runRelay)) ?? false
+        commandExec = (try? c.decode(Bool.self, forKey: .commandExec)) ?? false
+        parity = (try? c.decode(Bool.self, forKey: .parity)) ?? false
+        gatewayPrompt = (try? c.decode(Bool.self, forKey: .gatewayPrompt)) ?? false
+    }
+}
+
+/// How the app's API path differs from Telegram's (`GET /brainbox/parity`). Never prompt text.
+public struct HermesParityReport: Decodable, Hashable, Sendable {
+    public struct Toolsets: Decodable, Hashable, Sendable {
+        public var onlyTelegram: [String]
+        public var onlyAPIServer: [String]
+        public var explicitTelegram: Bool
+        public var explicitAPIServer: Bool
+        enum CodingKeys: String, CodingKey {
+            case onlyTelegram = "only_telegram"
+            case onlyAPIServer = "only_api_server"
+            case explicitTelegram = "explicit_telegram"
+            case explicitAPIServer = "explicit_api_server"
+        }
+    }
+    public var toolsets: Toolsets
+    public var model: String
+    public var personaPromptChars: Int
+    public var providerRouting: Bool
+    public var prefillMessages: Int
+    public var gatewayPromptApplied: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case toolsets, model
+        case personaPromptChars = "persona_prompt_chars"
+        case providerRouting = "provider_routing"
+        case prefillMessages = "prefill_messages"
+        case gatewayPromptApplied = "gateway_prompt_applied"
+    }
+
+    /// Differences that remain after the app's and proxy's fixes, in plain words.
+    public var remainingDifferences: [String] {
+        var out: [String] = []
+        if !toolsets.onlyTelegram.isEmpty {
+            out.append("Tools only Telegram has: " + toolsets.onlyTelegram.joined(separator: ", ")
+                       + (toolsets.explicitTelegram ? " (you configured Telegram's list explicitly)" : " (Hermes' default for the API server)"))
+        }
+        if personaPromptChars > 0 && !gatewayPromptApplied { out.append("Telegram's personality/system prompt isn't added to app runs (proxy setting off).") }
+        if providerRouting { out.append("Provider routing preferences apply in Telegram but Hermes' API server doesn't pass them.") }
+        if prefillMessages > 0 { out.append("\(prefillMessages) prefill message(s) apply in Telegram but not over the API.") }
+        return out
+    }
+}
+
+extension HermesAPIClient {
+    public func parityReport() async throws -> HermesParityReport {
+        let response = try await send(authorizedRequest("GET", "/brainbox/parity", extraHeaders: ["Accept": "application/json"], timeout: 60))
+        guard (200..<300).contains(response.status) else { throw Self.sessionError(response) }
+        return try decode(HermesParityReport.self, from: response)
     }
 }
 

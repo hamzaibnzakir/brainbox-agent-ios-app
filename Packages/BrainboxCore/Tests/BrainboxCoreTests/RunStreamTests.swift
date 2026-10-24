@@ -347,4 +347,14 @@ final class RunTrackerTests: XCTestCase {
         XCTAssertEqual(HermesClientNote.compose(nil), HermesClientNote.text)
         XCTAssertEqual(HermesClientNote.compose("Be terse."), HermesClientNote.text + "\n\nBe terse.")
     }
+
+    func testParityReportNamesRemainingDifferences() throws {
+        let json = #"{"toolsets":{"telegram":["a"],"api_server":[],"only_telegram":["clarify","tts"],"only_api_server":[],"explicit_telegram":false,"explicit_api_server":false},"model":"m","persona_prompt_chars":40,"provider_routing":true,"prefill_messages":0,"fallback_chain":1,"gateway_prompt_applied":true}"#
+        let report = try JSONDecoder().decode(HermesParityReport.self, from: Data(json.utf8))
+        XCTAssertEqual(report.remainingDifferences.count, 2)
+        XCTAssertTrue(report.remainingDifferences[0].contains("clarify, tts"))
+        let features = try JSONDecoder().decode(BrainboxFeatures.self, from: Data(#"{"run_relay":true,"command_exec":true,"parity":true}"#.utf8))
+        XCTAssertTrue(features.runRelay && features.commandExec && features.parity)
+        XCTAssertFalse(try JSONDecoder().decode(BrainboxFeatures.self, from: Data("{}".utf8)).runRelay, "older proxies")
+    }
 }

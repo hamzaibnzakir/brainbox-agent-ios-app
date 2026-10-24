@@ -82,6 +82,8 @@ enum ServerDestination: String, Hashable {
 struct DiagnosticsView: View {
     @Environment(AppModel.self) private var model
     @State private var log: [RequestLogEntry] = []
+    @State private var parity: HermesParityReport?
+    @State private var parityError: String?
 
     var body: some View {
         List {
@@ -92,9 +94,15 @@ struct DiagnosticsView: View {
                     fact("Brainbox proxy", "v\(info.version ?? "?")")
                     fact("This device", info.deviceName ?? "—")
                     if let features = info.features {
-                        fact("Proxy features", [features.files ? "files" : nil, features.terminal ? "terminal" : nil,
-                                                features.commands ? "commands" : nil, features.chatManagement ? "chat delete/archive" : nil]
+                        fact("Proxy features", [features.runRelay ? "resumable streaming" : nil, features.files ? "files" : nil,
+                                                features.terminal ? "terminal" : nil, features.commands ? "commands" : nil,
+                                                features.commandExec ? "Hermes command handlers" : nil,
+                                                features.chatManagement ? "chat delete/archive" : nil]
                             .compactMap { $0 }.joined(separator: ", "))
+                        if !features.runRelay {
+                            Text("This proxy can't resume a dropped stream: after a disconnect, replies arrive only when they finish. Update the proxy to fix it.")
+                                .font(BB.Font.caption).foregroundStyle(BB.Palette.warning)
+                        }
                     }
                 } else {
                     fact("Brainbox proxy", "not in use")
@@ -105,6 +113,30 @@ struct DiagnosticsView: View {
                 fact("App version", Bundle.main.appVersion)
             } header: { Text("Connection").bbLabelStyle() }
             .listRowBackground(BB.Palette.surface)
+
+            if model.hermes.gatewayInfo?.features?.parity == true {
+                Section {
+                    if let parity {
+                        fact("Model", parity.model.isEmpty ? "—" : parity.model)
+                        fact("Telegram persona prompt", parity.personaPromptChars > 0
+                             ? (parity.gatewayPromptApplied ? "applied to app runs too" : "Telegram only") : "none set")
+                        if parity.remainingDifferences.isEmpty {
+                            Label("No remaining differences found.", systemImage: "checkmark.circle").font(BB.Font.callout)
+                        } else {
+                            ForEach(parity.remainingDifferences, id: \.self) { line in
+                                Label(line, systemImage: "arrow.left.arrow.right").font(BB.Font.callout)
+                            }
+                        }
+                    } else if let parityError {
+                        Text(parityError).foregroundStyle(BB.Palette.textSecondary)
+                    } else {
+                        ProgressView()
+                    }
+                } header: { Text("Telegram vs app").bbLabelStyle() } footer: {
+                    Text("Read from your Hermes config by Hermes' own code. Prompt text never leaves the server.")
+                }
+                .listRowBackground(BB.Palette.surface)
+            }
 
             Section {
                 if log.isEmpty {
@@ -134,7 +166,11 @@ struct DiagnosticsView: View {
         .bbScreen()
         .navigationTitle("Diagnostics")
         .refreshable { log = model.requestLog.log }
-        .task { log = model.requestLog.log }
+        .task {
+            log = model.requestLog.log
+            guard model.hermes.gatewayInfo?.features?.parity == true, let client = model.hermes.client else { return }
+            do { parity = try await client.parityReport() } catch { parityError = error.asAgentError.message }
+        }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Clear") { model.requestLog.clear(); log = [] }
