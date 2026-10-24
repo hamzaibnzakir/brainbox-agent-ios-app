@@ -83,7 +83,7 @@ final class TerminalSessionModel: Identifiable {
     }
 }
 
-struct TerminalView: View {
+struct GatewayTerminalView: View {
     @Environment(AppModel.self) private var model
     @State private var sessions: [TerminalSessionModel] = []
     @State private var selected: UUID?

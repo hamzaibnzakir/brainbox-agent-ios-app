@@ -186,7 +186,7 @@ extension HermesAPIClient {
 
     /// Gateway errors keep their own code and message (a 5xx here means "nothing
     /// or not everything was deleted", which must not read as a plain outage).
-    static func sessionError(_ response: HTTPResponse) -> AgentError {
+    public static func sessionError(_ response: HTTPResponse) -> AgentError {
         guard let code = errorCode(response.body) else {
             if response.status == 404 || response.status == 405 {
                 return .providerUnavailable(detail: "Your server doesn't have the Brainbox gateway's chat management yet, so nothing was changed.")

@@ -4,6 +4,7 @@ import BrainboxCore
 
 @main
 struct BrainboxAgentApp: App {
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var model = AppModel()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -13,7 +14,11 @@ struct BrainboxAgentApp: App {
                 .environment(model)
                 .preferredColorScheme(model.settings.appearance.colorScheme)
                 .tint(BB.Palette.signal)
-                .task { model.start() }
+                .task {
+                    appDelegate.model = model
+                    model.start()
+                }
+                .onOpenURL { url in model.open(url) }
         }
         .onChange(of: scenePhase) { _, phase in
             model.handleScenePhase(phase)
@@ -21,7 +26,7 @@ struct BrainboxAgentApp: App {
     }
 }
 
-/// Local notifications only (no push server involved).
+/// Local notifications (remote pushes come through PushManager).
 enum Notifier {
     static func requestAuthorization() async -> Bool {
         (try? await UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound])) ?? false

@@ -21,6 +21,13 @@ final class HermesWorkspace {
     private(set) var profiles: [BrainboxProfileInfo] = []
     private(set) var toolsets: [HermesToolset] = []
     private(set) var skills: [HermesSkill] = []
+    /// Read-only server overview from the Brainbox proxy (real numbers only).
+    private(set) var overview: BrainboxSystemOverview?
+    private(set) var overviewError: String?
+    private(set) var overviewUpdated: Date?
+
+    /// What the proxy offers this device (nil = unknown / not behind the proxy).
+    var features: BrainboxFeatures? { gatewayInfo?.features }
 
     /// Scheduled jobs (Hermes cron). Lives here, not in a view, so a "run now"
     /// being tracked keeps updating when you leave the screen and return.
@@ -53,6 +60,8 @@ final class HermesWorkspace {
         report = nil
         gatewayInfo = nil
         profiles = []
+        overview = nil
+        overviewError = nil
         guard let provider else { return }
         activityTask = Task { [weak self] in
             for await activity in provider.runActivity() {
@@ -70,6 +79,27 @@ final class HermesWorkspace {
         if gatewayInfo != nil { profiles = (try? await client.gatewayProfiles()) ?? [] }
         if report?.supports(.toolsets) == true { toolsets = (try? await client.toolsets()) ?? [] }
         if report?.supports(.skills) == true { skills = (try? await client.skills()) ?? [] }
+    }
+
+    func refreshOverview() async {
+        guard let client else {
+            overview = nil
+            overviewError = "Not connected to Hermes."
+            return
+        }
+        guard features?.diagnostics == true else {
+            overviewError = gatewayInfo == nil
+                ? "Server details come from the Brainbox proxy, which this connection doesn't go through."
+                : "This Brainbox proxy is too old to report server details. Update it on the server."
+            return
+        }
+        do {
+            overview = try await client.systemOverview()
+            overviewError = nil
+            overviewUpdated = Date()
+        } catch {
+            overviewError = error.asAgentError.message
+        }
     }
 
     // MARK: Teammates

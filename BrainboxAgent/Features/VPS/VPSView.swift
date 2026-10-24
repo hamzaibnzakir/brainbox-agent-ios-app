@@ -51,7 +51,7 @@ struct VPSView: View {
             .bbScreen()
             .navigationTitle("Server")
             .navigationBarTitleDisplayMode(.large)
-            .navigationDestination(isPresented: $openTerminal) { TerminalView() }
+            .navigationDestination(isPresented: $openTerminal) { GatewayTerminalView() }
             .sheet(isPresented: $showFiles) {
                 FilesView()
                     .presentationDetents([.large])

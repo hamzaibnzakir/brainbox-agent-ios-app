@@ -1,27 +1,28 @@
 import SwiftUI
 import BrainboxCore
 
+/// Bottom navigation. Settings is reached from the gear on Home and Server.
 enum AppTab: String, CaseIterable, Identifiable {
-    case team, agent, tasks, vps, settings
+    case home, agent, team, tasks, vps
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .team: return "Team"
+        case .home: return "Home"
         case .agent: return "Chat"
+        case .team: return "Workspace"
         case .tasks: return "Tasks"
         case .vps: return "Server"
-        case .settings: return "Settings"
         }
     }
 
     var symbol: String {
         switch self {
-        case .team: return "person.2.crop.square.stack"
+        case .home: return "house"
         case .agent: return "bubble.left.and.text.bubble.right"
+        case .team: return "square.grid.2x2"
         case .tasks: return "checklist"
         case .vps: return "server.rack"
-        case .settings: return "slider.horizontal.3"
         }
     }
 }
@@ -46,7 +47,15 @@ final class AppModel {
     private(set) var connectionError: AgentError?
     private(set) var hasToken = false
     private(set) var hasHermesToken = false
-    var selectedTab: AppTab = .agent
+    var selectedTab: AppTab = .home
+    /// Settings is a sheet over whatever tab is open.
+    var showSettings = false
+    /// A deep link (notification tap or brainbox:// URL) waiting for its screen.
+    var pendingLink: BrainboxDeepLink?
+    /// The last requests made to Hermes / the proxy (Diagnostics; paths only).
+    @ObservationIgnored let requestLog = RecordingHTTPTransport(URLSessionHTTPTransport())
+    let push: PushManager
+    let transfers = TransferManager()
 
     @ObservationIgnored private var observers: [Task<Void, Never>] = []
     @ObservationIgnored private var gateway: GatewayConnection?
@@ -87,6 +96,7 @@ final class AppModel {
             workspace.activeTeammateID = saved
         }
         self.hermes = workspace
+        self.push = PushManager(defaults: defaults, enabled: !environment.usesEphemeralStorage)
 
         let initialSuite = ProviderSuite.mock(fast: environment.isUITesting)
         self.suite = initialSuite
@@ -167,7 +177,7 @@ final class AppModel {
                 let credentials = self.credentials
                 let client = HermesAPIClient(
                     configuration: HermesConfiguration(baseURL: url),
-                    transport: URLSessionHTTPTransport(),
+                    transport: requestLog,
                     tokenProvider: { (try? credentials.read(.hermesToken)) ?? nil })
                 suite = .hermes(client: client)
             } else {
@@ -203,6 +213,7 @@ final class AppModel {
                 await hermes.refreshAfterConnect()
                 chat.resumeInterruptedRuns()
                 await chat.syncArchiveState()
+                await push.serverChanged(client: hermes.client, features: hermes.gatewayInfo?.features)
             }
         } catch {
             let agentError = error.asAgentError
@@ -282,6 +293,29 @@ final class AppModel {
     func selectTeammate(_ id: UUID) {
         hermes.activeTeammateID = id
         settings.lastTeammateID = id.uuidString
+    }
+
+    // MARK: Deep links
+
+    func open(_ url: URL) {
+        guard let link = BrainboxDeepLink.parse(url) else { return }
+        open(link)
+    }
+
+    func open(_ link: BrainboxDeepLink) {
+        showSettings = false
+        switch link {
+        case .chat(let sessionID):
+            if chat.openConversation(boundTo: sessionID) { selectedTab = .agent } else { selectedTab = .home }
+        case .job, .run:
+            pendingLink = link
+            selectedTab = .tasks
+        case .server, .files:
+            pendingLink = link
+            selectedTab = .vps
+        case .settings:
+            showSettings = true
+        }
     }
 
     /// Wipes local data. Never touches anything on the server.

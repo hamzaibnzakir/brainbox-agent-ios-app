@@ -57,6 +57,10 @@ struct RootView: View {
             guard presentedApproval == nil, let latest = model.chat.pendingApprovals.last else { return }
             presentedApproval = latest.approval
         }
+        .sheet(isPresented: $model.showSettings) {
+            SettingsView()
+                .presentationDragIndicator(.visible)
+        }
         .sheet(item: $presentedApproval) { approval in
             ApprovalSheet(approval: approval, teammate: teammateFor(approval))
                 .presentationDetents([.medium, .large])
@@ -93,11 +97,11 @@ extension RootView {
     @ViewBuilder
     func page(for tab: AppTab) -> some View {
         switch tab {
+        case .home: HomeView()
         case .team: TeamView()
         case .agent: AgentView()
         case .tasks: TasksView()
         case .vps: VPSView()
-        case .settings: SettingsView()
         }
     }
 }

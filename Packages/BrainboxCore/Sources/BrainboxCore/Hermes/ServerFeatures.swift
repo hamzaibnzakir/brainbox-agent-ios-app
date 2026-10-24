@@ -232,7 +232,7 @@ public enum WorkspacePolicy {
         return cleaned
     }
 
-    public enum Problem: Equatable, Sendable {
+    public enum Problem: Error, Equatable, Sendable {
         case badName
         case typeNotAllowed(String)
         case tooLarge(limit: Int64)
@@ -276,10 +276,16 @@ public enum AttachmentPrompt {
 
     public static func compose(_ text: String, attachments: [Item]) -> String {
         guard !attachments.isEmpty else { return text }
-        let lines = attachments.map { "- \($0.serverPath)\($0.isImage ? " (image)" : "")" }.joined(separator: "\n")
+        let plural: String = attachments.count == 1 ? "" : "s"
+        var lines: [String] = []
+        for item in attachments {
+            let suffix: String = item.isImage ? " (image)" : ""
+            lines.append("- " + item.serverPath + suffix)
+        }
         let body = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return (body.isEmpty ? "Please look at the attached file\(attachments.count == 1 ? "" : "s")." : body)
-            + "\n\n[Attached file\(attachments.count == 1 ? "" : "s") on the server]\n" + lines
+        let lead: String = body.isEmpty ? "Please look at the attached file\(plural)." : body
+        let header: String = "\n\n[Attached file\(plural) on the server]\n"
+        return lead + header + lines.joined(separator: "\n")
     }
 }
 
@@ -365,11 +371,21 @@ public enum TerminalServerFrame: Equatable, Sendable {
         switch type {
         case "ready":
             guard let id = json["session"]?.stringValue else { return nil }
-            return .ready(session: id, user: json["user"]?.stringValue ?? "", reattached: json["reattached"]?.boolValue ?? false,
-                          cols: Int(json["cols"]?.doubleValue ?? 80), rows: Int(json["rows"]?.doubleValue ?? 24))
-        case "output": return json["data"]?.stringValue.map(TerminalServerFrame.output)
-        case "exit": return .exit(code: Int(json["code"]?.doubleValue ?? -1))
-        case "error": return .error(code: json["code"]?.stringValue ?? "error", message: json["message"]?.stringValue ?? "Terminal error")
+            let user: String = json["user"]?.stringValue ?? ""
+            let reattached: Bool = json["reattached"]?.boolValue ?? false
+            let cols: Double = json["cols"]?.doubleValue ?? 80
+            let rows: Double = json["rows"]?.doubleValue ?? 24
+            return .ready(session: id, user: user, reattached: reattached, cols: Int(cols), rows: Int(rows))
+        case "output":
+            guard let data = json["data"]?.stringValue else { return nil }
+            return .output(data)
+        case "exit":
+            let code: Double = json["code"]?.doubleValue ?? -1
+            return .exit(code: Int(code))
+        case "error":
+            let code: String = json["code"]?.stringValue ?? "error"
+            let message: String = json["message"]?.stringValue ?? "Terminal error"
+            return .error(code: code, message: message)
         default: return nil
         }
     }
