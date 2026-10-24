@@ -2,54 +2,55 @@ import SwiftUI
 import UIKit
 import BrainboxCore
 
-/// Brainbox visual identity: graphite surfaces, one phosphor-lime signal
-/// colour, monospaced technical labels. Dark-first, fully adaptive.
+/// Brainbox visual identity: black, white and tuned greys; strong type, thin
+/// dividers, restrained surfaces. Colour is reserved for meaning (status) and
+/// is never the only signal — every status also has a label or symbol.
+/// Dark is a true deep black; light is a clean paper white.
 enum BB {
     // MARK: Colour tokens
 
     enum Palette {
-        // Near-black OLED canvas (dark) / warm paper (light).
-        static let background = Color.adaptive(light: 0xF5F4F0, dark: 0x050505)
-        static let backgroundRaised = Color.adaptive(light: 0xFAF9F6, dark: 0x0A0A0B)
-        static let surface = Color.adaptive(light: 0xFFFFFF, dark: 0x141414)
-        static let surfaceHigh = Color.adaptive(light: 0xEDECE7, dark: 0x1C1C1E)
-        static let surfaceSunken = Color.adaptive(light: 0xE7E6E0, dark: 0x0B0B0C)
-        static let stroke = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.07)
-        static let strokeStrong = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.14, darkAlpha: 0.14)
+        static let background = Color.adaptive(light: 0xFAFAFA, dark: 0x000000)
+        static let backgroundRaised = Color.adaptive(light: 0xFFFFFF, dark: 0x0A0A0A)
+        static let surface = Color.adaptive(light: 0xFFFFFF, dark: 0x111111)
+        static let surfaceHigh = Color.adaptive(light: 0xF0F0F0, dark: 0x1A1A1A)
+        static let surfaceSunken = Color.adaptive(light: 0xF4F4F4, dark: 0x070707)
+        static let stroke = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.08, darkAlpha: 0.09)
+        static let strokeStrong = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.16, darkAlpha: 0.18)
 
-        static let textPrimary = Color.adaptive(light: 0x0D0E10, dark: 0xEDEDED)
-        static let textSecondary = Color.adaptive(light: 0x5A5D63, dark: 0x8A8A8A)
-        static let textTertiary = Color.adaptive(light: 0x8F9298, dark: 0x5C5C60)
+        static let textPrimary = Color.adaptive(light: 0x0A0A0A, dark: 0xF5F5F5)
+        static let textSecondary = Color.adaptive(light: 0x5C5C5C, dark: 0x9A9A9A)
+        static let textTertiary = Color.adaptive(light: 0x8E8E8E, dark: 0x5E5E5E)
 
-        /// The aura: one warm sunset accent, reserved for live AI states
-        /// (thinking, streaming, running, connected) and the primary action.
-        static let signal = Color(hex: 0xFF6A3D)
-        static let signalText = Color.adaptive(light: 0xC2410C, dark: 0xFF8A63)
-        static let onSignal = Color(hex: 0x0B0604)
-        static let signalGlow = Color(hex: 0xFF6A3D).opacity(0.38)
+        /// The primary action / live-agent ink: black on light, white on dark.
+        static let signal = Color.adaptive(light: 0x0A0A0A, dark: 0xF5F5F5)
+        static let signalText = Color.adaptive(light: 0x0A0A0A, dark: 0xF5F5F5)
+        static let onSignal = Color.adaptive(light: 0xFFFFFF, dark: 0x000000)
+        static let signalGlow = Color.adaptive(light: 0x000000, dark: 0xFFFFFF, lightAlpha: 0.10, darkAlpha: 0.14)
 
-        /// Aura gradient stops: orange → magenta → violet.
-        static let auraOrange = Color(hex: 0xFF6A3D)
-        static let auraMagenta = Color(hex: 0xFF3D8B)
-        static let auraViolet = Color(hex: 0x8B5CF6)
+        /// "Aura" for live states: a quiet grey sweep, not a rainbow.
+        static let auraOrange = Color.adaptive(light: 0x0A0A0A, dark: 0xFFFFFF)
+        static let auraMagenta = Color.adaptive(light: 0x6E6E6E, dark: 0x8A8A8A)
+        static let auraViolet = Color.adaptive(light: 0xBDBDBD, dark: 0x3A3A3A)
         static var auraGradient: LinearGradient {
             LinearGradient(colors: [auraOrange, auraMagenta, auraViolet], startPoint: .topLeading, endPoint: .bottomTrailing)
         }
         static var auraAngular: AngularGradient {
-            AngularGradient(colors: [auraOrange, auraMagenta, auraViolet, auraOrange], center: .center)
+            AngularGradient(colors: [auraOrange, auraViolet, auraMagenta, auraOrange], center: .center)
         }
 
-        static let ion = Color.adaptive(light: 0x4C5BDB, dark: 0x9AA4FF)
-        static let success = Color.adaptive(light: 0x16A34A, dark: 0x4ADE80)
+        /// The one restrained accent: "the agent is working / needs you" blue.
+        static let ion = Color.adaptive(light: 0x2F5BEA, dark: 0x7EA2FF)
+        static let success = Color.adaptive(light: 0x15803D, dark: 0x4ADE80)
         static let warning = Color.adaptive(light: 0xB45309, dark: 0xFBBF24)
-        static let danger = Color.adaptive(light: 0xD92D3F, dark: 0xFF5D6C)
+        static let danger = Color.adaptive(light: 0xC81E2E, dark: 0xFF6B76)
 
-        static let userBubble = Color.adaptive(light: 0x14151A, dark: 0x1F1F22)
-        static let onUserBubble = Color.adaptive(light: 0xF3F3F0, dark: 0xEDEDED)
+        static let userBubble = Color.adaptive(light: 0x0A0A0A, dark: 0x1F1F1F)
+        static let onUserBubble = Color.adaptive(light: 0xFAFAFA, dark: 0xF5F5F5)
 
-        static let codeBackground = Color.adaptive(light: 0xF0EFEA, dark: 0x0B0B0C)
-        static let terminalBackground = Color(hex: 0x050505)
-        static let terminalText = Color(hex: 0xD9DED3)
+        static let codeBackground = Color.adaptive(light: 0xF4F4F4, dark: 0x0B0B0B)
+        static let terminalBackground = Color(hex: 0x000000)
+        static let terminalText = Color(hex: 0xE6E6E6)
     }
 
     enum Syntax {

@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import PhotosUI
 import BrainboxCore
 
 struct AgentView: View {
@@ -10,6 +11,9 @@ struct AgentView: View {
     @State private var lastAutoScroll = Date.distantPast
     @State private var reviewing: AgentApproval?
     @State private var hop = 0
+    @State private var attachments: [PendingAttachment] = []
+    @State private var commandError: String?
+    @State private var showSessions = false
     @FocusState private var composerFocused: Bool
     @Namespace private var teammatePill
 
@@ -29,16 +33,41 @@ struct AgentView: View {
                         .transition(.bbDropIn)
                 }
                 messages
+                if let commandError {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "info.circle").foregroundStyle(BB.Palette.textSecondary)
+                        Text(commandError).font(BB.Font.caption).foregroundStyle(BB.Palette.textPrimary)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                        Button { self.commandError = nil } label: { Image(systemName: "xmark").font(.caption) }
+                            .buttonStyle(.plain).foregroundStyle(BB.Palette.textTertiary).accessibilityLabel("Dismiss")
+                    }
+                    .padding(12)
+                    .background(RoundedRectangle(cornerRadius: BB.Radius.m, style: .continuous).fill(BB.Palette.surfaceHigh))
+                    .padding(.horizontal, BB.Space.gutter)
+                    .accessibilityIdentifier("composer.notice")
+                    .transition(.bbRise)
+                }
+                if let conversationID = chat.currentID, let queued = chat.queuedInstructions[conversationID], !queued.isEmpty {
+                    QueuedInstructionsView(items: queued, canSendNow: !chat.isStreaming,
+                                           remove: { chat.removeQueued($0, from: conversationID) },
+                                           sendNow: { chat.sendQueuedNow($0, in: conversationID) })
+                }
                 Composer(
                     text: $draft,
-                    isStreaming: chat.isStreaming,
+                    attachments: $attachments,
+                    isStreaming: replyRunningHere,
                     isOnline: model.network.isOnline,
                     focused: $composerFocused,
+                    suggestions: SlashCommandRouter.suggestions(for: draft, catalog: model.hermes.commandCatalog),
+                    canAttach: model.isHermes,
+                    canInject: chat.canSteer,
                     onSend: send,
                     onStop: { chat.stop() },
-                    canSteer: chat.canSteer,
                     onSteer: steer,
-                    placeholder: model.isHermes ? "Message \(currentTeammate.name)…" : "Message the agent…"
+                    onPickPhotos: addPhotos,
+                    onPickFiles: addFiles,
+                    placeholder: model.isHermes ? "Message \(currentTeammate.name), or type /" : "Message the agent…"
                 )
             }
             .animation(Motion.standard, value: bannerError)
@@ -49,6 +78,11 @@ struct AgentView: View {
                     .presentationDetents([.medium, .large])
                     .presentationDragIndicator(.visible)
             }
+            .sheet(isPresented: $showSessions) {
+                NavigationStack { SessionsBrowserView() }
+                    .presentationDragIndicator(.visible)
+            }
+            .animation(Motion.standard, value: commandError)
             .sheet(isPresented: $showHistory) {
                 ConversationListView()
                     .presentationDetents([.medium, .large])
@@ -70,11 +104,8 @@ struct AgentView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            if model.isHermes {
-                MascotView(style: currentTeammate.mascot, mood: currentMood, size: 40, seed: currentTeammate.id, hopTrigger: hop)
-            } else {
-                AgentOrb(mode: OrbMode(status: model.agentStatus, connection: model.connectionState), size: 38)
-            }
+            MascotView(style: model.isHermes ? currentTeammate.mascot : .brainbox, mood: currentMood, size: 40,
+                       seed: model.isHermes ? currentTeammate.id : MascotView.defaultSeed, hopTrigger: hop)
             VStack(alignment: .leading, spacing: 2) {
                 Text(chat.current?.title ?? "New conversation")
                     .font(BB.Font.headline)
@@ -166,19 +197,81 @@ struct AgentView: View {
         .animation(Motion.smooth, value: currentTeammate.id)
     }
 
-    private func steer() {
+    /// A reply is running in the chat on screen (another chat's reply doesn't
+    /// turn this composer into a stop button).
+    private var replyRunningHere: Bool { chat.isStreaming && chat.activeConversationID == chat.currentID }
+
+    private func steer(_ mode: ChatStore.SteerMode) {
         let text = draft
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         draft = ""
         Task {
             do {
-                try await chat.steer(text)
-                model.toasts.show("Steering sent")
+                try await chat.steer(text, mode: mode)
+                switch mode {
+                case .inject: model.toasts.show("Steering sent")
+                case .queue: model.toasts.show("Queued for after this reply")
+                case .interrupt: model.toasts.show("Stopping, then sending")
+                }
             } catch {
                 draft = text
-                model.toasts.show(error.asAgentError.title)
+                commandError = error.asAgentError.message
             }
         }
+    }
+
+    // MARK: Attachments
+
+    private func addPhotos(_ items: [PhotosPickerItem]) {
+        for item in items {
+            let pending = PendingAttachment(name: "Photo.jpg", kind: .image, byteCount: 0)
+            attachments.append(pending)
+            let id = pending.id
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self), let prepared = ImagePrep.prepare(data) else {
+                    update(id) { $0.state = .failed("Couldn't read this photo") }
+                    return
+                }
+                update(id) {
+                    $0.byteCount = Int64(prepared.jpeg.count)
+                    $0.thumbnail = prepared.thumbnail
+                    $0.dataURL = prepared.dataURL
+                    $0.state = .ready
+                }
+            }
+        }
+    }
+
+    private func addFiles(_ urls: [URL]) {
+        guard let client = model.hermes.client, model.hermes.features?.files == true else {
+            commandError = "Sending files needs the Brainbox proxy's file transfer (Server → Files)."
+            return
+        }
+        for url in urls {
+            let pending = PendingAttachment(name: url.lastPathComponent, kind: .file, byteCount: 0, state: .uploading(0))
+            attachments.append(pending)
+            let id = pending.id
+            Task {
+                let scoped = url.startAccessingSecurityScopedResource()
+                defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                do {
+                    let upload = try await model.transfers.upload(fileAt: url, name: url.lastPathComponent, client: client)
+                    update(id) {
+                        $0.name = upload.file.name
+                        $0.byteCount = upload.file.size ?? 0
+                        $0.serverPath = upload.absolutePath ?? upload.file.path
+                        $0.state = .ready
+                    }
+                } catch {
+                    update(id) { $0.state = .failed(error.asAgentError.message) }
+                }
+            }
+        }
+    }
+
+    private func update(_ id: UUID, _ body: (inout PendingAttachment) -> Void) {
+        guard let index = attachments.firstIndex(where: { $0.id == id }) else { return }
+        body(&attachments[index])
     }
 
     // MARK: Messages
@@ -198,7 +291,9 @@ struct AgentView: View {
                                 isLatest: message.id == conversation.messages.last?.id,
                                 onRetry: { chat.retry(message.id) },
                                 onCopy: copy,
-                                onReviewApproval: { reviewing = $0 }
+                                onReviewApproval: { reviewing = $0 },
+                                onStopAgain: message.id == chat.activeMessageID ? { chat.stop() } : nil,
+                                onStopFollowing: message.id == chat.activeMessageID ? { chat.stopFollowing() } : nil
                             )
                             .id(message.id)
                             .transition(message.role == .user
@@ -267,10 +362,49 @@ struct AgentView: View {
     }
 
     private func send() {
-        let text = draft
-        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ready = attachments.filter { $0.state == .ready }
+        guard !text.isEmpty || !ready.isEmpty else { return }
+        let files = ready.filter { $0.kind == .file }.compactMap { item in
+            item.serverPath.map { AttachmentPrompt.Item(name: item.name, serverPath: $0, isImage: false) }
+        }
+        var note: String?
+        if !files.isEmpty {
+            let full = AttachmentPrompt.compose(text, attachments: files)
+            note = text.isEmpty ? full : String(full.dropFirst(text.count))
+        }
+        let images = ready.compactMap(\.dataURL)
         draft = ""
-        withAnimation(Motion.standard) { chat.send(text) }
+        let sentAttachments = attachments
+        attachments = []
+        commandError = nil
+        Task {
+            let outcome = await chat.submit(text, attachments: ready.map(\.asMessageAttachment), imageDataURLs: images, attachmentNote: note)
+            switch outcome {
+            case .sent:
+                break
+            case .handled(let message):
+                if let message { model.toasts.show(message) }
+            case .refused(let reason):
+                draft = text
+                attachments = sentAttachments
+                commandError = reason
+            case .navigate(let destination):
+                switch destination {
+                case .workspace: model.selectedTab = .team
+                case .sessions: showSessions = true
+                case .files: model.open(.files)
+                case .terminal: model.open(.server)
+                }
+            case .parallel(let tasks):
+                let mate = currentTeammate
+                model.agents.start(title: tasks.joined(separator: " · "),
+                                   prompts: tasks.map { (title: String($0.prefix(40)), prompt: $0, instructions: mate.runInstructions, model: mate.model) },
+                                   synthesize: true)
+                model.selectedTab = .team
+                model.toasts.show("Started \(tasks.count) agents")
+            }
+        }
     }
 
     private func copy(_ text: String) {
@@ -296,7 +430,7 @@ struct EmptyChat: View {
         ScrollView {
             VStack(spacing: BB.Space.xl) {
                 Spacer(minLength: 40)
-                AgentOrb(mode: OrbMode(status: model.agentStatus, connection: model.connectionState), size: 110)
+                MascotView(style: .brainbox, mood: model.connectionState.isConnected ? .idle : .offline, size: 120)
                     .bbEntrance(index: 0, distance: 24)
                 VStack(spacing: 6) {
                     Text("What should we work on?")
@@ -340,78 +474,3 @@ struct EmptyChat: View {
     }
 }
 
-// MARK: - Composer
-
-struct Composer: View {
-    @Binding var text: String
-    var isStreaming: Bool
-    var isOnline: Bool
-    var focused: FocusState<Bool>.Binding
-    var onSend: () -> Void
-    var onStop: () -> Void
-    var canSteer: Bool = false
-    var onSteer: () -> Void = {}
-    var placeholder: String = "Message the agent…"
-
-    private var canSend: Bool { !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && isOnline }
-    private var steering: Bool { isStreaming && canSteer }
-
-    var body: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            TextField(isOnline ? (steering ? "Steer while it works…" : placeholder) : "Offline — reconnecting…", text: $text, axis: .vertical)
-                .font(BB.Font.body)
-                .foregroundStyle(BB.Palette.textPrimary)
-                .lineLimit(1...6)
-                .focused(focused)
-                .submitLabel(.send)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .accessibilityIdentifier("composer.field")
-
-            if steering && canSend {
-                Button(action: onSteer) {
-                    Image(systemName: "arrow.turn.down.right")
-                        .font(.system(size: 14, weight: .bold))
-                        .foregroundStyle(BB.Palette.onSignal)
-                        .frame(width: 36, height: 36)
-                        .background(Circle().fill(BB.Palette.auraGradient))
-                }
-                .buttonStyle(.pressable)
-                .padding(.vertical, 5)
-                .transition(.scale(scale: 0.6).combined(with: .opacity))
-                .accessibilityLabel("Send steering note")
-                .accessibilityIdentifier("composer.steer")
-            }
-
-            Button {
-                if isStreaming { onStop() } else if canSend { onSend() }
-            } label: {
-                Image(systemName: isStreaming ? "stop.fill" : "arrow.up")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(isStreaming || canSend ? BB.Palette.onSignal : BB.Palette.textTertiary)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(isStreaming || canSend ? BB.Palette.signal : BB.Palette.surfaceHigh))
-                    .contentTransition(.symbolEffect(.replace.downUp))
-                    .shadow(color: isStreaming || canSend ? BB.Palette.signalGlow : .clear, radius: 8)
-            }
-            .buttonStyle(.pressable)
-            .disabled(!isStreaming && !canSend)
-            .padding(5)
-            .sensoryFeedback(.impact(weight: .medium), trigger: isStreaming)
-            .accessibilityLabel(isStreaming ? "Stop generating" : "Send")
-            .accessibilityIdentifier("composer.send")
-        }
-        .background(RoundedRectangle(cornerRadius: 24, style: .continuous).fill(BB.Palette.surface))
-        .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .strokeBorder(focused.wrappedValue ? BB.Palette.signal.opacity(0.45) : BB.Palette.strokeStrong, lineWidth: 1)
-        )
-        .animation(Motion.snappy, value: canSend)
-        .animation(Motion.snappy, value: isStreaming)
-        .bbAuraBorder(isStreaming, cornerRadius: 24)
-        .animation(Motion.standard, value: focused.wrappedValue)
-        .padding(.horizontal, BB.Space.gutter)
-        .padding(.top, 6)
-        .padding(.bottom, 8)
-    }
-}

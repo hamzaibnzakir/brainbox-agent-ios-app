@@ -58,6 +58,7 @@ final class AppModel {
     @ObservationIgnored let requestLog = RecordingHTTPTransport(URLSessionHTTPTransport())
     let notifications: NotificationManager
     let transfers = TransferManager()
+    let agents: ParallelAgentsStore
 
     @ObservationIgnored private var observers: [Task<Void, Never>] = []
     @ObservationIgnored private var gateway: GatewayConnection?
@@ -99,6 +100,9 @@ final class AppModel {
         }
         self.hermes = workspace
         self.notifications = NotificationManager(defaults: defaults, enabled: !environment.usesEphemeralStorage)
+        self.agents = ParallelAgentsStore(
+            cacheURL: environment.usesEphemeralStorage ? nil : JSONFileCache<[ParallelTask]>.defaultURL(named: "parallel-tasks"),
+            defaults: defaults, client: { [weak workspace] in workspace?.client })
 
         let initialSuite = ProviderSuite.mock(fast: environment.isUITesting)
         self.suite = initialSuite
@@ -108,6 +112,7 @@ final class AppModel {
         chat.provider = { [unowned self] in self.suite.agent }
         chat.isOnline = { [unowned self] in self.network.isOnline }
         chat.onReplyFinished = { [weak self] message in self?.replyFinished(message) }
+        agents.onTaskChange = { [weak self] task in self?.notifications.parallelTaskChanged(task) }
         hermes.onRunStateChange = { [weak self] run in
             self?.notifications.runChanged(runID: run.id, title: run.title, state: run.state)
         }
@@ -229,6 +234,7 @@ final class AppModel {
             if isHermes {
                 await hermes.refreshAfterConnect()
                 chat.resumeInterruptedRuns()
+                agents.resume()
                 await chat.syncArchiveState()
                 await notifications.refreshPermission()
                 startJobWatch()

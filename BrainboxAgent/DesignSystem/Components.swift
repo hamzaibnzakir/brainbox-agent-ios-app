@@ -438,9 +438,6 @@ struct ScreenBackground: View {
     var body: some View {
         ZStack {
             BB.Palette.background
-            // Subtle top glow: the ambient "power on" light of the brand.
-            RadialGradient(colors: [BB.Palette.signal.opacity(0.07), .clear], center: .top, startRadius: 0, endRadius: 420)
-                .offset(y: -120)
         }
         .ignoresSafeArea()
     }

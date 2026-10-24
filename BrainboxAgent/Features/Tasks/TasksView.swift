@@ -219,6 +219,8 @@ struct RunRow: View {
         case .waitingForApproval: return .waitingApproval
         case .running, .queued, .stopping: return .working
         case .failed, .interrupted: return .failed
+        case .cancelled: return .interrupted
+        case .completed: return .happy
         default: return .idle
         }
     }

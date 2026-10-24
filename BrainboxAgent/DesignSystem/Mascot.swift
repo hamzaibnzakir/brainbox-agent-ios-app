@@ -1,12 +1,13 @@
 import SwiftUI
 import BrainboxCore
 
-/// Original geometric teammate mascots. Every teammate has its own shape and
-/// hue; idle micro-animations (blink, glance, tilt, squish) run on
-/// randomised, desynchronised schedules seeded by the teammate id, so a
-/// group of mascots never moves in lockstep. Moods come from real state
-/// (`MascotMood.derive`), never from timers.
+/// The Brainbox bot, used for the assistant and every preset (presets vary the
+/// antenna and head shape). Idle micro-motion runs on schedules seeded by the
+/// preset id so a group never moves in lockstep. Moods come only from real
+/// state (`MascotMood.derive`), never from timers, and nothing moves under
+/// Reduce Motion.
 struct MascotView: View {
+    static let defaultSeed = UUID(uuidString: "00000000-0000-4000-8000-000000000000")!
     var style: MascotStyle
     var mood: MascotMood = .idle
     var size: CGFloat = 56
@@ -17,51 +18,52 @@ struct MascotView: View {
 
     @Environment(\.accessibilityReduceMotion) private var system
     @Environment(\.bbForceReduceMotion) private var forced
+    @Environment(\.colorScheme) private var scheme
     @State private var hop: CGFloat = 0
+    @State private var moodSince = Date()
+
+    /// Busy states animate at 30 fps; idle only needs 15 (blinks, drift).
+    private var frameInterval: Double { mood == .working || mood == .thinking ? 1.0 / 30.0 : 1.0 / 15.0 }
 
     var body: some View {
         let reduce = system || forced
         let animate = Motion.ambientEnabled && !reduce && mood != .offline
-        TimelineView(.animation(minimumInterval: 1.0 / 60.0, paused: !animate)) { timeline in
+        TimelineView(.animation(minimumInterval: frameInterval, paused: !animate)) { timeline in
             let t = animate ? timeline.date.timeIntervalSinceReferenceDate : 0
+            let sinceMood = animate ? timeline.date.timeIntervalSince(moodSince) : 10
             Canvas { context, canvasSize in
-                MascotRenderer(style: style, mood: mood, seed: seed, time: t, animate: animate)
+                BotRenderer(style: style, mood: mood, seed: seed, time: t, sinceMood: sinceMood, animate: animate, dark: scheme == .dark)
                     .draw(in: &context, size: canvasSize)
             }
         }
         .frame(width: size, height: size)
-        .offset(y: -hop * size * 0.18)
+        .offset(y: -hop * size * 0.16)
+        .onChange(of: mood) { _, _ in moodSince = Date() }
         .onChange(of: hopTrigger) { _, _ in
             guard !reduce else { return }
             withAnimation(Motion.bouncy) { hop = 1 }
             withAnimation(Motion.bouncy.delay(0.16)) { hop = 0 }
         }
-        .animation(Motion.smooth, value: mood)
         .accessibilityElement()
-        .accessibilityLabel("\(style.shape.title) mascot, \(mood.label)")
+        .accessibilityLabel("Brainbox bot, \(mood.label)")
     }
 }
 
-/// Pure drawing so the Motion Lab and widgets share it.
-struct MascotRenderer {
+/// The Brainbox bot: an original rounded head with a dark visor and two
+/// expressive eyes. Monochrome; a single small "status node" on the antenna
+/// takes a status colour, and every state also changes the eyes' shape, so
+/// colour is never the only cue. Pure drawing (shared with the Motion Lab).
+struct BotRenderer {
     var style: MascotStyle
     var mood: MascotMood
     var seed: UUID
     var time: TimeInterval
+    /// Seconds since the mood last changed (one-shot motions settle after it).
+    var sinceMood: TimeInterval
     var animate: Bool
+    var dark: Bool
 
-    private var base: Color {
-        switch mood {
-        case .failed, .offline: return Color(hue: style.hue, saturation: 0.15, brightness: 0.55)
-        default: return Color(hue: style.hue, saturation: 0.72, brightness: 0.98)
-        }
-    }
-
-    private var shade: Color { Color(hue: style.hue, saturation: 0.8, brightness: mood == .failed ? 0.35 : 0.62) }
-
-    /// Deterministic pseudo-random in 0…1 for (seed, slot).
     private func rand(_ slot: Int) -> Double {
-        // FNV-1a over the seed bytes (Hasher is randomly seeded per launch).
         let bytes = withUnsafeBytes(of: seed.uuid) { Array($0) }
         var x: UInt64 = 1469598103934665603
         for b in bytes { x = (x ^ UInt64(b)) &* 1099511628211 }
@@ -69,166 +71,160 @@ struct MascotRenderer {
         return Double(x % 10_000) / 10_000
     }
 
+    private var headColor: Color { dark ? Color(white: 0.93) : Color(white: 0.09) }
+    private var visorColor: Color { dark ? Color(white: 0.04) : Color(white: 0.0) }
+    private var eyeColor: Color { mood == .offline ? Color(white: 0.35) : Color(white: 0.97) }
+    private var nodeColor: Color {
+        switch mood {
+        case .waitingApproval: return BB.Palette.ion
+        case .failed: return BB.Palette.danger
+        case .happy: return BB.Palette.success
+        case .working, .thinking: return dark ? .white : Color(white: 0.1)
+        case .offline, .interrupted, .idle: return Color(white: 0.5)
+        }
+    }
+
     func draw(in context: inout GraphicsContext, size: CGSize) {
         let w = size.width, h = size.height
         let unit = min(w, h)
-        // Idle schedule ---------------------------------------------------
-        let blinkPeriod = 3.2 + rand(1) * 2.6
+        let settle = min(sinceMood / 0.6, 1)       // 0 → 1 over the first 0.6 s of a mood
+
+        // Motion -----------------------------------------------------------------
+        let blinkPeriod = 3.8 + rand(1) * 2.4
         let blinkPhase = (time + rand(2) * blinkPeriod).truncatingRemainder(dividingBy: blinkPeriod)
-        let blink: Double = animate && blinkPhase < 0.14 ? sin(blinkPhase / 0.14 * .pi) : 0
-        let glancePeriod = 5.5 + rand(3) * 4
-        let glancePhase = (time + rand(4) * glancePeriod).truncatingRemainder(dividingBy: glancePeriod) / glancePeriod
-        var glance: Double = 0
-        if animate && glancePhase > 0.55 && glancePhase < 0.85 {
-            glance = sin((glancePhase - 0.55) / 0.3 * .pi) * (rand(5) > 0.5 ? 1 : -1)
-        }
-        let breath = animate ? sin(time * (1.6 + rand(6) * 0.6) + rand(7) * 6) : 0
-        var squish = 1 + 0.025 * breath
-        var tilt = animate ? sin(time * 0.7 + rand(8) * 6) * 3 : 0
-        var bob: Double = 0
-        var lookUp: Double = 0
+        var blink: Double = animate && blinkPhase < 0.16 ? sin(blinkPhase / 0.16 * .pi) : 0
+        let drift = animate ? sin(time * 0.45 + rand(3) * 6) : 0
+        var lookX: Double = drift * 0.25
+        var lookY: Double = 0
+        var bob: Double = animate ? sin(time * 1.2 + rand(4) * 6) * 0.012 : 0
+        var tilt: Double = 0
 
         switch mood {
         case .thinking:
-            bob = animate ? sin(time * 2.2) * 0.03 : 0
-            lookUp = 0.8
+            lookX = 0.55 + (animate ? sin(time * 0.8) * 0.15 : 0)
+            lookY = -0.5
+            blink *= 0.5
         case .working:
-            squish = 1 + 0.04 * (animate ? sin(time * 6) : 0)
-            tilt = animate ? sin(time * 3) * 2 : 0
+            // Purposeful scan: eyes sweep together across the visor.
+            lookX = animate ? sin(time * 2.6) * 0.75 : 0
+            bob = animate ? sin(time * 5.2) * 0.008 : 0
+            blink = 0
         case .waitingApproval:
-            bob = animate ? abs(sin(time * 3.2)) * -0.05 : 0
-            glance = 0
+            lookX = 0; lookY = 0; blink = 0
+            bob = animate ? sin(time * 1.4) * 0.018 : 0
         case .happy:
-            squish = 1 + 0.08 * (animate ? max(0, sin(time * 8)) : 0)
+            // One small hop, then still.
+            bob = sinceMood < 0.5 ? -sin(sinceMood / 0.5 * .pi) * 0.06 : 0
+            lookX = 0
+        case .interrupted:
+            // A short nod that settles.
+            bob = sinceMood < 0.6 ? sin(sinceMood / 0.6 * .pi) * 0.03 : 0.012
+            lookY = 0.35 * settle
+            lookX = 0
         case .failed:
-            tilt = -8
-            bob = 0.04
+            tilt = -6 * settle
+            lookX = 0
         case .offline:
-            tilt = 0
+            lookX = 0; bob = 0; blink = 0
         case .idle:
             break
         }
 
-        // Glow for live AI states.
-        if mood == .thinking || mood == .working || mood == .waitingApproval {
-            let glowColor: Color = mood == .waitingApproval ? BB.Palette.warning : BB.Palette.signal
-            let pulse = animate ? (0.5 + 0.5 * sin(time * 2.4)) : 0.6
-            let glowRect = CGRect(x: w * 0.06, y: h * 0.06, width: w * 0.88, height: h * 0.88)
-            context.fill(Ellipse().path(in: glowRect), with: .radialGradient(
-                Gradient(colors: [glowColor.opacity(0.32 * pulse), .clear]),
-                center: CGPoint(x: w / 2, y: h / 2), startRadius: unit * 0.2, endRadius: unit * 0.5))
+        var g = context
+        g.translateBy(x: w / 2, y: h / 2 + CGFloat(bob) * unit)
+        g.rotate(by: .degrees(tilt))
+
+        let headW = unit * 0.78, headH = unit * 0.64
+        let headRect = CGRect(x: -headW / 2, y: -headH / 2 + unit * 0.06, width: headW, height: headH)
+        let corner = headH * (style.shape == .orb ? 0.5 : style.shape == .squircle ? 0.38 : 0.3)
+
+        // Antenna + status node (shape varies per preset).
+        let stemTop = CGPoint(x: 0, y: headRect.minY - unit * 0.13)
+        var stem = Path()
+        stem.move(to: CGPoint(x: 0, y: headRect.minY))
+        stem.addLine(to: stemTop)
+        g.stroke(stem, with: .color(headColor), style: StrokeStyle(lineWidth: max(1.5, unit * 0.035), lineCap: .round))
+        let nodeR = unit * 0.055
+        var nodeScale: CGFloat = 1
+        if animate && (mood == .working || mood == .thinking) {
+            nodeScale = 1 + 0.18 * CGFloat(0.5 + 0.5 * sin(time * (mood == .working ? 6 : 2.5)))
+        }
+        let nodeRect = CGRect(x: -nodeR * nodeScale, y: stemTop.y - nodeR * nodeScale, width: nodeR * 2 * nodeScale, height: nodeR * 2 * nodeScale)
+        switch style.shape {
+        case .triangle, .diamond:
+            var diamond = Path()
+            diamond.move(to: CGPoint(x: nodeRect.midX, y: nodeRect.minY))
+            diamond.addLine(to: CGPoint(x: nodeRect.maxX, y: nodeRect.midY))
+            diamond.addLine(to: CGPoint(x: nodeRect.midX, y: nodeRect.maxY))
+            diamond.addLine(to: CGPoint(x: nodeRect.minX, y: nodeRect.midY))
+            diamond.closeSubpath()
+            g.fill(diamond, with: .color(nodeColor))
+        default:
+            g.fill(Path(ellipseIn: nodeRect), with: .color(nodeColor))
+        }
+        // Calm attention ripple while waiting for approval.
+        if mood == .waitingApproval && animate {
+            let phase = (time * 0.6).truncatingRemainder(dividingBy: 1)
+            let rr = nodeR * (1.4 + 2.2 * phase)
+            g.stroke(Path(ellipseIn: CGRect(x: -rr, y: stemTop.y - rr, width: rr * 2, height: rr * 2)),
+                     with: .color(BB.Palette.ion.opacity(0.6 * (1 - phase))), lineWidth: max(1, unit * 0.012))
         }
 
-        // Body ---------------------------------------------------------------
-        var body = context
-        body.translateBy(x: w / 2, y: h / 2 + CGFloat(bob) * unit)
-        body.rotate(by: .degrees(tilt))
-        body.scaleBy(x: CGFloat(1 / squish), y: CGFloat(squish))
-        let r = unit * 0.36
-        let path = shapePath(radius: r)
-        body.fill(path, with: .linearGradient(Gradient(colors: [base, shade]),
-                                              startPoint: CGPoint(x: -r, y: -r), endPoint: CGPoint(x: r, y: r)))
-        body.stroke(path, with: .color(.white.opacity(0.18)), lineWidth: max(1, unit * 0.012))
-
-        // Working: rotating aura ring.
-        if mood == .working {
-            let angle = animate ? time * 2.4 : 0
-            var ring = body
-            ring.rotate(by: .radians(angle))
-            let ringRect = CGRect(x: -r * 1.28, y: -r * 1.28, width: r * 2.56, height: r * 2.56)
-            ring.stroke(Path(ellipseIn: ringRect).trimmedPath(from: 0, to: 0.62),
-                        with: .linearGradient(Gradient(colors: [BB.Palette.auraOrange, BB.Palette.auraMagenta, .clear]),
-                                              startPoint: CGPoint(x: -r, y: 0), endPoint: CGPoint(x: r, y: 0)),
-                        style: StrokeStyle(lineWidth: max(1.5, unit * 0.035), lineCap: .round))
-        }
-
-        // Face -------------------------------------------------------------------
-        let eyeY = -r * 0.12 - CGFloat(lookUp) * r * 0.16
-        let eyeDX = r * 0.36
-        let pupilShift = CGFloat(glance) * r * 0.12
-        let eyeW = r * 0.24
-        var eyeH = r * 0.3 * CGFloat(1 - blink * 0.92)
-        if mood == .happy { eyeH = r * 0.08 }
-        if mood == .working { eyeH = r * 0.18 }
+        // Head and side "ears".
+        let earW = unit * 0.06, earH = headH * 0.34
         for side in [-1.0, 1.0] {
-            let cx = CGFloat(side) * eyeDX + pupilShift
-            let eyeRect = CGRect(x: cx - eyeW / 2, y: eyeY - eyeH / 2, width: eyeW, height: max(eyeH, 1))
-            if mood == .happy {
-                // ^ ^ happy eyes
+            let ear = CGRect(x: CGFloat(side) * (headW / 2 + earW * 0.35) - earW / 2, y: headRect.midY - earH / 2, width: earW, height: earH)
+            g.fill(Path(roundedRect: ear, cornerRadius: earW / 2), with: .color(headColor.opacity(0.85)))
+        }
+        g.fill(Path(roundedRect: headRect, cornerRadius: corner, style: .continuous), with: .color(headColor))
+
+        // Visor.
+        let visor = headRect.insetBy(dx: headW * 0.1, dy: headH * 0.17)
+        g.fill(Path(roundedRect: visor, cornerRadius: visor.height * 0.42, style: .continuous), with: .color(visorColor))
+
+        // Eyes ---------------------------------------------------------------------
+        let eyeGap = visor.width * 0.22
+        let eyeW = visor.width * 0.13
+        var eyeH = visor.height * 0.52 * CGFloat(1 - blink * 0.9)
+        if mood == .thinking { eyeH *= 0.75 }
+        if mood == .waitingApproval { eyeH = visor.height * 0.58 }
+        if mood == .offline { eyeH = eyeW * 0.5 }
+        let cx0 = visor.midX + CGFloat(lookX) * visor.width * 0.16
+        let cy = visor.midY + CGFloat(lookY) * visor.height * 0.18
+        let stroke = StrokeStyle(lineWidth: max(1.5, unit * 0.035), lineCap: .round, lineJoin: .round)
+        for side in [-1.0, 1.0] {
+            let cx = cx0 + CGFloat(side) * eyeGap
+            switch mood {
+            case .happy:
                 var arc = Path()
-                arc.move(to: CGPoint(x: cx - eyeW / 2, y: eyeY + eyeW * 0.15))
-                arc.addQuadCurve(to: CGPoint(x: cx + eyeW / 2, y: eyeY + eyeW * 0.15), control: CGPoint(x: cx, y: eyeY - eyeW * 0.55))
-                body.stroke(arc, with: .color(Color(white: 0.06)), style: StrokeStyle(lineWidth: max(1.5, unit * 0.04), lineCap: .round))
-            } else if mood == .failed {
-                var x = Path()
-                x.move(to: CGPoint(x: cx - eyeW * 0.4, y: eyeY - eyeW * 0.4)); x.addLine(to: CGPoint(x: cx + eyeW * 0.4, y: eyeY + eyeW * 0.4))
-                x.move(to: CGPoint(x: cx + eyeW * 0.4, y: eyeY - eyeW * 0.4)); x.addLine(to: CGPoint(x: cx - eyeW * 0.4, y: eyeY + eyeW * 0.4))
-                body.stroke(x, with: .color(Color(white: 0.08)), style: StrokeStyle(lineWidth: max(1.5, unit * 0.035), lineCap: .round))
-            } else {
-                body.fill(Path(roundedRect: eyeRect, cornerRadius: min(eyeW, eyeH) / 2), with: .color(Color(white: 0.06)))
-                // Catch-light.
-                if eyeH > r * 0.12 {
-                    let light = CGRect(x: eyeRect.midX + eyeW * 0.08, y: eyeRect.minY + eyeH * 0.18, width: eyeW * 0.28, height: eyeW * 0.28)
-                    body.fill(Path(ellipseIn: light), with: .color(.white.opacity(0.85)))
-                }
+                arc.move(to: CGPoint(x: cx - eyeW * 0.7, y: cy + eyeW * 0.25))
+                arc.addQuadCurve(to: CGPoint(x: cx + eyeW * 0.7, y: cy + eyeW * 0.25), control: CGPoint(x: cx, y: cy - eyeW * 0.9))
+                g.stroke(arc, with: .color(eyeColor), style: stroke)
+            case .failed:
+                var chevron = Path()   // > <
+                let d = CGFloat(-side) * eyeW * 0.55
+                chevron.move(to: CGPoint(x: cx - d, y: cy - eyeW * 0.6))
+                chevron.addLine(to: CGPoint(x: cx + d, y: cy))
+                chevron.addLine(to: CGPoint(x: cx - d, y: cy + eyeW * 0.6))
+                g.stroke(chevron, with: .color(eyeColor), style: stroke)
+            case .interrupted:
+                var lid = Path()
+                lid.move(to: CGPoint(x: cx - eyeW * 0.7, y: cy))
+                lid.addLine(to: CGPoint(x: cx + eyeW * 0.7, y: cy))
+                g.stroke(lid, with: .color(eyeColor.opacity(0.9)), style: stroke)
+            default:
+                let rect = CGRect(x: cx - eyeW / 2, y: cy - eyeH / 2, width: eyeW, height: max(eyeH, 1.5))
+                g.fill(Path(roundedRect: rect, cornerRadius: min(eyeW, eyeH) / 2), with: .color(eyeColor))
             }
         }
-        // Mouth: tiny line, curved by mood.
-        var mouth = Path()
-        let my = r * 0.32
-        let curve: CGFloat
-        switch mood {
-        case .happy: curve = r * 0.16
-        case .failed, .offline: curve = -r * 0.1
-        case .waitingApproval: curve = 0
-        default: curve = r * 0.06
+        // Working: a thin scan line under the eyes.
+        if mood == .working && animate {
+            let p = 0.5 + 0.5 * sin(time * 2.6)
+            let lineW = visor.width * 0.22
+            let x = visor.minX + visor.width * 0.15 + CGFloat(p) * (visor.width * 0.7 - lineW)
+            let line = CGRect(x: x, y: visor.maxY - visor.height * 0.2, width: lineW, height: max(1, unit * 0.014))
+            g.fill(Path(roundedRect: line, cornerRadius: line.height / 2), with: .color(eyeColor.opacity(0.55)))
         }
-        mouth.move(to: CGPoint(x: -r * 0.16, y: my))
-        mouth.addQuadCurve(to: CGPoint(x: r * 0.16, y: my), control: CGPoint(x: 0, y: my + curve))
-        body.stroke(mouth, with: .color(Color(white: 0.08).opacity(0.85)), style: StrokeStyle(lineWidth: max(1.2, unit * 0.028), lineCap: .round))
-
-        // Waiting for approval: a small amber "!" badge.
-        if mood == .waitingApproval {
-            let badge = CGRect(x: r * 0.62, y: -r * 1.05, width: r * 0.5, height: r * 0.5)
-            body.fill(Path(ellipseIn: badge), with: .color(BB.Palette.warning))
-            body.draw(Text("!").font(.system(size: r * 0.36, weight: .black)).foregroundColor(.black), at: CGPoint(x: badge.midX, y: badge.midY))
-        }
-    }
-
-    private func shapePath(radius r: CGFloat) -> Path {
-        switch style.shape {
-        case .orb:
-            return Path(ellipseIn: CGRect(x: -r, y: -r, width: r * 2, height: r * 2))
-        case .squircle:
-            return Path(roundedRect: CGRect(x: -r, y: -r, width: r * 2, height: r * 2), cornerRadius: r * 0.55, style: .continuous)
-        case .pill:
-            return Path(roundedRect: CGRect(x: -r * 1.12, y: -r * 0.82, width: r * 2.24, height: r * 1.64), cornerRadius: r * 0.82, style: .continuous)
-        case .triangle:
-            return polygon(sides: 3, radius: r * 1.18, rotation: -.pi / 2, rounding: r * 0.18).offsetBy(dx: 0, dy: r * 0.16)
-        case .hexagon:
-            return polygon(sides: 6, radius: r * 1.06, rotation: 0, rounding: r * 0.14)
-        case .diamond:
-            return polygon(sides: 4, radius: r * 1.18, rotation: -.pi / 2, rounding: r * 0.16)
-        }
-    }
-
-    private func polygon(sides: Int, radius: CGFloat, rotation: Double, rounding: CGFloat) -> Path {
-        let points = (0..<sides).map { i -> CGPoint in
-            let a = rotation + Double(i) / Double(sides) * 2 * .pi
-            return CGPoint(x: radius * CGFloat(cos(a)), y: radius * CGFloat(sin(a)))
-        }
-        var path = Path()
-        for i in 0..<sides {
-            let p0 = points[(i + sides - 1) % sides], p1 = points[i], p2 = points[(i + 1) % sides]
-            let v1 = CGPoint(x: p0.x - p1.x, y: p0.y - p1.y), v2 = CGPoint(x: p2.x - p1.x, y: p2.y - p1.y)
-            let l1 = max(hypot(v1.x, v1.y), 0.001), l2 = max(hypot(v2.x, v2.y), 0.001)
-            let a = CGPoint(x: p1.x + v1.x / l1 * rounding, y: p1.y + v1.y / l1 * rounding)
-            let b = CGPoint(x: p1.x + v2.x / l2 * rounding, y: p1.y + v2.y / l2 * rounding)
-            if i == 0 { path.move(to: a) } else { path.addLine(to: a) }
-            path.addQuadCurve(to: b, control: p1)
-        }
-        path.closeSubpath()
-        return path
     }
 }
 
@@ -288,5 +284,11 @@ struct MascotConstellation: View {
 }
 
 extension MascotStyle {
-    var color: Color { Color(hue: hue, saturation: 0.72, brightness: 0.98) }
+    /// Monochrome identity: presets are told apart by shape and name, not hue.
+    var color: Color { BB.Palette.textPrimary }
+}
+
+extension MascotStyle {
+    /// The main Brainbox assistant.
+    static let brainbox = MascotStyle(shape: .squircle, hue: 0)
 }

@@ -22,6 +22,8 @@ public struct MascotStyle: Codable, Hashable, Sendable {
 /// What a mascot is expressing. Always derived from real state.
 public enum MascotMood: String, Codable, CaseIterable, Hashable, Sendable {
     case idle, thinking, working, waitingApproval, happy, failed, offline
+    /// The user stopped the work (confirmed by the backend).
+    case interrupted
 
     public var label: String {
         switch self {
@@ -32,6 +34,7 @@ public enum MascotMood: String, Codable, CaseIterable, Hashable, Sendable {
         case .happy: return "Done"
         case .failed: return "Failed"
         case .offline: return "Offline"
+        case .interrupted: return "Stopped"
         }
     }
 
@@ -55,6 +58,7 @@ public enum MascotMood: String, Codable, CaseIterable, Hashable, Sendable {
                 switch latest.state {
                 case .complete: return .happy
                 case .failed: return .failed
+                case .cancelled: return .interrupted
                 default: break
                 }
             }
