@@ -40,6 +40,10 @@ struct SettingsView: View {
                 .listRowBackground(BB.Palette.surface)
 
                 Section {
+                    NavigationLink { DiagnosticsView() } label: {
+                        SettingsRow(systemImage: "stethoscope", title: "Diagnostics", subtitle: "Recent requests and connection details") { EmptyView() }
+                    }
+                    .accessibilityIdentifier("settings.diagnostics")
                     NavigationLink { DeveloperSettingsView() } label: {
                         SettingsRow(systemImage: "hammer", title: "Developer", subtitle: "Providers, protocol, diagnostics") { EmptyView() }
                     }
