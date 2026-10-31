@@ -1,276 +1,333 @@
-import SwiftUI
 import BrainboxCore
+import Foundation
+import HermesKit
+import Observation
+import SwiftUI
 
-enum AppTab: String, CaseIterable, Identifiable {
-    case home, agent, vps, files, settings
-    var id: String { rawValue }
+/// A saved Hermes session (from `session.list`).
+struct SessionSummary: Identifiable, Hashable {
+    var id: String
+    var title: String
+    var preview: String
+    var startedAt: Date
+    var messageCount: Int
+    var source: String
 
-    var title: String {
-        switch self {
-        case .home: return "Home"
-        case .agent: return "Agent"
-        case .vps: return "VPS"
-        case .files: return "Files"
-        case .settings: return "Settings"
-        }
+    /// Sessions from messaging platforms (Telegram, …) and cron are shown read-only:
+    /// Brainbox never writes into or deletes another surface's history.
+    var isReadOnly: Bool { !["tui", "desktop", "cli", ""].contains(source) }
+
+    init?(_ json: JSONValue) {
+        guard let id = json["id"]?.stringValue else { return nil }
+        self.id = id
+        title = json["title"]?.stringValue ?? ""
+        preview = json["preview"]?.stringValue ?? ""
+        startedAt = json["started_at"]?.doubleValue.map { Date(timeIntervalSince1970: $0) } ?? Date()
+        messageCount = json["message_count"]?.intValue ?? 0
+        source = json["source"]?.stringValue ?? ""
     }
 
-    var symbol: String {
-        switch self {
-        case .home: return "square.grid.2x2"
-        case .agent: return "sparkles"
-        case .vps: return "server.rack"
-        case .files: return "folder"
-        case .settings: return "slider.horizontal.3"
-        }
+    var displayTitle: String {
+        let t = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !t.isEmpty { return t }
+        let p = preview.trimmingCharacters(in: .whitespacesAndNewlines)
+        return p.isEmpty ? "Untitled chat" : p
     }
 }
 
-/// Root application state: owns settings, security, the active provider
-/// suite and the chat store. Swapping backends = swapping the suite.
 @MainActor
 @Observable
 final class AppModel {
-    let environment: LaunchEnvironment
-    let settings: AppSettings
-    let gate: BiometricGate
-    let network = NetworkMonitor()
-    let toasts = ToastCenter()
-    let chat: ChatStore
-    @ObservationIgnored let credentials: CredentialStore
+    let store = AppStore.shared
+    let engine: HermesEngine
 
-    private(set) var suite: ProviderSuite
-    private(set) var connectionState: ConnectionState = .disconnected
-    private(set) var agentStatus: AgentStatus = .offline
-    private(set) var connectionError: AgentError?
-    private(set) var hasToken = false
-    var selectedTab: AppTab = .agent
-
-    @ObservationIgnored private var observers: [Task<Void, Never>] = []
-    @ObservationIgnored private var gateway: GatewayConnection?
-    @ObservationIgnored let snapshotCache: JSONFileCache<ServerSnapshot>
-
-    init(environment: LaunchEnvironment = .current) {
-        self.environment = environment
-        if environment.isUITesting { Motion.ambientEnabled = false }
-        let defaults: UserDefaults
-        if environment.usesEphemeralStorage {
-            let suiteName = "brainbox.tests.\(UUID().uuidString)"
-            defaults = UserDefaults(suiteName: suiteName) ?? .standard
-        } else {
-            defaults = .standard
+    var connection: LinkState = .idle
+    var profile: ServerProfile?
+    var identity: SSHIdentity
+    private var storedPreferences = Preferences.current
+    var preferences: Preferences {
+        get { storedPreferences }
+        set {
+            storedPreferences = newValue
+            Preferences.current = newValue
         }
-        let settings = AppSettings(defaults: defaults, isTesting: environment.usesEphemeralStorage)
-        self.settings = settings
+    }
 
-        #if canImport(Security)
-        self.credentials = environment.usesEphemeralStorage ? InMemoryCredentialStore() : KeychainCredentialStore()
-        #else
-        self.credentials = InMemoryCredentialStore()
-        #endif
+    var transcripts: [String: Transcript] = [:]
+    var currentChat: String?
+    var sessions: [SessionSummary] = []
+    var sessionsError: String?
+    var composerPrefill: [String: String] = [:]
+    var lastEvent: GatewayEvent?
+    var toast: String?
+    var selectedTab: Tab = .chat
+    /// Pet sprite sheet from Hermes (`pet.info`), when the user has one.
+    var pet: PetSprite?
+    /// Files shared into the app ("Open in Brainbox"), waiting in the composer.
+    var sharedAttachments: [Attachment] = []
+    /// Set by the Siri/widget voice shortcut.
+    var voiceRequested = false
 
-        self.gate = BiometricGate(policy: { settings.policy }, bypass: environment.usesEphemeralStorage)
+    enum Tab: Hashable { case chat, sessions, agents, hub }
 
-        let conversationStore: ConversationStore = environment.usesEphemeralStorage
-            ? InMemoryConversationStore()
-            : FileConversationStore(directory: FileConversationStore.defaultDirectory())
-        self.snapshotCache = JSONFileCache(url: environment.usesEphemeralStorage
-            ? URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("bb-snapshot-\(UUID().uuidString).json")
-            : JSONFileCache<ServerSnapshot>.defaultURL(named: "server-snapshot"))
+    private var pumping = false
+    let notifier = Notifier.shared
 
-        let initialSuite = ProviderSuite.mock(fast: environment.isUITesting)
-        self.suite = initialSuite
-        self.chat = ChatStore(store: conversationStore, provider: { initialSuite.agent }, isOnline: { true })
+    init() {
+        engine = HermesEngine(persistence: AppStore.shared)
+        identity = AppStore.shared.identity()
+        profile = AppStore.shared.profile
+    }
 
-        // Re-point closures at self now that all stored properties exist.
-        chat.provider = { [unowned self] in self.suite.agent }
-        chat.isOnline = { [unowned self] in self.network.isOnline }
-        chat.onReplyFinished = { [weak self] message in self?.replyFinished(message) }
-        network.onReconnect = { [weak self] in self?.handleNetworkReturn() }
-        hasToken = ((try? credentials.read(.gatewayToken)) ?? nil) != nil
+    var isConnected: Bool { connection.isConnected }
+
+    var serverInfo: HermesServerInfo? {
+        if case .connected(let info) = connection { return info }
+        return nil
     }
 
     // MARK: Lifecycle
 
     func start() {
-        if !environment.isUnitTesting { network.start() }
-        rebuildSuite()
-    }
-
-    func handleScenePhase(_ phase: ScenePhase) {
-        switch phase {
-        case .background:
-            gate.noteBackgrounded()
-        case .active:
-            gate.noteForegrounded()
-            gateway?.reconnectNow()
-        default:
-            break
-        }
-    }
-
-    private func handleNetworkReturn() {
-        gateway?.reconnectNow()
-        if settings.providerKind == .mock, !connectionState.isConnected {
-            Task { await connect() }
-        }
-    }
-
-    // MARK: Providers
-
-    var agentDescriptor: AgentDescriptor { suite.agent.descriptor }
-    var capabilities: Set<ProviderCapability> { suite.agent.capabilities }
-    var isMock: Bool { settings.providerKind == .mock }
-
-    func switchProvider(to kind: ProviderKind) {
-        guard kind != settings.providerKind || gateway == nil else { return }
-        settings.providerKind = kind
-        rebuildSuite()
-    }
-
-    /// Re-creates the provider suite from settings and reconnects.
-    func rebuildSuite() {
-        let old = suite
-        let oldGateway = gateway
-        observers.forEach { $0.cancel() }
-        observers.removeAll()
-        Task { await old.agent.disconnect() }
-        _ = oldGateway
-
-        connectionError = nil
-        gateway = nil
-
-        switch settings.providerKind {
-        case .mock:
-            suite = .mock(fast: environment.isUITesting)
-        case .hermes:
-            suite = .hermesPending()
-        case .remote:
-            if let url = settings.validatedBackendURL {
-                let credentials = self.credentials
-                let connection = GatewayConnection(
-                    configuration: GatewayConfiguration(url: url, clientVersion: Bundle.main.appVersion),
-                    tokenProvider: { (try? credentials.read(.gatewayToken)) ?? nil },
-                    transportFactory: { URLSessionWebSocketTransport() }
-                )
-                gateway = connection
-                suite = .remote(connection: connection)
-            } else {
-                suite = ProviderSuite(agent: UnavailableAgentProvider(reason: "Add your gateway URL and access token in Settings → Connection."), vps: nil, terminal: nil, files: nil, logs: nil)
+        guard !pumping else { return }
+        pumping = true
+        if Self.isDemo { loadDemo(); return }
+        let updates = engine.updates
+        Task { [weak self] in
+            for await update in updates {
+                self?.handle(update)
             }
         }
-        observe(suite.agent)
-        Task { await connect() }
+        if profile != nil { Task { await connect() } }
+    }
+
+    private func handle(_ update: EngineUpdate) {
+        switch update {
+        case .state(let state):
+            let wasConnected = connection.isConnected
+            connection = state
+            if state.isConnected, !wasConnected {
+                Task { await refreshSessions(); await loadPet() }
+                if currentChat == nil { Task { await restoreLastChat() } }
+            }
+        case .transcript(let chat, let transcript):
+            transcripts[chat] = transcript
+            if transcript.busy { store.watchedChats[chat] = transcript.title ?? "Hermes" }
+        case .turnFinished(let chat, let title, let text):
+            store.watchedChats[chat] = nil
+            if preferences.haptics { Haptic.success() }
+            if preferences.notifyOnFinish { notifier.turnFinished(chat: chat, title: title, text: text) }
+            if preferences.speakReplies, chat == currentChat { Task { await Voice.shared.speak(text, using: self) } }
+            LiveActivityBridge.shared.end(chat: chat, text: text)
+            Task { await refreshSessions() }
+        case .needsAttention(let chat, let title, let request):
+            if preferences.haptics { Haptic.warning() }
+            if preferences.notifyOnApproval { notifier.needsAttention(chat: chat, title: title, request: request) }
+        case .event(let event):
+            lastEvent = event
+            if event.type == "sessions.changed" { Task { await refreshSessions() } }
+            if event.type == "pet.changed" { Task { await loadPet() } }
+        case .prefill(let chat, let text):
+            composerPrefill[chat] = text
+        }
+        if let chat = currentChat, let t = transcripts[chat], t.busy {
+            LiveActivityBridge.shared.update(chat: chat, title: t.title ?? "Hermes", status: t.status ?? "Working")
+        }
+    }
+
+    // MARK: Connection
+
+    func save(profile: ServerProfile) {
+        self.profile = profile
+        store.profile = profile
     }
 
     func connect() async {
-        connectionError = nil
+        guard let profile else { return }
+        if preferences.lockWithFaceID, !(await Biometrics.authenticate(reason: "Unlock your SSH key to connect to \(profile.name)")) {
+            connection = .failed("Face ID is required to use the SSH key.")
+            return
+        }
+        let options = HermesClient.Options(target: profile.target, identity: identity, hostKeys: store,
+                                           ownershipID: store.ownershipID, desktopMode: preferences.desktopBackend)
+        await engine.connect(options)
+    }
+
+    func disconnect() async {
+        await engine.disconnect()
+    }
+
+    /// Back from the background: the SSH socket was probably suspended.
+    func resumeFromBackground() async {
+        guard profile != nil, preferences.autoReconnect else { return }
+        let client = await engine.client
+        let healthy = client != nil && client?.ssh.isActive == true && client?.rpc.closed == false
+        if !healthy {
+            switch connection {
+            case .connected, .reconnecting:
+                await engine.reconnectNow(reason: "Back online")
+            case .failed:
+                return
+            case .idle, .connecting:
+                await connect()
+            }
+        }
+        await refreshSessions()
+    }
+
+    func forgetHostKey() {
+        guard let profile else { return }
+        store.forgetHostKey(for: profile.target.hostID)
+        toast = "Trusted server key cleared. The next connection will trust the key it sees."
+    }
+
+    func regenerateKey() {
+        identity = store.regenerateIdentity()
+    }
+
+    func client() async throws -> HermesClient {
+        guard let client = await engine.client else { throw RPCError.disconnected }
+        return client
+    }
+
+    // MARK: Sessions
+
+    func refreshSessions() async {
         do {
-            try await suite.agent.connect()
+            let result = try await engine.call(nil, "session.list", ["limit": 200])
+            sessions = (result["sessions"]?.arrayValue ?? []).compactMap(SessionSummary.init)
+            sessionsError = nil
         } catch {
-            let agentError = error.asAgentError
-            // Retryable failures are already being retried by the gateway.
-            if !agentError.isRetryable || settings.providerKind != .remote { connectionError = agentError }
+            sessionsError = error.localizedDescription
         }
     }
 
-    func reconnect() {
-        if let gateway {
-            gateway.reconnectNow()
-            if case .failed = connectionState { Task { await connect() } }
-        } else {
-            Task { await connect() }
+    func newChat() async {
+        do {
+            let chat = try await engine.newChat()
+            currentChat = chat
+            store.lastChat = chat
+            selectedTab = .chat
+        } catch {
+            toast = error.localizedDescription
         }
     }
 
-    private func observe(_ agent: AgentProvider) {
-        let connectionTask = Task { [weak self] in
-            for await state in agent.connectionUpdates() {
-                guard let self else { return }
-                let wasConnected = self.connectionState.isConnected
-                withAnimation(Motion.standard) { self.connectionState = state }
-                if case .failed(let error) = state { self.connectionError = error }
-                if state.isConnected { self.connectionError = nil }
-                if wasConnected && !state.isConnected && self.settings.notifyOnDisconnect {
-                    Notifier.post(title: "Brainbox disconnected", body: "Reconnecting to \(agent.descriptor.name)…")
-                }
+    func open(session: SessionSummary) async {
+        await open(chatID: session.id)
+    }
+
+    func open(chatID: String) async {
+        do {
+            try await engine.open(chatID)
+            currentChat = chatID
+            store.lastChat = chatID
+            selectedTab = .chat
+        } catch {
+            toast = error.localizedDescription
+        }
+    }
+
+    private func restoreLastChat() async {
+        if let last = store.lastChat, (try? await engine.open(last)) != nil {
+            currentChat = last
+        }
+    }
+
+    func delete(session: SessionSummary) async {
+        guard !session.isReadOnly else { toast = "Brainbox doesn't delete \(session.source.capitalized) history."; return }
+        do {
+            _ = try await engine.call(nil, "session.delete", ["session_id": .string(session.id)])
+            if currentChat == session.id {
+                await engine.closeChat(session.id)
+                currentChat = nil
             }
+            await refreshSessions()
+        } catch {
+            toast = error.localizedDescription
         }
-        let statusTask = Task { [weak self] in
-            for await status in agent.statusUpdates() {
-                guard let self else { return }
-                withAnimation(Motion.standard) { self.agentStatus = status }
+    }
+
+    func rename(chat: String, to title: String) async {
+        _ = try? await engine.call(chat, "session.title", ["title": .string(title)])
+        await refreshSessions()
+    }
+
+    // MARK: Chat actions
+
+    func send(_ text: String, attachments: [Attachment] = []) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        if currentChat == nil { await newChat() }
+        guard let chat = currentChat else { return }
+        if preferences.haptics { Haptic.tap() }
+        do {
+            if trimmed.hasPrefix("/"), attachments.isEmpty {
+                try await runCommand(trimmed, in: chat)
+            } else {
+                try await engine.send(chat, text: trimmed, attachments: attachments)
+                LiveActivityBridge.shared.start(chat: chat, title: transcripts[chat]?.title ?? "Hermes", prompt: trimmed)
             }
-        }
-        observers = [connectionTask, statusTask]
-    }
-
-    private func replyFinished(_ message: Message) {
-        if settings.notifyOnTaskComplete, !message.toolCalls.isEmpty {
-            Notifier.post(title: "Task finished", body: String(message.content.prefix(120)))
+        } catch {
+            toast = error.localizedDescription
         }
     }
 
-    // MARK: Credentials
-
-    func saveToken(_ token: String) throws {
-        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
-        try credentials.write(trimmed, for: .gatewayToken)
-        hasToken = true
-    }
-
-    func deleteToken() throws {
-        try credentials.delete(.gatewayToken)
-        hasToken = false
-    }
-
-    func readToken() -> String? {
-        (try? credentials.read(.gatewayToken)) ?? nil
-    }
-
-    /// Wipes local data. Never touches anything on the server.
-    func eraseLocalData() {
-        chat.deleteAll()
-        snapshotCache.clear()
-        try? credentials.delete(.gatewayToken)
-        hasToken = false
-    }
-}
-
-/// Used when a backend can't be built yet (e.g. Remote with no URL).
-final class UnavailableAgentProvider: AgentProvider, @unchecked Sendable {
-    let reason: String
-    private let state: Broadcaster<ConnectionState>
-    private let status = Broadcaster<AgentStatus>(initial: .unavailable(reason: "Not configured"))
-
-    init(reason: String) {
-        self.reason = reason
-        self.state = Broadcaster(initial: .failed(.providerUnavailable(detail: reason)))
-    }
-
-    var descriptor: AgentDescriptor { AgentDescriptor(id: "unconfigured", name: "Remote Agent", kind: .remote, summary: "Not configured") }
-    var capabilities: Set<ProviderCapability> { [] }
-    func connect() async throws { throw AgentError.providerUnavailable(detail: reason) }
-    func disconnect() async {}
-    func connectionUpdates() -> AsyncStream<ConnectionState> { state.subscribe() }
-    func statusUpdates() -> AsyncStream<AgentStatus> { status.subscribe() }
-    func currentStatus() async -> AgentStatus { status.value }
-    func send(_ request: AgentRequest) -> AsyncThrowingStream<AgentEvent, Error> {
-        let reason = self.reason
-        return AsyncThrowingStream { continuation in
-            continuation.yield(.failed(.providerUnavailable(detail: reason)))
-            continuation.finish()
+    /// App-level commands first (like Desktop's local handlers), then Hermes.
+    private func runCommand(_ line: String, in chat: String) async throws {
+        let name = String(line.dropFirst().split(separator: " ").first ?? "").lowercased()
+        let arg = line.split(separator: " ", maxSplits: 1).dropFirst().first.map(String.init) ?? ""
+        switch name {
+        case "new", "clear":
+            await newChat()
+        case "bg", "background":
+            guard !arg.isEmpty else { toast = "Usage: /bg <task>"; return }
+            try await engine.background(chat, arg)
+        case "btw":
+            guard !arg.isEmpty else { toast = "Usage: /btw <question>"; return }
+            try await engine.btw(chat, arg)
+        case "stop":
+            try await engine.interrupt(chat)
+        case "sessions":
+            selectedTab = .sessions
+        default:
+            _ = try await engine.slash(chat, line)
         }
     }
-    func cancel(requestID: UUID) async {}
-    func conversationHistory() async throws -> [ConversationSummary] { [] }
-    func executeTool(_ invocation: ToolInvocation) async throws -> ToolResult { throw AgentError.providerUnavailable(detail: reason) }
-}
 
-extension Bundle {
-    var appVersion: String {
-        let version = infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0"
-        let build = infoDictionary?["CFBundleVersion"] as? String ?? "0"
-        return "\(version) (\(build))"
+    func stop() async {
+        guard let chat = currentChat else { return }
+        try? await engine.interrupt(chat)
+    }
+
+    func respond(_ request: PendingRequest, answer: String, questionID: String? = nil, chat: String? = nil) async {
+        guard let chat = chat ?? currentChat else { return }
+        do {
+            try await engine.respond(chat, request: request, answer: answer, questionID: questionID)
+        } catch {
+            toast = error.localizedDescription
+        }
+    }
+
+    func setModel(_ value: String) async {
+        guard let chat = currentChat else { return }
+        do {
+            _ = try await engine.call(chat, "config.set", ["key": "model", "value": .string(value)])
+            toast = "Model set to \(value.split(separator: " ").first ?? "")"
+        } catch {
+            toast = error.localizedDescription
+        }
+    }
+
+    // MARK: Pet
+
+    func loadPet() async {
+        guard let meta = try? await engine.call(nil, "pet.info.meta"), meta["enabled"]?.boolValue == true else {
+            pet = nil
+            return
+        }
+        if let pet, pet.revision == meta["spritesheetRevision"]?.stringValue, pet.slug == meta["slug"]?.stringValue { return }
+        guard let info = try? await engine.call(nil, "pet.info", timeout: 60) else { return }
+        pet = PetSprite(info)
     }
 }

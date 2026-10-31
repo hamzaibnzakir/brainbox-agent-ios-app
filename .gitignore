@@ -38,3 +38,5 @@ __pycache__/
 *.egg-info/
 .venv/
 gateway/.pytest_cache/
+Packages/HermesKit/.build/
+Packages/HermesKit/.swiftpm/

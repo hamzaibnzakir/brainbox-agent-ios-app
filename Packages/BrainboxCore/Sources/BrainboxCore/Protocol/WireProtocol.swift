@@ -332,6 +332,8 @@ public enum WireCodec {
         case .toolFinished(let id, let result, let status):
             return frame(S.toolFinished, try JSONValue(encoding: ToolFinishedPayload(toolCallId: id, status: status, result: result)))
         case .conversationTitle(let title): return frame(S.title, ["title": .string(title)])
+        case .runStarted, .reasoning, .approvalRequested, .approvalResolved, .notice, .stopRequested, .stopAcknowledged, .stopUnconfirmed, .liveness:
+            throw AgentError.protocolViolation(detail: "This event is not part of Brainbox Agent Protocol v1.")
         case .completed: return frame(S.completed)
         case .failed(let error): return frame(S.error, try JSONValue(encoding: ErrorPayload(error)))
         }

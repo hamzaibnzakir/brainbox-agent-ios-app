@@ -38,6 +38,101 @@ jobs:
           bash ../../scripts/ci/annotate-log.sh core-test.log "Core (Linux)"
           grep -E "Executed [0-9]+ tests?" core-test.log | tail -n 1 | sed 's/^/::notice title=Core test summary (Linux)::/' || true
           exit $STATUS
+      - name: Build & unit-test HermesKit (SSH engine)
+        working-directory: Packages/HermesKit
+        run: |
+          STATUS=0
+          swift test --parallel > hermeskit-test.log 2>&1 || STATUS=$?
+          tail -n 40 hermeskit-test.log
+          bash ../../scripts/ci/annotate-log.sh hermeskit-test.log "HermesKit (Linux)"
+          exit $STATUS
+
+  ssh-e2e:
+    name: Phone engine ↔ SSH ↔ real Hermes (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "Hermes 284d220 — on the VPS"
+            ref: 284d220ba48e25f2e3623b3afe72db8f24a4c2db
+            install: pip
+          - label: "Hermes main 2026-10-24"
+            ref: 1c0cd667746d3395fe9e1b6c74f8f85952486f18
+            install: lock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out hermes-agent at this matrix version
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ matrix.ref }}
+          path: hermes-src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Hermes (the real server side)
+        run: |
+          if [ "${{ matrix.install }}" = "lock" ]; then
+            pip install -q "uv==0.11.32"
+            (cd hermes-src && uv sync -q --frozen)
+            HB="$GITHUB_WORKSPACE/hermes-src/.venv/bin"
+          else
+            python -m venv "$RUNNER_TEMP/hv"
+            "$RUNNER_TEMP/hv/bin/pip" install -q -e ./hermes-src
+            HB="$RUNNER_TEMP/hv/bin"
+          fi
+          sudo ln -sf "$HB/hermes" /usr/local/bin/hermes
+          hermes serve --help | grep -q ssh-session-token-file
+          pip install -q aiohttp cryptography
+      - name: Fake model + Hermes config (no API keys)
+        run: |
+          mkdir -p ~/.hermes
+          printf 'model:\n  provider: custom\n  base_url: http://127.0.0.1:18080/v1\n  default: fake-model\n  api_key: e2e-not-a-secret\napprovals:\n  mode: manual\n' > ~/.hermes/config.yaml
+          nohup python scripts/e2e/fake_llm.py --port 18080 > "$RUNNER_TEMP/fake-llm.log" 2>&1 &
+          for i in $(seq 1 20); do curl -fs http://127.0.0.1:18080/v1/models >/dev/null && break; sleep 0.5; done
+      - name: Real sshd with a phone key
+        run: |
+          sudo apt-get install -y -qq openssh-server >/dev/null 2>&1 || true
+          sudo mkdir -p /run/sshd && sudo ssh-keygen -A >/dev/null
+          python - <<'PY'
+          import base64, os
+          from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+          from cryptography.hazmat.primitives import serialization as s
+          k = Ed25519PrivateKey.generate()
+          raw = k.private_bytes(s.Encoding.Raw, s.PrivateFormat.Raw, s.NoEncryption())
+          pub = k.public_key().public_bytes(s.Encoding.OpenSSH, s.PublicFormat.OpenSSH).decode()
+          os.makedirs(os.path.expanduser("~/.ssh"), mode=0o700, exist_ok=True)
+          with open(os.path.expanduser("~/.ssh/authorized_keys"), "a") as f: f.write(pub + " brainbox-e2e\n")
+          with open(os.environ["GITHUB_ENV"], "a") as f: f.write("HERMES_E2E_SSH_KEY=" + base64.b64encode(raw).decode() + "\n")
+          PY
+          chmod 700 ~/.ssh && chmod 600 ~/.ssh/authorized_keys && chmod go-w ~
+          sudo /usr/sbin/sshd -p 2222 -o PasswordAuthentication=no -o PubkeyAuthentication=yes
+          echo "HERMES_E2E_SSH_HOST=127.0.0.1" >> "$GITHUB_ENV"
+          echo "HERMES_E2E_SSH_PORT=2222" >> "$GITHUB_ENV"
+          echo "HERMES_E2E_SSH_USER=$(whoami)" >> "$GITHUB_ENV"
+      - name: Swift toolchain
+        id: swift
+        run: echo "has=$(command -v swift >/dev/null && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - uses: swift-actions/setup-swift@v2
+        if: steps.swift.outputs.has != 'true'
+        with:
+          swift-version: "6.0"
+      - name: Run the phone's SSH engine against the real server
+        working-directory: Packages/HermesKit
+        run: |
+          swift --version
+          STATUS=0
+          swift test > e2e.log 2>&1 || STATUS=$?
+          grep -E "Test Case .*(passed|failed|skipped)|error:" e2e.log | tail -n 60
+          bash ../../scripts/ci/annotate-log.sh e2e.log "SSH E2E"
+          PASSED=$(grep -cE "Test Case .*Live(Hermes|Engine)Tests.*passed" e2e.log || true)
+          SKIPPED=$(grep -cE "Test Case .*Live(Hermes|Engine)Tests.*skipped" e2e.log || true)
+          echo "::notice title=SSH E2E (${{ matrix.label }})::$PASSED live tests passed, $SKIPPED skipped — real sshd, real hermes serve"
+          if [ "$SKIPPED" != "0" ] || [ "$PASSED" = "0" ]; then echo "::error::live SSH tests did not run"; STATUS=1; fi
+          if [ "$STATUS" != "0" ]; then tail -n 30 ~/.hermes/desktop-ssh/*/*.log 2>/dev/null || true; fi
+          exit $STATUS
 
   gateway:
     name: Gateway tests (Python)
@@ -61,9 +156,67 @@ jobs:
           grep -E "[0-9]+ passed" gateway-test.log | tail -n 1 | sed 's/^/::notice title=Gateway test summary::/' || true
           exit $STATUS
 
+  hermes-contract:
+    name: Hermes contract tests (${{ matrix.label }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: "Hermes 284d220 — on the VPS"
+            ref: 284d220ba48e25f2e3623b3afe72db8f24a4c2db
+            install: pip
+          - label: "Hermes main 2026-10-24 — after an upgrade"
+            ref: 1c0cd667746d3395fe9e1b6c74f8f85952486f18
+            install: lock
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check out hermes-agent at this matrix version
+        uses: actions/checkout@v4
+        with:
+          repository: NousResearch/hermes-agent
+          ref: ${{ matrix.ref }}
+          path: hermes-src
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install Hermes and the gateway
+        id: install
+        run: |
+          if [ "${{ matrix.install }}" = "lock" ]; then
+            # Hermes main installs from its lockfile (its pyproject pins only resolve through uv.lock).
+            pip install -q "uv==0.11.32"
+            (cd hermes-src && uv sync -q --frozen)
+            uv pip install -q --python hermes-src/.venv/bin/python -e "./gateway[test]"
+            echo "python=$GITHUB_WORKSPACE/hermes-src/.venv/bin/python" >> "$GITHUB_OUTPUT"
+          else
+            pip install -q -e ./hermes-src
+            pip install -q -e "./gateway[test]"
+            echo "python=python" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Run Hermes' real run handlers behind the Brainbox proxy
+        working-directory: gateway
+        env:
+          HERMES_SRC: ${{ github.workspace }}/hermes-src
+        run: |
+          STATUS=0
+          "${{ steps.install.outputs.python }}" -m pytest -q -rs tests/test_hermes_contract.py > contract-test.log 2>&1 || STATUS=$?
+          tail -n 40 contract-test.log
+          bash ../scripts/ci/annotate-log.sh contract-test.log "Hermes contract"
+          grep -E "[0-9]+ passed" contract-test.log | tail -n 1 | sed 's/^/::notice title=Hermes contract summary::/' || true
+          if grep -q "skipped" contract-test.log && ! grep -q "passed" contract-test.log; then
+            echo "::error::contract tests were skipped: $(grep -m1 SKIPPED contract-test.log | cut -c1-300)"
+            "${{ steps.install.outputs.python }}" -c "import sys; sys.path.insert(0, '$HERMES_SRC'); import gateway.platforms.api_server" 2>&1 | tail -n 3 | sed 's/^/::error::import: /'
+            exit 1
+          fi
+          exit $STATUS
+
   ios:
     name: iOS build, tests & unsigned IPA
     runs-on: macos-15
+    permissions:
+      contents: write
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -124,6 +277,15 @@ jobs:
           echo "::notice title=Live gateway interop::$LIVE passed, $LIVE_SKIP skipped (Swift client ↔ Python gateway)"
           exit $STATUS
 
+      - name: HermesKit tests on macOS
+        working-directory: Packages/HermesKit
+        run: |
+          STATUS=0
+          swift test > hermeskit-test.log 2>&1 || STATUS=$?
+          tail -n 30 hermeskit-test.log
+          bash ../../scripts/ci/annotate-log.sh hermeskit-test.log "HermesKit (macOS)"
+          exit $STATUS
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
@@ -158,6 +320,25 @@ jobs:
           grep -E "Test Case .* skipped|Test skipped" build/xcodebuild-test.log | head -n 5 | sed 's/^/::notice title=Skipped::/' || true
           exit $STATUS
 
+      - name: Export UI screenshots (light + dark)
+        if: always()
+        run: |
+          mkdir -p build/screenshots
+          if [ -d build/TestResults.xcresult ]; then
+            xcrun xcresulttool export attachments --path build/TestResults.xcresult --output-path build/screenshots > /dev/null 2>&1 || true
+          fi
+          COUNT=$(find build/screenshots -name '*.png' | wc -l | tr -d ' ')
+          echo "::notice title=Screenshots::$COUNT screenshot(s) exported (artifact: ui-screenshots)"
+
+      - name: Upload UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-screenshots
+          path: build/screenshots
+          if-no-files-found: ignore
+          retention-days: 14
+
       - name: Archive (unsigned, device)
         run: |
           STATUS=0
@@ -176,6 +357,9 @@ jobs:
       - name: Package unsigned IPA
         run: bash scripts/package-unsigned-ipa.sh build/BrainboxAgent.xcarchive build/BrainboxAgent-unsigned.ipa
 
+      - name: Verify IPA structure and metadata
+        run: bash scripts/ci/verify-ipa.sh build/BrainboxAgent-unsigned.ipa expect-unsigned
+
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
@@ -192,3 +376,16 @@ jobs:
             build/TestResults.xcresult
             build/xcodebuild-test.log
           retention-days: 7
+
+      - name: Publish IPA + screenshots to the brainbox-2-latest pre-release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd build/screenshots && zip -qr ../screenshots.zip . ) || true
+          gh release delete brainbox-2-latest -y --cleanup-tag 2>/dev/null || true
+          FILES="build/BrainboxAgent-unsigned.ipa"
+          [ -f build/screenshots.zip ] && FILES="$FILES build/screenshots.zip"
+          gh release create brainbox-2-latest $FILES --prerelease --target "${{ github.sha }}" \
+            --title "Brainbox 2 — latest CI build" \
+            --notes "Unsigned IPA built from ${{ github.sha }}. Install with Sideloadly / AltStore / SideStore. Setup: docs/CONNECT.md"

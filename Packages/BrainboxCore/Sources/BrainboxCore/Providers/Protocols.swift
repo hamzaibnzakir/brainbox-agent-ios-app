@@ -5,8 +5,9 @@ import Foundation
 ///     Brainbox UI → AgentConnection (app) → AgentProvider → backend
 ///
 /// Implementations: `MockAgentProvider` (development), `RemoteAgentProvider`
-/// (Brainbox Agent Protocol over a WebSocket gateway) and `HermesProvider`
-/// (pending integration). Nothing in the UI knows which one is active.
+/// (Brainbox Agent Protocol over a WebSocket gateway) and `HermesAgentProvider`
+/// (Hermes API Server runs over HTTPS + SSE). Nothing in the UI knows which
+/// one is active.
 public protocol AgentProvider: AnyObject, Sendable {
     var descriptor: AgentDescriptor { get }
     var capabilities: Set<ProviderCapability> { get }
