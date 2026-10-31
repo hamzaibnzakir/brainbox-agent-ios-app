@@ -13,6 +13,11 @@ import Foundation
 ///   `~/.hermes/desktop-ssh/<ownership-id>/` that Hermes reads and unlinks;
 /// * wait for the `HERMES_BACKEND_READY port=N` line.
 ///
+/// Unlike Desktop it does NOT set `HERMES_DESKTOP=1`: on a server that already runs
+/// the Hermes gateway (Telegram, cron), Desktop mode would start its own cron ticker
+/// (jobs firing twice) and reap "unsupervised" gateway processes. Plain `serve`
+/// leaves the existing gateway and scheduled jobs alone.
+///
 /// The backend binds loopback only; the phone reaches it through SSH
 /// direct-tcpip channels, never over the open internet.
 public struct RemoteBackendRecord: Codable, Hashable, Sendable {
@@ -158,7 +163,7 @@ public struct RemoteBackend: Sendable {
         find "$dir" -name '*.log' -mtime +3 -delete 2>/dev/null
         : > "\(log)"
         launcher="$(command -v setsid || echo nohup)"
-        child=$("$launcher" sh -c 'ulimit -n 4096 2>/dev/null; exec env HERMES_DESKTOP=1 "$0" serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file "$1" --ssh-owner-nonce "$2" </dev/null >>"$3" 2>&1 & echo $!' \(Self.shq(hermesPath)) "\(tokenFile)" \(nonce) "\(log)")
+        child=$("$launcher" sh -c 'ulimit -n 4096 2>/dev/null; exec "$0" serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file "$1" --ssh-owner-nonce "$2" </dev/null >>"$3" 2>&1 & echo $!' \(Self.shq(hermesPath)) "\(tokenFile)" \(nonce) "\(log)")
         echo "PID=$child"
         """
         let result = try await ssh.exec(script, stdin: Data(token.utf8), timeout: 40)

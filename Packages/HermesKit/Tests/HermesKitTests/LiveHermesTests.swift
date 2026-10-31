@@ -183,3 +183,53 @@ final class LiveHermesTests: XCTestCase {
         ssh.close()
     }
 }
+
+/// The engine itself (what the app drives) against the real server.
+final class LiveEngineTests: XCTestCase {
+    func testEngineChatSlashAndReconnect() async throws {
+        let e = ProcessInfo.processInfo.environment
+        guard let host = e["HERMES_E2E_SSH_HOST"], let key = e["HERMES_E2E_SSH_KEY"], let raw = Data(base64Encoded: key) else {
+            throw XCTSkip("HERMES_E2E_* not set")
+        }
+        let target = SSHTarget(host: host, port: Int(e["HERMES_E2E_SSH_PORT"] ?? "22") ?? 22, username: e["HERMES_E2E_SSH_USER"] ?? "root")
+        let engine = HermesEngine(persistence: MemoryEnginePersistence())
+        let options = HermesClient.Options(target: target, identity: try SSHIdentity(rawRepresentation: raw),
+                                           hostKeys: MemoryHostKeyStore(), ownershipID: LiveHermesTests.ownership)
+        let updates = engine.updates
+        await engine.connect(options)
+        let state = await engine.state
+        guard case .connected(let info) = state else { return XCTFail("\(state)") }
+        XCTAssertEqual(info.version, "0.21.2")
+
+        let chat = try await engine.newChat()
+        try await engine.send(chat, text: "hello engine")
+        var finished = false
+        for await update in updates {
+            if case .turnFinished(let c, _, let text) = update, c == chat {
+                XCTAssertEqual(text, "Echo: hello engine")
+                finished = true
+                break
+            }
+        }
+        XCTAssertTrue(finished)
+
+        let outcome = try await engine.slash(chat, "/help")
+        guard case .output(let out) = outcome else { return XCTFail("\(outcome)") }
+        XCTAssertTrue(out.contains("/new"))
+
+        // Drop the connection; the engine reconnects and the chat keeps working.
+        await engine.reconnectNow(reason: "test")
+        let after = await engine.state
+        XCTAssertTrue(after.isConnected, "\(after)")
+        try await engine.send(chat, text: "again")
+        for await update in updates {
+            if case .turnFinished(let c, _, let text) = update, c == chat {
+                XCTAssertEqual(text, "Echo: again")
+                break
+            }
+        }
+        let transcript = await engine.transcript(chat)
+        XCTAssertEqual(transcript?.items.filter { if case .user = $0.kind { return true }; return false }.count, 2)
+        await engine.disconnect()
+    }
+}

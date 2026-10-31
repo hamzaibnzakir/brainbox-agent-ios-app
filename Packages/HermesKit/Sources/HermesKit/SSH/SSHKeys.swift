@@ -7,7 +7,7 @@ import NIOSSH
 /// The private half is only ever held in memory here and persisted by the app
 /// in the Keychain (`rawRepresentation`); the public half is what the user adds
 /// to `~/.ssh/authorized_keys` on the server.
-public struct SSHIdentity: Sendable {
+public struct SSHIdentity: @unchecked Sendable {
     public let privateKey: Curve25519.Signing.PrivateKey
 
     public init(privateKey: Curve25519.Signing.PrivateKey) {
