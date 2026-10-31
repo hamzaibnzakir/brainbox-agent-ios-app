@@ -25,6 +25,14 @@ struct ConnectView: View {
         "mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '\(keyLine)' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
     }
 
+    private var desktopBinding: Binding<Bool> {
+        Binding(get: { model.preferences.desktopBackend }, set: { on in
+            model.preferences.desktopBackend = on
+            // A running backend keeps its mode; restart it so the change applies.
+            if model.isConnected { Task { await model.engine.stopBackend(); await model.connect() } }
+        })
+    }
+
     private var canConnect: Bool { !host.trimmingCharacters(in: .whitespaces).isEmpty && Int(port) != nil && !user.isEmpty }
 
     var body: some View {
@@ -70,6 +78,16 @@ struct ConnectView: View {
                 field("User", text: $user, field: .user, keyboard: .asciiCapable, placeholder: "root")
                 field("Port", text: $port, field: .port, keyboard: .numberPad, placeholder: "22").frame(width: 96)
             }
+            DisclosureGroup("Advanced") {
+                VStack(alignment: .leading, spacing: DS.S.s) {
+                    Toggle("Desktop-compatible backend", isOn: desktopBinding).font(DS.F.small)
+                    Text("Only if Brainbox says your Hermes asks for a dashboard login (dashboard.public_url is set). It starts Hermes the way Desktop does, which also runs Desktop's cron ticker for profiles no gateway serves.")
+                        .font(DS.F.caption).foregroundStyle(DS.C.ink3)
+                }
+                .padding(.top, DS.S.s)
+            }
+            .font(DS.F.small)
+            .tint(DS.C.ink2)
         }
         .card()
     }

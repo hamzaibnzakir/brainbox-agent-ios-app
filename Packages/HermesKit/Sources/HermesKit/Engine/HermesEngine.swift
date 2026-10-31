@@ -165,6 +165,11 @@ public actor HermesEngine {
                 setState(.failed(message))
                 return
             }
+            if case BackendError.gated = error {
+                wantConnected = false
+                setState(.failed(message))
+                return
+            }
             if case SSHError.authenticationFailed = error {
                 wantConnected = false
                 setState(.failed(message))

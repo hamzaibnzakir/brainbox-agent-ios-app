@@ -149,7 +149,7 @@ final class AppModel {
             return
         }
         let options = HermesClient.Options(target: profile.target, identity: identity, hostKeys: store,
-                                           ownershipID: store.ownershipID)
+                                           ownershipID: store.ownershipID, desktopMode: preferences.desktopBackend)
         await engine.connect(options)
     }
 

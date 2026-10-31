@@ -130,6 +130,28 @@ struct Preferences: Codable, Equatable {
     var speakReplies = false
     var autoReconnect = true
     var showPet = true
+    /// Start `hermes serve` in Desktop mode (only for servers with dashboard.public_url set).
+    var desktopBackend = false
+
+    init() {}
+
+    /// Missing keys keep their defaults, so adding a setting never resets the others.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Preferences()
+        theme = try c.decodeIfPresent(Theme.self, forKey: .theme) ?? d.theme
+        textScale = try c.decodeIfPresent(Double.self, forKey: .textScale) ?? d.textScale
+        showReasoning = try c.decodeIfPresent(Bool.self, forKey: .showReasoning) ?? d.showReasoning
+        showToolDetails = try c.decodeIfPresent(Bool.self, forKey: .showToolDetails) ?? d.showToolDetails
+        haptics = try c.decodeIfPresent(Bool.self, forKey: .haptics) ?? d.haptics
+        notifyOnFinish = try c.decodeIfPresent(Bool.self, forKey: .notifyOnFinish) ?? d.notifyOnFinish
+        notifyOnApproval = try c.decodeIfPresent(Bool.self, forKey: .notifyOnApproval) ?? d.notifyOnApproval
+        lockWithFaceID = try c.decodeIfPresent(Bool.self, forKey: .lockWithFaceID) ?? d.lockWithFaceID
+        speakReplies = try c.decodeIfPresent(Bool.self, forKey: .speakReplies) ?? d.speakReplies
+        autoReconnect = try c.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? d.autoReconnect
+        showPet = try c.decodeIfPresent(Bool.self, forKey: .showPet) ?? d.showPet
+        desktopBackend = try c.decodeIfPresent(Bool.self, forKey: .desktopBackend) ?? d.desktopBackend
+    }
 
     static var current: Preferences {
         get { UserDefaults.standard.data(forKey: "prefs").flatMap { try? JSONDecoder().decode(Preferences.self, from: $0) } ?? Preferences() }

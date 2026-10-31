@@ -39,6 +39,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
     case unsupportedHermes(String)
     case spawnFailed(String)
     case notReady(String)
+    /// The backend demands a dashboard login (server has `dashboard.public_url` set).
+    case gated
 
     public var errorDescription: String? {
         switch self {
@@ -48,6 +50,8 @@ public enum BackendError: Error, LocalizedError, Equatable {
             return "This Hermes version can't run the Desktop backend over SSH (\(detail)). Update Hermes on the server."
         case .spawnFailed(let log): return "Hermes didn't start: \(log)"
         case .notReady(let log): return "Hermes started but never reported ready. Last log lines:\n\(log)"
+        case .gated:
+            return "Hermes put its dashboard login in front of the private backend (your config sets dashboard.public_url). Turn on Connection › Desktop-compatible backend and connect again."
         }
     }
 }
@@ -65,10 +69,16 @@ public struct RemoteBackend: Sendable {
     /// Stable per-phone id (32 lowercase hex): names this phone's runtime directory.
     public let ownershipID: String
     public var readyTimeout: TimeInterval = 120
+    /// Start the backend the way Desktop does (`HERMES_DESKTOP=1`). Only needed when the
+    /// server sets `dashboard.public_url`, which otherwise puts a web-login gate in front
+    /// of the private backend. Desktop mode also runs its own cron ticker (it stands down
+    /// for profiles a gateway already serves).
+    public var desktopMode = false
 
-    public init(ssh: SSHConnection, ownershipID: String) {
+    public init(ssh: SSHConnection, ownershipID: String, desktopMode: Bool = false) {
         self.ssh = ssh
         self.ownershipID = ownershipID
+        self.desktopMode = desktopMode
     }
 
     public static func makeOwnershipID() -> String { randomHex(16) }
@@ -170,7 +180,7 @@ public struct RemoteBackend: Sendable {
         find "$dir" -name '*.log' -mtime +3 -delete 2>/dev/null
         : > "\(log)"
         launcher="$(command -v setsid || echo nohup)"
-        child=$("$launcher" sh -c 'ulimit -n 4096 2>/dev/null; exec "$0" serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file "$1" --ssh-owner-nonce "$2" </dev/null >>"$3" 2>&1 & echo $!' \(Self.shq(hermesPath)) "\(tokenFile)" \(nonce) "\(log)")
+        child=$("$launcher" sh -c 'ulimit -n 4096 2>/dev/null; exec \(desktopMode ? "env HERMES_DESKTOP=1 " : "")"$0" serve --isolated --host 127.0.0.1 --port 0 --ssh-session-token-file "$1" --ssh-owner-nonce "$2" </dev/null >>"$3" 2>&1 & echo $!' \(Self.shq(hermesPath)) "\(tokenFile)" \(nonce) "\(log)")
         echo "PID=$child"
         """
         let result = try await ssh.exec(script, stdin: Data(token.utf8), timeout: 40)

@@ -25,14 +25,16 @@ public final class HermesClient: @unchecked Sendable {
         public var hostKeys: HostKeyStore
         public var ownershipID: String
         public var knownBackend: RemoteBackendRecord?
+        public var desktopMode: Bool
 
         public init(target: SSHTarget, identity: SSHIdentity, hostKeys: HostKeyStore, ownershipID: String,
-                    knownBackend: RemoteBackendRecord? = nil) {
+                    knownBackend: RemoteBackendRecord? = nil, desktopMode: Bool = false) {
             self.target = target
             self.identity = identity
             self.hostKeys = hostKeys
             self.ownershipID = ownershipID
             self.knownBackend = knownBackend
+            self.desktopMode = desktopMode
         }
     }
 
@@ -47,7 +49,7 @@ public final class HermesClient: @unchecked Sendable {
         progress(.ssh)
         let ssh = try await SSHConnection.connect(to: options.target, identity: options.identity, hostKeys: options.hostKeys)
         do {
-            let backend = try await RemoteBackend(ssh: ssh, ownershipID: options.ownershipID)
+            let backend = try await RemoteBackend(ssh: ssh, ownershipID: options.ownershipID, desktopMode: options.desktopMode)
                 .ensure(known: options.knownBackend) { step in progress(.backend(step.rawValue)) }
             progress(.gateway)
             return try await attach(ssh: ssh, backend: backend)
@@ -62,7 +64,12 @@ public final class HermesClient: @unchecked Sendable {
         let dialer = SSHPortDialer(ssh: ssh, port: backend.record.port)
         let http = TunnelHTTPClient(dialer: dialer, defaultHeaders: ["X-Hermes-Session-Token": backend.record.token])
         let token = backend.record.token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-        let socket = try await TunnelWebSocket.connect(dialer: dialer, path: "/api/ws?token=\(token)")
+        let socket: TunnelWebSocket
+        do {
+            socket = try await TunnelWebSocket.connect(dialer: dialer, path: "/api/ws?token=\(token)")
+        } catch WebSocketError.handshakeFailed(let status, _) where status == 401 || status == 403 {
+            throw BackendError.gated
+        }
         let rpc = GatewayRPC(socket: socket)
         let ready = await rpc.waitForReady(timeout: 8)
         // Newer Hermes only sends approvals/questions to clients that say they answer them.
