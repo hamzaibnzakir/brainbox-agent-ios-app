@@ -215,6 +215,8 @@ jobs:
   ios:
     name: iOS build, tests & unsigned IPA
     runs-on: macos-15
+    permissions:
+      contents: write
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -375,3 +377,15 @@ jobs:
             build/xcodebuild-test.log
           retention-days: 7
 
+      - name: Publish IPA + screenshots to the brainbox-2-latest pre-release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd build/screenshots && zip -qr ../screenshots.zip . ) || true
+          gh release delete brainbox-2-latest -y --cleanup-tag 2>/dev/null || true
+          FILES="build/BrainboxAgent-unsigned.ipa"
+          [ -f build/screenshots.zip ] && FILES="$FILES build/screenshots.zip"
+          gh release create brainbox-2-latest $FILES --prerelease --target "${{ github.sha }}" \
+            --title "Brainbox 2 — latest CI build" \
+            --notes "Unsigned IPA built from ${{ github.sha }}. Install with Sideloadly / AltStore / SideStore. Setup: docs/CONNECT.md"
