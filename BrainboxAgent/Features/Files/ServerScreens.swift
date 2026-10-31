@@ -5,7 +5,7 @@ import UniformTypeIdentifiers
 
 // MARK: - Files
 
-struct FileEntry: Identifiable, Hashable {
+struct RemoteFileEntry: Identifiable, Hashable {
     var name: String
     var path: String
     var isDirectory: Bool
@@ -15,7 +15,7 @@ struct FileEntry: Identifiable, Hashable {
 struct FilesScreen: View {
     var path: String?
     @Environment(AppModel.self) private var model
-    @State private var entries: [FileEntry] = []
+    @State private var entries: [RemoteFileEntry] = []
     @State private var current = ""
     @State private var error: String?
     @State private var loading = true
@@ -23,7 +23,7 @@ struct FilesScreen: View {
     @State private var showUpload = false
     @State private var newFolder = false
     @State private var folderName = ""
-    @State private var pendingDelete: FileEntry?
+    @State private var pendingDelete: RemoteFileEntry?
 
     var body: some View {
         List {
@@ -89,7 +89,7 @@ struct FilesScreen: View {
             let result = try await client.get("/api/fs/list" + HermesClient.query(["path": current]))
             entries = (result["entries"]?.arrayValue ?? []).compactMap { e in
                 guard let name = e["name"]?.stringValue, let p = e["path"]?.stringValue else { return nil }
-                return FileEntry(name: name, path: p, isDirectory: e["isDirectory"]?.boolValue ?? false)
+                return RemoteFileEntry(name: name, path: p, isDirectory: e["isDirectory"]?.boolValue ?? false)
             }
             .sorted { ($0.isDirectory ? 0 : 1, $0.name.lowercased()) < ($1.isDirectory ? 0 : 1, $1.name.lowercased()) }
             error = nil

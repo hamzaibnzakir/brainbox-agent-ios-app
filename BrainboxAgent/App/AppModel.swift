@@ -41,7 +41,7 @@ final class AppModel {
     let store = AppStore.shared
     let engine: HermesEngine
 
-    var connection: ConnectionState = .idle
+    var connection: LinkState = .idle
     var profile: ServerProfile?
     var identity: SSHIdentity
     var preferences = Preferences.current {
@@ -76,7 +76,7 @@ final class AppModel {
 
     var isConnected: Bool { connection.isConnected }
 
-    var serverInfo: ServerInfo? {
+    var serverInfo: HermesServerInfo? {
         if case .connected(let info) = connection { return info }
         return nil
     }

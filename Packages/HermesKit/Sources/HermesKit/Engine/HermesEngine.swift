@@ -15,7 +15,7 @@ public final class MemoryEnginePersistence: EnginePersistence, @unchecked Sendab
     public func saveBackend(_ record: RemoteBackendRecord?, for hostID: String) { lock.withLock { records[hostID] = record } }
 }
 
-public struct ServerInfo: Equatable, Sendable {
+public struct HermesServerInfo: Equatable, Sendable {
     public var target: SSHTarget
     public var hostFingerprint: String
     public var version: String?
@@ -33,10 +33,10 @@ public struct ServerInfo: Equatable, Sendable {
     }
 }
 
-public enum ConnectionState: Equatable, Sendable {
+public enum LinkState: Equatable, Sendable {
     case idle
     case connecting(String)
-    case connected(ServerInfo)
+    case connected(HermesServerInfo)
     case reconnecting(attempt: Int, reason: String)
     case failed(String)
 
@@ -44,7 +44,7 @@ public enum ConnectionState: Equatable, Sendable {
 }
 
 public enum EngineUpdate: Sendable {
-    case state(ConnectionState)
+    case state(LinkState)
     case transcript(chat: String, Transcript)
     /// A turn finished (for notifications while the app is away).
     case turnFinished(chat: String, title: String, text: String)
@@ -80,7 +80,7 @@ public actor HermesEngine {
     private let continuation: AsyncStream<EngineUpdate>.Continuation
     private let persistence: EnginePersistence
 
-    public private(set) var state: ConnectionState = .idle
+    public private(set) var state: LinkState = .idle
     public private(set) var client: HermesClient?
     private var options: HermesClient.Options?
     private var wantConnected = false
@@ -99,7 +99,7 @@ public actor HermesEngine {
         (updates, continuation) = AsyncStream.makeStream(of: EngineUpdate.self, bufferingPolicy: .unbounded)
     }
 
-    private func setState(_ new: ConnectionState) {
+    private func setState(_ new: LinkState) {
         state = new
         continuation.yield(.state(new))
     }
@@ -150,7 +150,7 @@ public actor HermesEngine {
             }
             persistence.saveBackend(client.backend.record, for: options.target.hostID)
             self.client = client
-            let info = ServerInfo(target: options.target, hostFingerprint: client.ssh.hostKeyFingerprint,
+            let info = HermesServerInfo(target: options.target, hostFingerprint: client.ssh.hostKeyFingerprint,
                                   version: client.backend.version, hermesPath: client.backend.record.hermesPath,
                                   reusedBackend: client.backend.reused,
                                   skinAccent: client.ready?.payload["skin"]?["colors"]?["ui_accent"]?.stringValue)

@@ -100,7 +100,7 @@ enum HermesAPIErrorText {
     }
 }
 
-public struct HTTPResponse: Sendable {
+public struct TunnelResponse: Sendable {
     public var status: Int
     public var headers: [String: String]
     public var body: Data
@@ -119,7 +119,7 @@ public struct TunnelHTTPClient: Sendable {
     }
 
     public func send(_ method: String, _ path: String, headers: [String: String] = [:], body: Data? = nil,
-                     timeout: TimeInterval = 60) async throws -> HTTPResponse {
+                     timeout: TimeInterval = 60) async throws -> TunnelResponse {
         let duplex = try await dialer.dial()
         defer { duplex.close() }
         var request = "\(method) \(path) HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nAccept-Encoding: identity\r\n"
@@ -134,7 +134,7 @@ public struct TunnelHTTPClient: Sendable {
         var payload = Data(request.utf8)
         if let body { payload.append(body) }
 
-        return try await withThrowingTaskGroup(of: HTTPResponse.self) { group in
+        return try await withThrowingTaskGroup(of: TunnelResponse.self) { group in
             group.addTask {
                 try await duplex.write(payload)
                 return try await Self.readResponse(ByteReader(duplex), method: method, maxBody: maxBody)
@@ -150,7 +150,7 @@ public struct TunnelHTTPClient: Sendable {
         }
     }
 
-    static func readResponse(_ reader: ByteReader, method: String, maxBody: Int) async throws -> HTTPResponse {
+    static func readResponse(_ reader: ByteReader, method: String, maxBody: Int) async throws -> TunnelResponse {
         guard let head = try await reader.read(until: Data("\r\n\r\n".utf8)) else {
             throw TunnelHTTPError.malformed("connection closed before a response")
         }
@@ -183,6 +183,6 @@ public struct TunnelHTTPClient: Sendable {
         } else {
             body = try await reader.readToEnd(limit: maxBody)
         }
-        return HTTPResponse(status: status, headers: headers, body: body)
+        return TunnelResponse(status: status, headers: headers, body: body)
     }
 }

@@ -124,9 +124,14 @@ public struct RemoteBackend: Sendable {
               response.status == 200,
               let json = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
               json["sshOwnerNonce"] as? String == record.nonce else { return nil }
-        let health = try? await http.send("GET", "/api/health", timeout: 15)
-        let version = health.flatMap { try? JSONSerialization.jsonObject(with: $0.body) as? [String: Any] }?["version"] as? String
-        return version ?? "unknown"
+        for path in ["/api/health", "/api/status"] {
+            if let response = try? await http.send("GET", path, timeout: 15),
+               let body = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
+               let version = body["version"] as? String, !version.isEmpty {
+                return version
+            }
+        }
+        return "unknown"
     }
 
     // MARK: Start

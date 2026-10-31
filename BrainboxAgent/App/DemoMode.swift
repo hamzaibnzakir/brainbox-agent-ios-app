@@ -9,7 +9,7 @@ extension AppModel {
     func loadDemo() {
         let target = SSHTarget(host: "203.0.113.10", port: 22, username: "root")
         profile = ServerProfile(name: "Brainbox VPS", target: target)
-        connection = .connected(ServerInfo(target: target, hostFingerprint: "SHA256:demoDemoDemoDemo", version: "0.21.2",
+        connection = .connected(HermesServerInfo(target: target, hostFingerprint: "SHA256:demoDemoDemoDemo", version: "0.21.2",
                                            hermesPath: "/root/.local/bin/hermes", reusedBackend: true, skinAccent: nil))
         var t = Transcript()
         t.title = "Server check"

@@ -87,13 +87,13 @@ public final class HermesClient: @unchecked Sendable {
     }
 
     public func raw(_ method: String, _ path: String, headers: [String: String] = [:], body: Data? = nil,
-                    timeout: TimeInterval = 120) async throws -> HTTPResponse {
+                    timeout: TimeInterval = 120) async throws -> TunnelResponse {
         let response = try await http.send(method, path, headers: headers, body: body, timeout: timeout)
         guard (200..<300).contains(response.status) else { throw TunnelHTTPError.status(response.status, response.text) }
         return response
     }
 
-    func decode(_ response: HTTPResponse) throws -> JSONValue {
+    func decode(_ response: TunnelResponse) throws -> JSONValue {
         guard (200..<300).contains(response.status) else { throw TunnelHTTPError.status(response.status, response.text) }
         if response.body.isEmpty { return .null }
         return (try? JSONDecoder().decode(JSONValue.self, from: response.body)) ?? .string(response.text)

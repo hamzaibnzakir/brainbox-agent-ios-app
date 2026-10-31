@@ -89,7 +89,7 @@ jobs:
       - name: Fake model + Hermes config (no API keys)
         run: |
           mkdir -p ~/.hermes
-          printf 'model:\n  provider: custom\n  base_url: http://127.0.0.1:18080/v1\n  default: fake-model\n  api_key: e2e-not-a-secret\n' > ~/.hermes/config.yaml
+          printf 'model:\n  provider: custom\n  base_url: http://127.0.0.1:18080/v1\n  default: fake-model\n  api_key: e2e-not-a-secret\napprovals:\n  mode: manual\n' > ~/.hermes/config.yaml
           nohup python scripts/e2e/fake_llm.py --port 18080 > "$RUNNER_TEMP/fake-llm.log" 2>&1 &
           for i in $(seq 1 20); do curl -fs http://127.0.0.1:18080/v1/models >/dev/null && break; sleep 0.5; done
       - name: Real sshd with a phone key
