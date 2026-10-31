@@ -13,6 +13,19 @@ public struct ToolActivity: Hashable, Sendable {
     public var output: String
     public var inlineDiff: String?
     public var approvalNote: String?
+
+    public init(id: String, name: String, context: String, args: JSONValue, status: Status, duration: Double?,
+                output: String, inlineDiff: String?, approvalNote: String?) {
+        self.id = id
+        self.name = name
+        self.context = context
+        self.args = args
+        self.status = status
+        self.duration = duration
+        self.output = output
+        self.inlineDiff = inlineDiff
+        self.approvalNote = approvalNote
+    }
 }
 
 /// Something Hermes is waiting on the user for.
@@ -33,6 +46,12 @@ public struct PendingRequest: Hashable, Sendable {
     /// Set once answered (or expired) so the card shows the outcome.
     public var resolution: String?
 
+    public init(requestID: String, kind: Kind, resolution: String? = nil) {
+        self.requestID = requestID
+        self.kind = kind
+        self.resolution = resolution
+    }
+
     public var respondMethod: String {
         switch kind {
         case .approval: return "approval.respond"
@@ -52,6 +71,13 @@ public struct ClarifyQuestion: Hashable, Sendable {
     public var question: String
     public var choices: [String]
     public var multiSelect: Bool
+
+    public init(id: String, question: String, choices: [String], multiSelect: Bool) {
+        self.id = id
+        self.question = question
+        self.choices = choices
+        self.multiSelect = multiSelect
+    }
 }
 
 public struct ChatItem: Identifiable, Hashable, Sendable {
@@ -83,6 +109,12 @@ public struct TodoItem: Hashable, Sendable {
     public var id: String
     public var content: String
     public var status: String
+
+    public init(id: String, content: String, status: String) {
+        self.id = id
+        self.content = content
+        self.status = status
+    }
 }
 
 public struct UsageInfo: Hashable, Sendable {

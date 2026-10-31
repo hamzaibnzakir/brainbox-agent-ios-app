@@ -32,6 +32,7 @@ PLATFORM=$(read_key DTPlatformName)
 ARCHS=$(lipo -archs "$APP/$EXEC" 2>/dev/null || echo "?")
 case "$ARCHS" in *arm64*) ;; *) fail "executable architectures '$ARCHS' do not include arm64";; esac
 [ -d "$APP/Assets.car" ] || [ -f "$APP/Assets.car" ] || echo "::warning title=IPA::Assets.car not found (icons may be missing)"
+if [ -d "$APP/PlugIns/BrainboxWidgets.appex" ]; then echo "::notice title=IPA::widget + Live Activity extension embedded"; else echo "::warning title=IPA::widget extension not embedded"; fi
 
 SIGNED=no
 if codesign -v "$APP" >/dev/null 2>&1 && [ -f "$APP/embedded.mobileprovision" ]; then SIGNED=yes; fi

@@ -1,7 +1,7 @@
 import XCTest
 
-/// Captures the main screens in light and dark mode (mock backend, so no real
-/// data appears). Screenshots are exported by CI as the `ui-screenshots` artifact.
+/// Walks the main screens in light and dark mode with demo data (no server) and
+/// keeps screenshots; CI exports them as the `ui-screenshots` artifact.
 final class ScreenshotTests: XCTestCase {
     private var app: XCUIApplication!
 
@@ -9,10 +9,10 @@ final class ScreenshotTests: XCTestCase {
         continueAfterFailure = true
     }
 
-    private func launch(_ appearance: XCUIDevice.Appearance) {
+    private func launch(demo: Bool, _ appearance: XCUIDevice.Appearance) {
         XCUIDevice.shared.appearance = appearance
         app = XCUIApplication()
-        app.launchArguments = ["-uitesting", "-ui-appearance", appearance == .dark ? "dark" : "light"]
+        app.launchArguments = demo ? ["-BBDemo"] : []
         app.launch()
     }
 
@@ -23,59 +23,47 @@ final class ScreenshotTests: XCTestCase {
         add(attachment)
     }
 
-    private func tapTab(_ id: String) {
-        let tab = app.buttons[id]
-        if !tab.waitForExistence(timeout: 5), app.keyboards.count > 0 { app.swipeDown() }
-        guard tab.waitForExistence(timeout: 5) else { return XCTFail("\(id) not visible") }
-        tab.tap()
+    private func tab(_ label: String) {
+        let button = app.tabBars.buttons[label]
+        XCTAssertTrue(button.waitForExistence(timeout: 10), "tab \(label)")
+        button.tap()
         sleep(1)
     }
 
-    private func capture(_ suffix: String) {
-        XCTAssertTrue(app.buttons["tab.home"].waitForExistence(timeout: 10))
-        app.buttons["tab.home"].tap()
-        _ = app.descendants(matching: .any)["home.bot"].waitForExistence(timeout: 5)
-        shot("01-home-\(suffix)")
-
-        app.buttons["tab.agent"].tap()
-        if app.buttons["suggestion.0"].waitForExistence(timeout: 5) { shot("02-chat-empty-\(suffix)") ; app.buttons["suggestion.0"].tap() }
-        _ = app.descendants(matching: .any)["assistant.complete"].firstMatch.waitForExistence(timeout: 20)
-        shot("03-chat-reply-\(suffix)")
-        tapTab("tab.team")
-        shot("05-workspace-\(suffix)")
-        tapTab("tab.tasks")
-        shot("06-tasks-\(suffix)")
-        tapTab("tab.vps")
+    func testOnboarding() {
+        launch(demo: false, .light)
+        XCTAssertTrue(app.staticTexts["Connect to Hermes"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Copy command"].exists, "the authorized_keys command is offered")
+        shot("01-connect-light")
+        XCUIDevice.shared.appearance = .dark
         sleep(1)
-        shot("07-server-\(suffix)")
-        tapTab("tab.home")
-        if app.buttons["home.settings"].waitForExistence(timeout: 5) {
-            app.buttons["home.settings"].tap()
-            sleep(1)
-            shot("08-settings-\(suffix)")
-            app.swipeDown(velocity: .fast)   // close the Settings sheet
-            sleep(1)
-        }
-
-        // Last: slash suggestions (the keyboard stays up afterwards).
-        tapTab("tab.agent")
-        let field = app.textFields["composer.field"].exists ? app.textFields["composer.field"] : app.textViews["composer.field"]
-        if field.waitForExistence(timeout: 5) {
-            field.tap()
-            field.typeText("/st")
-            sleep(1)
-            shot("09-chat-commands-\(suffix)")
-        }
+        shot("01-connect-dark")
     }
 
-    func testScreenshotsLight() {
-        launch(.light)
-        capture("light")
-    }
-
-    func testScreenshotsDark() {
-        launch(.dark)
-        capture("dark")
-        XCUIDevice.shared.appearance = .light
+    func testMainScreens() {
+        for appearance in [XCUIDevice.Appearance.light, .dark] {
+            let suffix = appearance == .dark ? "dark" : "light"
+            launch(demo: true, appearance)
+            XCTAssertTrue(app.tabBars.buttons["Chat"].waitForExistence(timeout: 10))
+            XCTAssertTrue(app.staticTexts["Approve this command?"].waitForExistence(timeout: 5), "approval card renders")
+            shot("02-chat-\(suffix)")
+            app.swipeDown()
+            shot("03-chat-top-\(suffix)")
+            tab("Sessions")
+            shot("04-sessions-\(suffix)")
+            tab("Agents")
+            shot("05-agents-\(suffix)")
+            tab("Hub")
+            shot("06-hub-\(suffix)")
+            app.swipeUp()
+            shot("07-hub-more-\(suffix)")
+            let settings = app.buttons["Settings"]
+            if settings.waitForExistence(timeout: 5) {
+                settings.tap()
+                sleep(1)
+                shot("08-settings-\(suffix)")
+            }
+            app.terminate()
+        }
     }
 }

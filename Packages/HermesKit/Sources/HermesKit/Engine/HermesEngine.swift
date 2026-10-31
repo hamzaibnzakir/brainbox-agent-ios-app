@@ -22,6 +22,15 @@ public struct ServerInfo: Equatable, Sendable {
     public var hermesPath: String
     public var reusedBackend: Bool
     public var skinAccent: String?
+
+    public init(target: SSHTarget, hostFingerprint: String, version: String?, hermesPath: String, reusedBackend: Bool, skinAccent: String?) {
+        self.target = target
+        self.hostFingerprint = hostFingerprint
+        self.version = version
+        self.hermesPath = hermesPath
+        self.reusedBackend = reusedBackend
+        self.skinAccent = skinAccent
+    }
 }
 
 public enum ConnectionState: Equatable, Sendable {
