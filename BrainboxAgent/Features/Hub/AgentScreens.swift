@@ -344,7 +344,7 @@ struct CuratorScreen: View {
 // MARK: - Persona (SOUL.md + personality)
 
 extension SoulScreen {
-    static func names(in message: String) -> [String] {
+    nonisolated static func names(in message: String) -> [String] {
         guard let range = message.range(of: "Available:") else { return [] }
         return message[range.upperBound...].components(separatedBy: "`").enumerated().compactMap { $0.offset % 2 == 1 ? $0.element : nil }
     }

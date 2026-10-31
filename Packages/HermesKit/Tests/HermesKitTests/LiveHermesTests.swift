@@ -107,8 +107,13 @@ final class LiveHermesTests: XCTestCase {
         var approved = false
         let done = try await waitFor(events, type: "message.complete", session: sid) { e in
             if e.type == "approval.request" {
+                // Hermes ≤ 0.21: an event answered with approval.respond.
                 approved = true
                 _ = try await client.rpc.call("approval.respond", ["session_id": .string(sid), "choice": "once"])
+            } else if e.type == "server.request", e.payload["method"]?.stringValue == "approval", let id = e.payload["id"] {
+                // Newer Hermes: a JSON-RPC request answered by id.
+                approved = true
+                try await client.rpc.reply(requestID: id, result: ["choice": "once"])
             }
         }
         XCTAssertTrue(approved, "approval.request reached the phone")
@@ -200,8 +205,7 @@ final class LiveEngineTests: XCTestCase {
         await engine.connect(options)
         let state = await engine.state
         guard case .connected(let info) = state else { return XCTFail("\(state)") }
-        XCTAssertNotNil(info.version)
-        XCTAssertNotEqual(info.version, "unknown")
+        XCTAssertNotNil(info.version, "the backend reports its version")
 
         let chat = try await engine.newChat()
         try await engine.send(chat, text: "hello engine")
@@ -214,6 +218,23 @@ final class LiveEngineTests: XCTestCase {
             }
         }
         XCTAssertTrue(finished)
+
+        // Approvals through the engine (event style on 0.21, request style on newer Hermes).
+        try await engine.send(chat, text: "run tool: rm -rf /tmp/brainbox-engine-none")
+        var answered = false
+        for await update in updates {
+            if case .needsAttention(let c, _, let request) = update, c == chat {
+                try await engine.respond(chat, request: request, answer: "once")
+                answered = true
+            }
+            if case .turnFinished(let c, _, let text) = update, c == chat {
+                XCTAssertTrue(answered, "the engine surfaced the approval")
+                XCTAssertTrue(text.contains("approved"), text)
+                break
+            }
+        }
+        let afterApproval = await engine.transcript(chat)
+        XCTAssertTrue(afterApproval?.pendingRequests.isEmpty == true)
 
         let outcome = try await engine.slash(chat, "/help")
         guard case .output(let out) = outcome else { return XCTFail("\(outcome)") }
@@ -231,7 +252,7 @@ final class LiveEngineTests: XCTestCase {
             }
         }
         let transcript = await engine.transcript(chat)
-        XCTAssertEqual(transcript?.items.filter { if case .user = $0.kind { return true }; return false }.count, 2)
+        XCTAssertEqual(transcript?.items.filter { if case .user = $0.kind { return true }; return false }.count, 3)
         await engine.disconnect()
     }
 }

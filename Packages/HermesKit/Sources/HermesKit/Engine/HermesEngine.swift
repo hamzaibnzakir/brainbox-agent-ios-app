@@ -269,6 +269,13 @@ public actor HermesEngine {
                 for raw in since["events"]?.arrayValue ?? [] {
                     if let event = GatewayEvent(json: raw) { updated.transcript.apply(event) }
                 }
+                // Questions still waiting for an answer (newer Hermes re-delivers them here).
+                for frame in (resumed["open_requests"]?.arrayValue ?? []) + (since["open_requests"]?.arrayValue ?? []) {
+                    if let id = frame["id"], let method = frame["method"]?.stringValue {
+                        updated.transcript.apply(GatewayEvent(type: "server.request", sessionID: live,
+                                                              payload: ["id": id, "method": .string(method), "params": frame["params"] ?? .null]))
+                    }
+                }
                 // A turn that ended while we were away and isn't in the replay window.
                 if updated.transcript.busy, resumed["running"]?.boolValue == false, resumed["inflight"]?.boolValue != true {
                     updated.transcript.busy = false
@@ -317,6 +324,12 @@ public actor HermesEngine {
         chat.transcript.hydrate(messages: result["messages"]?.arrayValue ?? [])
         chat.transcript.model = result["info"]?["model"]?.stringValue
         chat.transcript.busy = result["running"]?.boolValue == true || result["inflight"]?.boolValue == true
+        for frame in result["open_requests"]?.arrayValue ?? [] {
+            if let id = frame["id"], let method = frame["method"]?.stringValue {
+                chat.transcript.apply(GatewayEvent(type: "server.request", sessionID: live,
+                                                   payload: ["id": id, "method": .string(method), "params": frame["params"] ?? .null]))
+            }
+        }
         chats[stored] = chat
         liveToChat[live] = stored
         continuation.yield(.transcript(chat: stored, chat.transcript))
@@ -371,8 +384,14 @@ public actor HermesEngine {
     }
 
     /// Answers an approval/clarify/sudo/secret card.
+    private var batchAnswers: [String: [String: JSONValue]] = [:]
+
     public func respond(_ key: String, request: PendingRequest, answer: String, questionID: String? = nil) async throws {
         let client = try requireClient()
+        if let serverID = request.serverRequestID {
+            try await respondToServerRequest(key, client: client, request: request, serverID: serverID, answer: answer, questionID: questionID)
+            return
+        }
         let live = try liveID(key)
         var params: [String: JSONValue] = ["session_id": .string(live), "request_id": .string(request.requestID)]
         switch request.kind {
@@ -394,6 +413,34 @@ public actor HermesEngine {
         else if questionID == nil || (result["remaining"]?.arrayValue?.isEmpty ?? true) {
             mutate(key) { $0.resolve(requestID: request.requestID, as: label) }
         }
+    }
+
+    private func respondToServerRequest(_ key: String, client: HermesClient, request: PendingRequest, serverID: JSONValue,
+                                        answer: String, questionID: String?) async throws {
+        let result: JSONValue
+        switch request.kind {
+        case .approval:
+            result = ["choice": .string(answer)]
+        case .clarify:
+            result = ["answers": .object([request.questionID ?? questionID ?? "q1": .string(answer)])]
+        case .clarifyBatch(let questions):
+            var answers = batchAnswers[request.requestID] ?? [:]
+            answers[questionID ?? questions.first?.id ?? "q1"] = .string(answer)
+            batchAnswers[request.requestID] = answers
+            guard answers.count >= questions.count else { return }
+            batchAnswers[request.requestID] = nil
+            result = ["answers": .object(answers)]
+        case .sudo, .secret:
+            result = ["value": .string(answer)]
+        }
+        try await client.rpc.reply(requestID: serverID, result: result)
+        let label: String
+        switch request.kind {
+        case .approval: label = answer == "deny" ? "Denied" : "Approved (\(answer))"
+        case .sudo, .secret: label = answer.isEmpty ? "Skipped" : "Sent"
+        default: label = answer
+        }
+        mutate(key) { $0.resolve(requestID: request.requestID, as: label) }
     }
 
     public enum SlashOutcome: Sendable, Equatable {

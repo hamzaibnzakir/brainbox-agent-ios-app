@@ -149,7 +149,7 @@ final class Voice: NSObject, AVAudioPlayerDelegate {
     }
 
     /// Finds base64 audio in Hermes' speak response (a data URL or a base64 field).
-    static func findAudio(_ json: JSONValue) -> Data? {
+    nonisolated static func findAudio(_ json: JSONValue) -> Data? {
         switch json {
         case .string(let s):
             if s.hasPrefix("data:"), let comma = s.firstIndex(of: ",") { return Data(base64Encoded: String(s[s.index(after: comma)...])) }

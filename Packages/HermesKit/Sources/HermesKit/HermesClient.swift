@@ -65,6 +65,8 @@ public final class HermesClient: @unchecked Sendable {
         let socket = try await TunnelWebSocket.connect(dialer: dialer, path: "/api/ws?token=\(token)")
         let rpc = GatewayRPC(socket: socket)
         let ready = await rpc.waitForReady(timeout: 8)
+        // Newer Hermes only sends approvals/questions to clients that say they answer them.
+        _ = try? await rpc.call("client.capabilities", ["server_requests": true], timeout: 15)
         return HermesClient(ssh: ssh, backend: backend, http: http, rpc: rpc, ready: ready)
     }
 

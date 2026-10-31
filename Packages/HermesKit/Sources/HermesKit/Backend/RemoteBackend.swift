@@ -128,6 +128,8 @@ public struct RemoteBackend: Sendable {
             if let response = try? await http.send("GET", path, timeout: 15),
                let body = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any],
                let version = body["version"] as? String, !version.isEmpty {
+                // Source checkouts without tags report "unknown"; their display version says more.
+                if version == "unknown", let display = body["displayVersion"] as? String, !display.isEmpty { return display }
                 return version
             }
         }

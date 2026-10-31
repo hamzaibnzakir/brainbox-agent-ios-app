@@ -45,11 +45,17 @@ public struct PendingRequest: Hashable, Sendable {
     public var kind: Kind
     /// Set once answered (or expired) so the card shows the outcome.
     public var resolution: String?
+    /// Newer Hermes asks with a JSON-RPC request (answered by id) instead of an event + `*.respond`.
+    public var serverRequestID: JSONValue?
+    /// The clarify question id when the server request carries one question.
+    public var questionID: String?
 
-    public init(requestID: String, kind: Kind, resolution: String? = nil) {
+    public init(requestID: String, kind: Kind, resolution: String? = nil, serverRequestID: JSONValue? = nil, questionID: String? = nil) {
         self.requestID = requestID
         self.kind = kind
         self.resolution = resolution
+        self.serverRequestID = serverRequestID
+        self.questionID = questionID
     }
 
     public var respondMethod: String {
@@ -310,6 +316,46 @@ public struct Transcript: Hashable, Sendable {
             upsert(ChatItem(id: "req-" + rid, kind: .request(PendingRequest(
                 requestID: rid, kind: .secret(prompt: p["prompt"]?.stringValue ?? "", envVar: p["env_var"]?.stringValue ?? "")))))
             petMood = .waiting
+        case "server.request":
+            finishStreaming()
+            guard let id = p["id"], let method = p["method"]?.stringValue else { break }
+            let params = p["params"] ?? .null
+            let rid = id.displayText
+            var request: PendingRequest?
+            switch method {
+            case "approval":
+                request = PendingRequest(requestID: rid, kind: .approval(command: params["command"]?.stringValue ?? "",
+                                                                         description: params["description"]?.stringValue ?? "",
+                                                                         choices: params["choices"]?.arrayValue?.compactMap(\.stringValue) ?? ["once", "deny"]),
+                                         serverRequestID: id)
+                status = "Waiting for your approval"
+            case "clarify":
+                let questions = (params["questions"]?.arrayValue ?? []).map {
+                    ClarifyQuestion(id: $0["qid"]?.stringValue ?? UUID().uuidString, question: $0["question"]?.stringValue ?? "",
+                                    choices: $0["choices"]?.arrayValue?.compactMap(\.stringValue) ?? [],
+                                    multiSelect: $0["multi_select"]?.boolValue ?? false)
+                }
+                if questions.count == 1, let q = questions.first {
+                    request = PendingRequest(requestID: rid, kind: .clarify(question: q.question, choices: q.choices, multiSelect: q.multiSelect),
+                                             serverRequestID: id, questionID: q.id)
+                } else {
+                    request = PendingRequest(requestID: rid, kind: .clarifyBatch(questions), serverRequestID: id)
+                }
+                status = "Hermes has a question"
+            case "sudo":
+                request = PendingRequest(requestID: rid, kind: .sudo, serverRequestID: id)
+            case "secret":
+                request = PendingRequest(requestID: rid, kind: .secret(prompt: params["prompt"]?.stringValue ?? "",
+                                                                       envVar: params["env_var"]?.stringValue ?? ""), serverRequestID: id)
+            default:
+                break
+            }
+            if let request {
+                upsert(ChatItem(id: "req-" + rid, kind: .request(request)))
+                petMood = .waiting
+            }
+        case "request.cancel":
+            if let rid = p["id"]?.displayText { resolve(requestID: rid, as: "Withdrawn") }
         case "clarify.expire", "approval.expire":
             if let rid = p["request_id"]?.stringValue { resolve(requestID: rid, as: "Expired") }
         case "status.update":

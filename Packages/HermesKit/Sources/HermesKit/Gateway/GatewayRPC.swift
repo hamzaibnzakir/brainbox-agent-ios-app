@@ -137,10 +137,7 @@ public final class GatewayRPC: @unchecked Sendable {
                 let targets = lock.withLock { Array(subscribers.values) }
                 for target in targets { target.yield(event) }
             } else if let id = frame["id"] {
-                // Server→client request this client doesn't implement: answer so nothing hangs.
-                let reply: JSONValue = ["jsonrpc": "2.0", "id": id,
-                                        "error": ["code": -32601, "message": .string("not supported by Brainbox: \(method)")]]
-                Task { try? await self.sendFrame(reply) }
+                handleServerRequest(id: id, method: method, params: frame["params"] ?? .null)
             }
             return
         }
@@ -153,6 +150,31 @@ public final class GatewayRPC: @unchecked Sendable {
         } else {
             continuation.resume(returning: frame["result"] ?? .null)
         }
+    }
+
+    /// Server→client requests (newer Hermes): approvals, clarify, sudo and secret go to the
+    /// chat as a `server.request` event; desktop-window bridges are declined so the agent moves on.
+    static let answerable: Set<String> = ["approval", "clarify", "sudo", "secret"]
+
+    func handleServerRequest(id: JSONValue, method: String, params: JSONValue) {
+        guard Self.answerable.contains(method) else {
+            // 4404 = "no window is showing this chat" — the agent stops waiting at once.
+            Task { try? await self.fail(requestID: id, code: 4404, message: "Brainbox (iOS) can't show \(method).") }
+            return
+        }
+        let event = GatewayEvent(type: "server.request", sessionID: params["session_id"]?.stringValue,
+                                 payload: ["id": id, "method": .string(method), "params": params])
+        let targets = lock.withLock { Array(subscribers.values) }
+        for target in targets { target.yield(event) }
+    }
+
+    /// Answers a server→client request.
+    public func reply(requestID: JSONValue, result: JSONValue) async throws {
+        try await sendFrame(["jsonrpc": "2.0", "id": requestID, "result": result])
+    }
+
+    public func fail(requestID: JSONValue, code: Int, message: String) async throws {
+        try await sendFrame(["jsonrpc": "2.0", "id": requestID, "error": ["code": .number(Double(code)), "message": .string(message)]])
     }
 
     private func finish(_ error: Error) {

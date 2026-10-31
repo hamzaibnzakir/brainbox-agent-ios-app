@@ -113,3 +113,19 @@ final class TranscriptTests: XCTestCase {
         XCTAssertEqual(RemoteBackend.shq("a'b"), "'a'\\''b'")
     }
 }
+
+final class ServerRequestTests: XCTestCase {
+    func testNewerHermesApprovalAndClarifyRequests() {
+        var t = Transcript()
+        t.apply(GatewayEvent(type: "server.request", sessionID: "s", payload: [
+            "id": "srq-abc", "method": "approval",
+            "params": ["command": "rm -rf /x", "description": "delete", "choices": ["once", "deny"], "request_id": "r"]]))
+        XCTAssertEqual(t.pendingRequests.first?.serverRequestID, "srq-abc")
+        t.apply(GatewayEvent(type: "server.request", sessionID: "s", payload: [
+            "id": "srq-q", "method": "clarify", "params": ["questions": [["qid": "q1", "question": "Which?", "choices": ["a", "b"]]]]]))
+        let clarify = t.pendingRequests.first { $0.requestID == "srq-q" }
+        XCTAssertEqual(clarify?.questionID, "q1")
+        t.apply(GatewayEvent(type: "request.cancel", payload: ["id": "srq-abc", "method": "approval", "reason": "timeout"]))
+        XCTAssertEqual(t.pendingRequests.map(\.requestID), ["srq-q"])
+    }
+}

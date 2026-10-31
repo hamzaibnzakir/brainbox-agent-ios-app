@@ -44,8 +44,13 @@ final class AppModel {
     var connection: LinkState = .idle
     var profile: ServerProfile?
     var identity: SSHIdentity
-    var preferences = Preferences.current {
-        didSet { Preferences.current = preferences }
+    private var storedPreferences = Preferences.current
+    var preferences: Preferences {
+        get { storedPreferences }
+        set {
+            storedPreferences = newValue
+            Preferences.current = newValue
+        }
     }
 
     var transcripts: [String: Transcript] = [:]
