@@ -78,7 +78,7 @@ public struct RemoteBackend: Sendable {
     }
 
     /// Single-quotes a value for POSIX sh.
-    static func shq(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+    public static func shq(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
     var runtimeDir: String { "$HOME/.hermes/desktop-ssh/\(ownershipID)" }
     var lockPath: String { "\(runtimeDir)/brainbox-mobile.lock.json" }

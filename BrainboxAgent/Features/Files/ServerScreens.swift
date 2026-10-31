@@ -25,53 +25,67 @@ struct FilesScreen: View {
     @State private var folderName = ""
     @State private var pendingDelete: RemoteFileEntry?
 
-    var body: some View {
+    private var visible: [RemoteFileEntry] { entries.filter { showHidden || !$0.name.hasPrefix(".") } }
+
+    private var deleteBinding: Binding<Bool> {
+        Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
+    }
+
+    private var list: some View {
         List {
-            if let error { ErrorBanner(message: error) { Task { await load() } }.listRowBackground(Color.clear) }
-            ForEach(entries.filter { showHidden || !$0.name.hasPrefix(".") }) { entry in
-                NavigationLink {
-                    if entry.isDirectory { FilesScreen(path: entry.path) } else { FileViewer(path: entry.path) }
-                } label: {
-                    HStack(spacing: DS.S.s + 4) {
-                        Image(systemName: entry.isDirectory ? "folder.fill" : Self.icon(entry.name))
-                            .foregroundStyle(entry.isDirectory ? DS.C.volt : DS.C.ink2).frame(width: 24)
-                        Text(entry.name).font(DS.F.body).foregroundStyle(DS.C.ink).lineLimit(1)
+            if let error {
+                ErrorBanner(message: error) { Task { await load() } }.listRowBackground(Color.clear)
+            }
+            ForEach(visible) { entry in
+                FileRow(entry: entry)
+                    .swipeActions {
+                        Button(role: .destructive) { pendingDelete = entry } label: { Label("Delete", systemImage: "trash") }
                     }
-                }
-                .swipeActions {
-                    Button(role: .destructive) { pendingDelete = entry } label: { Label("Delete", systemImage: "trash") }
-                }
             }
         }
-        .overlay { if loading { ProgressView() } }
-        .refreshable { await load() }
-        .navigationTitle(current.isEmpty ? "Files" : (current as NSString).lastPathComponent)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Toggle("Show hidden files", isOn: $showHidden)
-                    Button { showUpload = true } label: { Label("Upload here", systemImage: "square.and.arrow.up") }
-                    Button { newFolder = true } label: { Label("New folder", systemImage: "folder.badge.plus") }
-                    Button { UIPasteboard.general.string = current } label: { Label("Copy path", systemImage: "doc.on.doc") }
-                } label: { Image(systemName: "ellipsis.circle") }
+    }
+
+    private var menu: some View {
+        Menu {
+            Toggle("Show hidden files", isOn: $showHidden)
+            Button { showUpload = true } label: { Label("Upload here", systemImage: "square.and.arrow.up") }
+            Button { newFolder = true } label: { Label("New folder", systemImage: "folder.badge.plus") }
+            Button { UIPasteboard.general.string = current } label: { Label("Copy path", systemImage: "doc.on.doc") }
+        } label: { Image(systemName: "ellipsis.circle") }
+    }
+
+    private var title: String { current.isEmpty ? "Files" : (current as NSString).lastPathComponent }
+
+    var body: some View {
+        list
+            .overlay { if loading { ProgressView() } }
+            .refreshable { await load() }
+            .navigationTitle(title)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { menu } }
+            .fileImporter(isPresented: $showUpload, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+                if case .success(let urls) = result { Task { await upload(urls) } }
             }
-        }
-        .fileImporter(isPresented: $showUpload, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { Task { await upload(urls) } }
-        }
-        .alert("New folder", isPresented: $newFolder) {
-            TextField("Name", text: $folderName)
-            Button("Create") { Task { await run("mkdir -p \(RemoteBackend.shq(current + "/" + folderName))") } }
-            Button("Cancel", role: .cancel) {}
-        }
-        .confirmationDialog("Delete \(pendingDelete?.name ?? "")?", isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
-                            titleVisibility: .visible) {
-            Button("Delete", role: .destructive) {
-                if let entry = pendingDelete { Task { await run("rm -rf -- \(RemoteBackend.shq(entry.path))") } }
+            .alert("New folder", isPresented: $newFolder) {
+                TextField("Name", text: $folderName)
+                Button("Create") { createFolder() }
+                Button("Cancel", role: .cancel) {}
             }
-        } message: { Text("This can't be undone.") }
-        .task { await load() }
+            .confirmationDialog(Text("Delete \(pendingDelete?.name ?? "")?"), isPresented: deleteBinding, titleVisibility: .visible) {
+                Button("Delete", role: .destructive) { deletePending() }
+            } message: { Text("This can't be undone.") }
+            .task { await load() }
+    }
+
+    private func createFolder() {
+        let target = RemoteBackend.shq(current + "/" + folderName)
+        Task { await run("mkdir -p " + target) }
+    }
+
+    private func deletePending() {
+        guard let entry = pendingDelete else { return }
+        let target = RemoteBackend.shq(entry.path)
+        Task { await run("rm -rf -- " + target) }
     }
 
     private func load() async {
@@ -134,6 +148,22 @@ struct FilesScreen: View {
         case "zip", "gz", "tar": return "doc.zipper"
         case "pdf": return "doc.richtext"
         default: return "doc"
+        }
+    }
+}
+
+struct FileRow: View {
+    var entry: RemoteFileEntry
+    var body: some View {
+        NavigationLink {
+            if entry.isDirectory { FilesScreen(path: entry.path) } else { FileViewer(path: entry.path) }
+        } label: {
+            HStack(spacing: DS.S.s + 4) {
+                Image(systemName: entry.isDirectory ? "folder.fill" : FilesScreen.icon(entry.name))
+                    .foregroundStyle(entry.isDirectory ? DS.C.volt : DS.C.ink2)
+                    .frame(width: 24)
+                Text(entry.name).font(DS.F.body).foregroundStyle(DS.C.ink).lineLimit(1)
+            }
         }
     }
 }
