@@ -256,3 +256,65 @@ final class LiveEngineTests: XCTestCase {
         await engine.disconnect()
     }
 }
+
+/// Coming back to the app must be fast: a still-good link is kept, a dead one is replaced
+/// through the fast path (saved token, no locate/verify/spawn), and the shell keeps keystroke order.
+final class LiveReconnectTests: XCTestCase {
+    func env() throws -> (SSHTarget, SSHIdentity) {
+        let e = ProcessInfo.processInfo.environment
+        guard let host = e["HERMES_E2E_SSH_HOST"], let key = e["HERMES_E2E_SSH_KEY"], let raw = Data(base64Encoded: key) else {
+            throw XCTSkip("HERMES_E2E_* not set")
+        }
+        return (SSHTarget(host: host, port: Int(e["HERMES_E2E_SSH_PORT"] ?? "22") ?? 22, username: e["HERMES_E2E_SSH_USER"] ?? "root"),
+                try SSHIdentity(rawRepresentation: raw))
+    }
+
+    func testForegroundCheckAndFastReconnect() async throws {
+        let (target, identity) = try env()
+        let persistence = MemoryEnginePersistence()
+        let engine = HermesEngine(persistence: persistence)
+        let options = HermesClient.Options(target: target, identity: identity, hostKeys: MemoryHostKeyStore(),
+                                           ownershipID: LiveHermesTests.ownership)
+        await engine.connect(options)
+        let first = await engine.state
+        XCTAssertTrue(first.isConnected, "\(first)")
+        let pid = persistence.loadBackend(for: target.hostID)?.pid
+
+        // Healthy link: kept, answered in well under a second.
+        var start = Date()
+        let kept = await engine.ensureAlive()
+        XCTAssertTrue(kept)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 2)
+
+        // Dead link (what iOS leaves behind): replaced via the fast path, same backend.
+        let client = await engine.client
+        client?.ssh.close()
+        try await Task.sleep(nanoseconds: 300_000_000)
+        start = Date()
+        let keptDead = await engine.ensureAlive()
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertFalse(keptDead)
+        let after = await engine.state
+        XCTAssertTrue(after.isConnected, "\(after)")
+        XCTAssertEqual(persistence.loadBackend(for: target.hostID)?.pid, pid, "reused the running backend")
+        print("FAST_RECONNECT_SECONDS=\(elapsed)")
+        XCTAssertLessThan(elapsed, 5, "fast reconnect")
+        await engine.disconnect()
+    }
+
+    func testShellKeystrokesStayInOrderAndBackspaceErases() async throws {
+        let (target, identity) = try env()
+        let ssh = try await SSHConnection.connect(to: target, identity: identity, hostKeys: MemoryHostKeyStore())
+        let shell = try await ssh.openShell(columns: 80, rows: 24)
+        // Type "echo abX", backspace, "c-ok" one byte at a time, the way the keyboard does.
+        for byte in Array("echo abX".utf8) + [0x7f] + Array("c-ok\n".utf8) { shell.send(Data([byte])) }
+        var output = ""
+        for try await event in shell.events {
+            if case .data(let d) = event { output += String(decoding: d, as: UTF8.self) }
+            if output.contains("abc-ok\r\n") || output.contains("\nabc-ok") { break }
+        }
+        XCTAssertTrue(output.contains("abc-ok"), output)
+        shell.send(Data("exit\n".utf8))
+        ssh.close()
+    }
+}

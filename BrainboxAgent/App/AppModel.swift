@@ -157,22 +157,39 @@ final class AppModel {
         await engine.disconnect()
     }
 
-    /// Back from the background: the SSH socket was probably suspended.
+    /// Back on screen: a link that still answers is kept (instant); a dead one is replaced
+    /// at once through the fast path. The chat stays visible meanwhile.
     func resumeFromBackground() async {
-        guard profile != nil, preferences.autoReconnect else { return }
-        let client = await engine.client
-        let healthy = client != nil && client?.ssh.isActive == true && client?.rpc.closed == false
-        if !healthy {
-            switch connection {
-            case .connected, .reconnecting:
-                await engine.reconnectNow(reason: "Back online")
-            case .failed:
-                return
-            case .idle, .connecting:
-                await connect()
-            }
+        guard profile != nil, preferences.autoReconnect, !Self.isDemo else { return }
+        switch connection {
+        case .connected, .reconnecting:
+            await engine.ensureAlive()
+        case .failed:
+            return
+        case .idle, .connecting:
+            if await engine.client == nil { await connect() }
         }
         await refreshSessions()
+    }
+
+    /// Waits (up to `timeout`) for the connection, so a message typed while reconnecting
+    /// is sent as soon as the link is back instead of failing.
+    func waitUntilConnected(timeout: TimeInterval = 25) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !isConnected {
+            if case .failed = connection { return false }
+            if case .idle = connection { return false }
+            if Date() > deadline { return false }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        return true
+    }
+
+    var isReconnecting: Bool {
+        switch connection {
+        case .reconnecting, .connecting: return profile != nil
+        default: return false
+        }
     }
 
     func forgetHostKey() {
@@ -258,6 +275,10 @@ final class AppModel {
     func send(_ text: String, attachments: [Attachment] = []) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || !attachments.isEmpty else { return }
+        if !isConnected {
+            toast = "Sending as soon as Hermes is back…"
+            guard await waitUntilConnected() else { toast = "Not connected — your message wasn't sent."; return }
+        }
         if currentChat == nil { await newChat() }
         guard let chat = currentChat else { return }
         if preferences.haptics { Haptic.tap() }

@@ -81,6 +81,12 @@ struct SettingsScreen: View {
             } header: { Text("Security") }
 
             Section {
+                Toggle("Stay connected in the background", isOn: $model.preferences.stayConnected)
+            } header: { Text("Connection") } footer: {
+                Text("Like Termius: Brainbox keeps running (and stays connected) while you use other apps, until you swipe it away. Replies and approvals reach you live. Uses a little more battery.")
+            }
+
+            Section {
                 Button("Edit config.yaml") { showConfig = true }
                 NavigationLink { UpdatesScreen() } label: { Text("Updates & doctor") }
             } header: { Text("Advanced") }

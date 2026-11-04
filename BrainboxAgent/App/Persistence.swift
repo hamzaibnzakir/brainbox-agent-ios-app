@@ -132,6 +132,8 @@ struct Preferences: Codable, Equatable {
     var showPet = true
     /// Start `hermes serve` in Desktop mode (only for servers with dashboard.public_url set).
     var desktopBackend = false
+    /// Keep the app (and SSH) running in the background until it's swiped away.
+    var stayConnected = true
 
     init() {}
 
@@ -151,6 +153,7 @@ struct Preferences: Codable, Equatable {
         autoReconnect = try c.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? d.autoReconnect
         showPet = try c.decodeIfPresent(Bool.self, forKey: .showPet) ?? d.showPet
         desktopBackend = try c.decodeIfPresent(Bool.self, forKey: .desktopBackend) ?? d.desktopBackend
+        stayConnected = try c.decodeIfPresent(Bool.self, forKey: .stayConnected) ?? d.stayConnected
     }
 
     static var current: Preferences {

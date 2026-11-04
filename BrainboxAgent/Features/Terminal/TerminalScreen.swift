@@ -45,9 +45,9 @@ final class ShellSession {
         }
     }
 
+    /// Keystrokes go out in the exact order they were typed (no racing tasks).
     func input(_ bytes: [UInt8]) {
-        guard let stream else { return }
-        Task { try? await stream.write(Data(bytes)) }
+        stream?.send(Data(bytes))
     }
 
     func send(_ text: String) { input(Array(text.utf8)) }
@@ -104,8 +104,10 @@ struct TerminalScreen: View {
     private var keyBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: DS.S.s) {
+                key("⌫", "\u{7f}")
                 key("esc", "\u{1b}")
                 key("tab", "\t")
+                key("cd ..", "cd ..\n")
                 key("^C", "\u{03}")
                 key("^D", "\u{04}")
                 key("^L", "\u{0c}")
@@ -113,6 +115,8 @@ struct TerminalScreen: View {
                 key("↓", "\u{1b}[B")
                 key("←", "\u{1b}[D")
                 key("→", "\u{1b}[C")
+                key("home", "\u{01}")
+                key("end", "\u{05}")
                 key("|", "|")
                 key("~", "~")
                 key("/", "/")

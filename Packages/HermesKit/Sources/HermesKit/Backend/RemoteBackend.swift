@@ -26,6 +26,8 @@ public struct RemoteBackendRecord: Codable, Hashable, Sendable {
     public var nonce: String
     public var token: String
     public var hermesPath: String
+    /// Hermes version seen when this backend was verified (for fast reconnects).
+    public var version: String?
 }
 
 public struct BackendHandle: Sendable {
@@ -153,7 +155,9 @@ public struct RemoteBackend: Sendable {
         if let known {
             progress(.reusing)
             if await pidAlive(known), let version = await verify(known) {
-                return BackendHandle(record: known, reused: true, version: version)
+                var record = known
+                record.version = version
+                return BackendHandle(record: record, reused: true, version: version)
             }
         }
         progress(.locating)
@@ -215,13 +219,15 @@ public struct RemoteBackend: Sendable {
             throw BackendError.notReady(tail)
         }
 
-        let record = RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath)
+        let record = RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath, version: nil)
         let lock = LockFile(record: record)
         if let data = try? JSONEncoder().encode(lock) {
             _ = try? await ssh.exec("umask 077; cat > \(lockPath).tmp && mv -f \(lockPath).tmp \(lockPath)", stdin: data, timeout: 20)
         }
         let version = await verify(record)
-        return BackendHandle(record: record, reused: false, version: version)
+        var verified = record
+        verified.version = version
+        return BackendHandle(record: verified, reused: false, version: version)
     }
 
     /// Stops the backend this phone started (never anything else).
@@ -251,7 +257,7 @@ public struct RemoteBackend: Sendable {
         }
 
         func record(token: String) -> RemoteBackendRecord {
-            RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath)
+            RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath, version: nil)
         }
     }
 }

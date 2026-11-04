@@ -26,6 +26,12 @@ struct RootView: View {
                 }
             }
         }
+        .overlay {
+            if model.isReconnecting, model.profile != nil, !AppModel.isDemo {
+                ReconnectingScreen().transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: model.isReconnecting)
         .overlay(alignment: .top) {
             if let toast = model.toast {
                 ToastView(text: toast)
@@ -106,5 +112,47 @@ struct ConnectionBanner: View {
         .background(DS.C.surface, in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous).stroke(DS.C.line, lineWidth: 1))
         .padding(.horizontal, DS.S.m)
+    }
+}
+
+
+/// Shown while the link to the server is being rebuilt: your chat stays underneath,
+/// and anything you send waits for the connection instead of failing.
+struct ReconnectingScreen: View {
+    @Environment(AppModel.self) private var model
+    @State private var since = Date()
+
+    private var step: String {
+        switch model.connection {
+        case .connecting(let step): return step
+        case .reconnecting(let attempt, let reason): return attempt > 1 ? "\(reason) (try \(attempt))" : reason
+        default: return "Connecting"
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
+            VStack(spacing: DS.S.m) {
+                Companion(mood: .busy, size: 72)
+                Text("Reconnecting to \(model.profile?.name ?? "your server")").font(DS.F.bodyStrong).foregroundStyle(DS.C.ink)
+                HStack(spacing: DS.S.s) {
+                    ProgressView().controlSize(.small)
+                    Text(step).font(DS.F.small).foregroundStyle(DS.C.ink2)
+                }
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    if context.date.timeIntervalSince(since) > 12 {
+                        Button("Try again now") { Task { await model.engine.reconnectNow(reason: "Reconnecting") } }
+                            .buttonStyle(SecondaryButtonStyle())
+                    }
+                }
+            }
+            .padding(DS.S.xl)
+            .card()
+            .padding(DS.S.l)
+        }
+        .onAppear { since = Date() }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Reconnecting")
     }
 }

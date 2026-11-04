@@ -294,7 +294,9 @@ public final class SSHConnection: @unchecked Sendable {
         let stream = try await openChannel(.session)
         try await stream.channel.triggerUserOutboundEvent(SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: false, term: term, terminalCharacterWidth: columns, terminalRowHeight: rows,
-            terminalPixelWidth: 0, terminalPixelHeight: 0, terminalModes: SSHTerminalModes([:]))).get()
+            terminalPixelWidth: 0, terminalPixelHeight: 0,
+            // Say which keys erase and interrupt instead of relying on the server's defaults.
+            terminalModes: SSHTerminalModes([.VERASE: 127, .VINTR: 3]))).get()
         try await stream.channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: false)).get()
         return stream
     }
@@ -336,6 +338,15 @@ public final class SSHByteStream: @unchecked Sendable {
     }
 
     public func write(_ text: String) async throws { try await write(Data(text.utf8)) }
+
+    /// Queues bytes without waiting. Calls made one after another reach the server in that
+    /// order (a keystroke stream), unlike concurrent `write` tasks which can overtake each other.
+    public func send(_ data: Data) {
+        guard channel.isActive else { return }
+        var buffer = channel.allocator.buffer(capacity: data.count)
+        buffer.writeBytes(data)
+        channel.writeAndFlush(buffer, promise: nil)
+    }
 
     /// Tells the PTY the terminal changed size.
     public func resize(columns: Int, rows: Int) {

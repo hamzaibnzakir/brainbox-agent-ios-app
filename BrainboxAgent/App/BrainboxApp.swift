@@ -23,8 +23,12 @@ struct BrainboxApp: App {
                 .onOpenURL { url in Task { await model.handle(url: url) } }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
-                    case .active: Task { await model.resumeFromBackground() }
-                    case .background: BackgroundRefresh.schedule()
+                    case .active:
+                        BackgroundKeeper.shared.enterForeground()
+                        Task { await model.resumeFromBackground() }
+                    case .background:
+                        BackgroundRefresh.schedule()
+                        BackgroundKeeper.shared.enterBackground(keepAlive: model.preferences.stayConnected && model.profile != nil)
                     default: break
                     }
                 }

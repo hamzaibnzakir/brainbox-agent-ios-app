@@ -131,6 +131,19 @@ public actor HermesEngine {
         disconnect()
     }
 
+    /// Back in the foreground: keep a link that still answers, otherwise reconnect at once
+    /// (no backoff). Returns true when the existing link was fine.
+    @discardableResult
+    public func ensureAlive() async -> Bool {
+        guard wantConnected else { return false }
+        if let client, await client.isAlive(timeout: 2) { return true }
+        reconnectTask?.cancel()
+        client?.close()
+        client = nil
+        await establish(isReconnect: true, reason: "Reconnecting")
+        return false
+    }
+
     /// Drop and rebuild the connection now (app returned to foreground, network changed).
     public func reconnectNow(reason: String = "Reconnecting") async {
         guard wantConnected else { return }
@@ -261,37 +274,49 @@ public actor HermesEngine {
 
     private func reattachChats() async {
         guard let client else { return }
-        for (key, chat) in chats {
-            do {
-                let resumed = try await client.rpc.call("session.resume", ["session_id": .string(key)], timeout: 60)
-                let live = resumed["session_id"]?.stringValue ?? chat.liveID
-                liveToChat[chat.liveID] = nil
-                liveToChat[live] = key
-                var updated = chat
-                updated.liveID = live
-                let since = try await client.rpc.call("session.events.since",
-                                                      ["session_id": .string(live), "last_seen": .number(Double(chat.transcript.lastSeq))])
-                for raw in since["events"]?.arrayValue ?? [] {
-                    if let event = GatewayEvent(json: raw) { updated.transcript.apply(event) }
-                }
-                // Questions still waiting for an answer (newer Hermes re-delivers them here).
-                for frame in (resumed["open_requests"]?.arrayValue ?? []) + (since["open_requests"]?.arrayValue ?? []) {
-                    if let id = frame["id"], let method = frame["method"]?.stringValue {
-                        updated.transcript.apply(GatewayEvent(type: "server.request", sessionID: live,
-                                                              payload: ["id": id, "method": .string(method), "params": frame["params"] ?? .null]))
+        let snapshot = chats
+        // Re-attach every open chat in parallel; one slow session doesn't hold up the others.
+        let results = await withTaskGroup(of: (String, JSONValue?, JSONValue?).self) { group in
+            for (key, chat) in snapshot {
+                group.addTask {
+                    guard let resumed = try? await client.rpc.call("session.resume", ["session_id": .string(key)], timeout: 60) else {
+                        return (key, nil, nil)
                     }
+                    let live = resumed["session_id"]?.stringValue ?? chat.liveID
+                    let since = try? await client.rpc.call("session.events.since",
+                                                           ["session_id": .string(live), "last_seen": .number(Double(chat.transcript.lastSeq))])
+                    return (key, resumed, since)
                 }
-                // A turn that ended while we were away and isn't in the replay window.
-                if updated.transcript.busy, resumed["running"]?.boolValue == false, resumed["inflight"]?.boolValue != true {
-                    updated.transcript.busy = false
-                    updated.transcript.status = nil
-                    updated.transcript.hydrate(messages: resumed["messages"]?.arrayValue ?? [])
-                }
-                chats[key] = updated
-                continuation.yield(.transcript(chat: key, updated.transcript))
-            } catch {
-                continue
             }
+            var out: [(String, JSONValue?, JSONValue?)] = []
+            for await r in group { out.append(r) }
+            return out
+        }
+        for (key, resumedValue, sinceValue) in results {
+            guard let resumed = resumedValue, var updated = chats[key] else { continue }
+            let since = sinceValue ?? .null
+            let live = resumed["session_id"]?.stringValue ?? updated.liveID
+            liveToChat[updated.liveID] = nil
+            liveToChat[live] = key
+            updated.liveID = live
+            for raw in since["events"]?.arrayValue ?? [] {
+                if let event = GatewayEvent(json: raw) { updated.transcript.apply(event) }
+            }
+            // Questions still waiting for an answer (newer Hermes re-delivers them here).
+            for frame in (resumed["open_requests"]?.arrayValue ?? []) + (since["open_requests"]?.arrayValue ?? []) {
+                if let id = frame["id"], let method = frame["method"]?.stringValue {
+                    updated.transcript.apply(GatewayEvent(type: "server.request", sessionID: live,
+                                                          payload: ["id": id, "method": .string(method), "params": frame["params"] ?? .null]))
+                }
+            }
+            // A turn that ended while we were away and isn't in the replay window.
+            if updated.transcript.busy, resumed["running"]?.boolValue == false, resumed["inflight"]?.boolValue != true {
+                updated.transcript.busy = false
+                updated.transcript.status = nil
+                updated.transcript.hydrate(messages: resumed["messages"]?.arrayValue ?? [])
+            }
+            chats[key] = updated
+            continuation.yield(.transcript(chat: key, updated.transcript))
         }
     }
 

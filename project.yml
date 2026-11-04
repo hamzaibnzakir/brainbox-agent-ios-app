@@ -83,6 +83,7 @@ targets:
         NSPhotoLibraryUsageDescription: Brainbox Agent lets you pick photos to send to your agent or upload to your server's Brainbox workspace.
         UIBackgroundModes:
           - fetch
+          - audio
         BGTaskSchedulerPermittedIdentifiers:
           - app.brainbox.agent.refresh
         CFBundleURLTypes:
