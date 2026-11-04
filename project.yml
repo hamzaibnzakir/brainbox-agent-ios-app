@@ -80,6 +80,7 @@ targets:
         NSLocalNetworkUsageDescription: Brainbox connects over SSH to your server, which may be on your local or Tailscale network.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSPhotoLibraryAddUsageDescription: Save images and videos Hermes sends you to your photo library.
         NSPhotoLibraryUsageDescription: Brainbox Agent lets you pick photos to send to your agent or upload to your server's Brainbox workspace.
         UIBackgroundModes:
           - fetch

@@ -87,8 +87,12 @@ struct AssistantMessage: View {
                         .background(DS.C.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
             }
-            if !text.isEmpty {
-                MarkdownText(text: text, streaming: streaming)
+            let parts = MediaRef.extract(from: text)
+            if !parts.text.isEmpty {
+                MarkdownText(text: streaming ? text : parts.text, streaming: streaming)
+            }
+            if !streaming, !parts.refs.isEmpty {
+                MediaGallery(refs: parts.refs)
             }
             if streaming {
                 TypingDots()

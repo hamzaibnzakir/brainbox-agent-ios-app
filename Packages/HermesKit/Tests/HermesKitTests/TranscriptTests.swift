@@ -129,3 +129,36 @@ final class ServerRequestTests: XCTestCase {
         XCTAssertEqual(t.pendingRequests.map(\.requestID), ["srq-q"])
     }
 }
+
+final class MediaRefTests: XCTestCase {
+    func testMediaTagsImagesAndPaths() {
+        let text = """
+        Here's the chart:
+        MEDIA:/root/out/chart.png
+        And the video ![demo](/tmp/demo.mp4) plus a report at /root/reports/q3.pdf.
+        Docs: https://example.com/a.jpg
+        [[audio_as_voice]]
+        ```
+        MEDIA:/not/this.png
+        ```
+        """
+        let (clean, refs) = MediaRef.extract(from: text)
+        XCTAssertEqual(refs.map(\.location), ["/root/out/chart.png", "/tmp/demo.mp4", "/root/reports/q3.pdf"])
+        XCTAssertEqual(refs.map(\.kind), [.image, .video, .document])
+        XCTAssertFalse(clean.contains("MEDIA:/root/out"), clean)
+        XCTAssertTrue(clean.contains("And the video demo plus"), clean)
+        XCTAssertTrue(clean.contains("MEDIA:/not/this.png"), "code blocks are left alone")
+        XCTAssertFalse(clean.contains("[[audio_as_voice]]"))
+    }
+
+    func testMarkdownImageURLAndUnknownMediaPath() {
+        let (_, refs) = MediaRef.extract(from: "![x](https://example.com/p.webp)\nMEDIA:/root/file.bin")
+        XCTAssertEqual(refs.map(\.kind), [.image, .document])
+        XCTAssertTrue(refs[0].isRemoteURL)
+        XCTAssertEqual(refs[1].filename, "file.bin")
+    }
+
+    func testPlainTextHasNoRefs() {
+        XCTAssertTrue(MediaRef.extract(from: "cd /root && ls /etc").refs.isEmpty)
+    }
+}

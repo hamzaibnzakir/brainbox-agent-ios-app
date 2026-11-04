@@ -302,6 +302,20 @@ final class LiveReconnectTests: XCTestCase {
         await engine.disconnect()
     }
 
+    func testBinaryFilesRoundTripOverSSH() async throws {
+        let (target, identity) = try env()
+        let ssh = try await SSHConnection.connect(to: target, identity: identity, hostKeys: MemoryHostKeyStore())
+        let blob = Data((0..<3_000_000).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        let path = "/tmp/brainbox-media-\(UUID().uuidString).png"
+        _ = try await ssh.exec("cat > \(RemoteBackend.shq(path))", stdin: blob, timeout: 120)
+        let size = try await ssh.exec("stat -c %s -- \(RemoteBackend.shq(path))")
+        XCTAssertEqual(Int(size.output.trimmingCharacters(in: .whitespacesAndNewlines)), blob.count)
+        let back = try await ssh.exec("cat -- \(RemoteBackend.shq(path))", timeout: 120)
+        XCTAssertEqual(back.stdout, blob, "3 MB image comes back byte-for-byte")
+        _ = try await ssh.exec("rm -f -- \(RemoteBackend.shq(path))")
+        ssh.close()
+    }
+
     func testShellKeystrokesStayInOrderAndBackspaceErases() async throws {
         let (target, identity) = try env()
         let ssh = try await SSHConnection.connect(to: target, identity: identity, hostKeys: MemoryHostKeyStore())
