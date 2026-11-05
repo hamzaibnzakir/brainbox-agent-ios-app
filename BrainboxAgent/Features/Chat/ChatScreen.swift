@@ -26,6 +26,7 @@ struct ChatScreen: View {
         .screenBackground()
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: DS.S.s) {
+                if let prompt = screenPrompt { ScreenPromptBar(text: prompt.text, urgent: prompt.urgent) { model.showScreen = true } }
                 if !transcript.todos.isEmpty { TodoPanel(todos: transcript.todos, expanded: $showTodos) }
                 Composer(chat: chat, busy: transcript.busy, status: transcript.status)
             }
@@ -61,6 +62,7 @@ struct ChatScreen: View {
             Menu {
                 Button { Task { await model.newChat() } } label: { Label("New chat", systemImage: "square.and.pencil") }
                 Button { showModels = true } label: { Label("Model", systemImage: "cpu") }
+                Button { model.showScreen = true } label: { Label("Hermes' screen", systemImage: "display") }
                 if chat != nil {
                     Button { renameText = transcript.title ?? ""; showRename = true } label: { Label("Rename", systemImage: "pencil") }
                     if let text = shareText { ShareLink(item: text) { Label("Share chat", systemImage: "square.and.arrow.up") } }
@@ -76,6 +78,13 @@ struct ChatScreen: View {
                 .disabled(!model.isConnected)
                 .accessibilityLabel("New chat")
         }
+    }
+
+    /// Offer the screen when Hermes is driving its browser, or stopped to ask for a takeover.
+    private var screenPrompt: (text: String, urgent: Bool)? {
+        if let chat, model.screenAsk == chat { return ("Hermes needs you on its screen — take over", true) }
+        if model.screenToolRunning(in: chat) { return ("Hermes is using its browser — watch live", false) }
+        return nil
     }
 
     private var subtitle: String {

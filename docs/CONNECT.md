@@ -52,8 +52,13 @@ What happens on the server when you connect:
 - **Hub**: terminal (a real root shell over SSH), files, server health, logs,
   skills, tools, MCP, memory, star map, persona, messaging, webhooks, pairing,
   models, profiles, usage, plugins, updates/doctor, code review, backups, import.
+- **Hermes' screen** (Hub, or the chat menu): watch the bot's browser live,
+  **Take over** for a login, CAPTCHA, 2FA or payment step, then **Hand back**.
+  Needs a Hermes version with Bot Screen and its packages on the server — see
+  [BOT_SCREEN.md](BOT_SCREEN.md).
 - **Notifications**: local notifications when a reply lands or Hermes needs
-  approval; approve or deny right from the banner.
+  approval; approve or deny right from the banner. When Hermes stops at a step
+  only you can do on its screen, the notification opens the screen.
 - **Siri / widgets**: "Ask Brainbox", "Talk to Hermes in Brainbox"; home-screen
   widget; Live Activity while a turn runs.
 

@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 }
 
 extension AppModel {
-    /// brainbox://ask?text=…, brainbox://new, brainbox://chat/<id>, or a shared file.
+    /// brainbox://ask?text=…, brainbox://new, brainbox://chat/<id>, brainbox://screen, or a shared file.
     func handle(url: URL) async {
         if url.isFileURL {
             let access = url.startAccessingSecurityScopedResource()
@@ -78,6 +78,9 @@ extension AppModel {
         case "voice":
             selectedTab = .chat
             voiceRequested = true
+        case "screen":
+            if !isConnected { await connect() }
+            showScreen = true
         default:
             break
         }

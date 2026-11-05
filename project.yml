@@ -43,6 +43,12 @@ targets:
     platform: iOS
     sources:
       - path: BrainboxAgent
+        excludes:
+          - Resources/ScreenViewer
+      # Hermes' screen viewer (noVNC + bridge, built by scripts/novnc/build.sh), copied as a folder.
+      - path: BrainboxAgent/Resources/ScreenViewer
+        type: folder
+        buildPhase: resources
       - path: Shared
     dependencies:
       - package: BrainboxCore

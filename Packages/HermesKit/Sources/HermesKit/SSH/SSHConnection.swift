@@ -341,11 +341,17 @@ public final class SSHByteStream: @unchecked Sendable {
 
     /// Queues bytes without waiting. Calls made one after another reach the server in that
     /// order (a keystroke stream), unlike concurrent `write` tasks which can overtake each other.
-    public func send(_ data: Data) {
-        guard channel.isActive else { return }
+    /// Returns false when the channel is already closed (nothing was sent); `onFailure` runs if
+    /// a queued write fails later, so a caller can tell the user instead of losing input silently.
+    @discardableResult
+    public func send(_ data: Data, onFailure: (@Sendable (Error) -> Void)? = nil) -> Bool {
+        guard channel.isActive else { return false }
         var buffer = channel.allocator.buffer(capacity: data.count)
         buffer.writeBytes(data)
-        channel.writeAndFlush(buffer, promise: nil)
+        let promise = channel.eventLoop.makePromise(of: Void.self)
+        promise.futureResult.whenFailure { error in onFailure?(error) }
+        channel.writeAndFlush(buffer, promise: promise)
+        return true
     }
 
     /// Tells the PTY the terminal changed size.

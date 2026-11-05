@@ -47,7 +47,11 @@ final class ShellSession {
 
     /// Keystrokes go out in the exact order they were typed (no racing tasks).
     func input(_ bytes: [UInt8]) {
-        stream?.send(Data(bytes))
+        guard let stream else { return }
+        let sent = stream.send(Data(bytes)) { [weak self] error in
+            Task { @MainActor in self?.phase = .closed("Lost the shell: \(error.localizedDescription)") }
+        }
+        if !sent { phase = .closed("The shell connection closed — that input wasn't sent.") }
     }
 
     func send(_ text: String) { input(Array(text.utf8)) }

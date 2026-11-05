@@ -67,6 +67,10 @@ final class AppModel {
     var sharedAttachments: [Attachment] = []
     /// Set by the Siri/widget voice shortcut.
     var voiceRequested = false
+    /// Hermes' screen (Bot Screen) is open full-screen.
+    var showScreen = false
+    /// The chat whose last turn used the browser and then asked you to step in (login, CAPTCHA…).
+    var screenAsk: String?
 
     enum Tab: Hashable { case chat, sessions, agents, hub }
 
@@ -115,6 +119,10 @@ final class AppModel {
             if transcript.busy { store.watchedChats[chat] = transcript.title ?? "Hermes" }
         case .turnFinished(let chat, let title, let text):
             store.watchedChats[chat] = nil
+            if let transcript = transcripts[chat], Self.asksForTakeover(text, transcript: transcript) {
+                screenAsk = chat
+                if preferences.notifyOnApproval { notifier.needsScreen(chat: chat, title: title, text: text) }
+            }
             if preferences.haptics { Haptic.success() }
             if preferences.notifyOnFinish { notifier.turnFinished(chat: chat, title: title, text: text) }
             if preferences.speakReplies, chat == currentChat { Task { await Voice.shared.speak(text, using: self) } }
@@ -281,6 +289,7 @@ final class AppModel {
         }
         if currentChat == nil { await newChat() }
         guard let chat = currentChat else { return }
+        if screenAsk == chat { screenAsk = nil }
         if preferences.haptics { Haptic.tap() }
         do {
             if trimmed.hasPrefix("/"), attachments.isEmpty {
@@ -338,6 +347,34 @@ final class AppModel {
         } catch {
             toast = error.localizedDescription
         }
+    }
+
+    // MARK: Screen
+
+    /// The turn drove the browser/screen and its reply asks the person to step in. Hermes' bots
+    /// end the turn and say so when they reach a login, 2FA, CAPTCHA or payment step.
+    nonisolated static func asksForTakeover(_ text: String, transcript: Transcript) -> Bool {
+        var usedScreen = false
+        for item in transcript.items.reversed() {
+            if case .user = item.kind { break }
+            if case .tool(let tool) = item.kind, ScreenStatus.isScreenTool(tool.name) { usedScreen = true; break }
+        }
+        guard usedScreen else { return false }
+        let t = text.lowercased()
+        let cues = ["captcha", "2fa", "two-factor", "two factor", "verification code", "one-time code", "security check",
+                    "verify you", "verify that you", "log in", "login", "sign in", "sign-in", "take over", "takeover",
+                    "hand back", "payment", "confirm it's you", "human verification"]
+        return cues.contains { t.contains($0) }
+    }
+
+    /// The running tool, when Hermes is driving its screen right now.
+    func screenToolRunning(in chat: String?) -> Bool {
+        guard let chat, let transcript = transcripts[chat], transcript.busy else { return false }
+        for item in transcript.items.reversed() {
+            if case .user = item.kind { return false }
+            if case .tool(let tool) = item.kind, tool.status == .running { return ScreenStatus.isScreenTool(tool.name) }
+        }
+        return false
     }
 
     // MARK: Pet

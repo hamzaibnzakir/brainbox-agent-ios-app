@@ -66,4 +66,16 @@ final class ScreenshotTests: XCTestCase {
             app.terminate()
         }
     }
+
+    /// Hermes' screen from the Hub (demo mode: installed but off, so no server is needed).
+    func testScreenViewer() {
+        launch(demo: true, .light)
+        tab("Hub")
+        let tile = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Watch, take over")).firstMatch
+        XCTAssertTrue(tile.waitForExistence(timeout: 10), "Hub offers Hermes' screen")
+        tile.tap()
+        XCTAssertTrue(app.staticTexts["The screen is off"].waitForExistence(timeout: 10), "screen state renders")
+        XCTAssertTrue(app.buttons["Start screen"].exists)
+        shot("09-screen-off")
+    }
 }

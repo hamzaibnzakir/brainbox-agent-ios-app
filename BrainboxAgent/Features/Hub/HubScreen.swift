@@ -8,7 +8,7 @@ struct HubScreen: View {
     @State private var showSettings = false
 
     enum Destination: String, Hashable, CaseIterable, Identifiable {
-        case terminal, files, system, logs
+        case screen, terminal, files, system, logs
         case skills, tools, mcp, memory, starmap, curator, soul
         case messaging, webhooks, pairing
         case profiles, models, usage, plugins
@@ -17,6 +17,7 @@ struct HubScreen: View {
 
         var title: String {
             switch self {
+            case .screen: return "Hermes' screen"
             case .terminal: return "Terminal"
             case .files: return "Files"
             case .system: return "Server health"
@@ -44,6 +45,7 @@ struct HubScreen: View {
 
         var subtitle: String {
             switch self {
+            case .screen: return "Watch, take over, hand back"
             case .terminal: return "A shell on the server"
             case .files: return "Browse, read, edit"
             case .system: return "CPU, memory, disk"
@@ -71,6 +73,7 @@ struct HubScreen: View {
 
         var symbol: String {
             switch self {
+            case .screen: return "display"
             case .terminal: return "terminal.fill"
             case .files: return "folder.fill"
             case .system: return "gauge.with.dots.needle.67percent"
@@ -103,7 +106,7 @@ struct HubScreen: View {
     }
 
     static let sections: [HubSection] = [
-        HubSection(id: "Server", items: [.terminal, .files, .system, .logs]),
+        HubSection(id: "Server", items: [.screen, .terminal, .files, .system, .logs]),
         HubSection(id: "Agent", items: [.skills, .tools, .mcp, .memory, .starmap, .soul, .curator]),
         HubSection(id: "Channels", items: [.messaging, .webhooks, .pairing]),
         HubSection(id: "Setup", items: [.models, .profiles, .usage, .plugins]),
@@ -175,6 +178,7 @@ struct HubScreen: View {
     @ViewBuilder
     private func destination(for d: Destination) -> some View {
         switch d {
+        case .screen: ScreenScreen()
         case .terminal: TerminalScreen()
         case .files: FilesScreen(path: nil)
         case .system: SystemScreen()

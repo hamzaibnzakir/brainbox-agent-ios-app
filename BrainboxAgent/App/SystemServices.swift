@@ -95,6 +95,20 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sen
         post(content, id: "req-\(request.requestID)")
     }
 
+    /// Hermes stopped at a login, CAPTCHA, 2FA or payment step on its screen.
+    @MainActor
+    func needsScreen(chat: String, title: String, text: String) {
+        guard !appIsActive else { return }
+        let content = UNMutableNotificationContent()
+        content.title = "Hermes needs you on its screen"
+        content.body = text.isEmpty ? "\(title): take over to finish the step, then hand back." : String(text.prefix(200))
+        content.sound = .default
+        content.threadIdentifier = chat
+        content.interruptionLevel = .timeSensitive
+        content.userInfo = ["chat": chat, "screen": "1"]
+        post(content, id: "screen-\(chat)")
+    }
+
     func notify(title: String, body: String, chat: String?) {
         let content = UNMutableNotificationContent()
         content.title = title
@@ -118,18 +132,23 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate, @unchecked Sen
         let requestID = info["request"] as? String
         let action = response.actionIdentifier
         let typed = (response as? UNTextInputNotificationResponse)?.userText
+        let screen = info["screen"] != nil
         await MainActor.run {
             guard let model = self.model else { return }
-            Task { await model.handleNotification(chat: chat, requestID: requestID, action: action, text: typed) }
+            Task { await model.handleNotification(chat: chat, requestID: requestID, action: action, text: typed, screen: screen) }
         }
     }
 }
 
 extension AppModel {
-    func handleNotification(chat: String, requestID: String?, action: String, text: String?) async {
+    func handleNotification(chat: String, requestID: String?, action: String, text: String?, screen: Bool = false) async {
         if !isConnected { await connect() }
         guard isConnected else { return }
         await open(chatID: chat)
+        if screen {
+            showScreen = true
+            return
+        }
         switch action {
         case "approve_once", "deny":
             guard let requestID else { return }

@@ -28,10 +28,16 @@ public struct GatewayEvent: Sendable, Hashable {
 public struct RPCError: Error, LocalizedError, Equatable, Sendable {
     public var code: Int
     public var message: String
-    public init(code: Int, message: String) {
+    /// The error's `data` member, when Hermes sends one (e.g. `{"code": "viewer_mismatch"}`).
+    public var data: JSONValue?
+    public init(code: Int, message: String, data: JSONValue? = nil) {
         self.code = code
         self.message = message
+        self.data = data
     }
+
+    /// JSON-RPC "method not found": this Hermes version doesn't have the feature.
+    public var isUnknownMethod: Bool { code == -32601 }
     public var errorDescription: String? { message.isEmpty ? "Hermes error \(code)" : message }
 
     public static let timedOut = RPCError(code: -32000, message: "Hermes didn't answer in time.")
@@ -113,8 +119,8 @@ public final class GatewayRPC: @unchecked Sendable {
 
     private func readLoop() async {
         do {
-            for try await text in socket.messages {
-                handle(text)
+            for try await frame in socket.frames {
+                if case .text(let text) = frame { handle(text) }
             }
             finish(RPCError.disconnected)
         } catch {
@@ -146,7 +152,8 @@ public final class GatewayRPC: @unchecked Sendable {
         guard let continuation else { return }
         if let error = frame["error"] {
             continuation.resume(throwing: RPCError(code: error["code"]?.intValue ?? -1,
-                                                   message: error["message"]?.stringValue ?? "Hermes error"))
+                                                   message: error["message"]?.stringValue ?? "Hermes error",
+                                                   data: error["data"]))
         } else {
             continuation.resume(returning: frame["result"] ?? .null)
         }

@@ -18,17 +18,26 @@ public enum WebSocketError: Error, LocalizedError, Equatable {
     }
 }
 
+/// One complete WebSocket message.
+public enum WebSocketMessage: Sendable, Equatable {
+    case text(String)
+    case binary(Data)
+}
+
 /// RFC 6455 client over any byte stream (here: an SSH direct-tcpip channel to `hermes serve`).
 public final class TunnelWebSocket: @unchecked Sendable {
-    public let messages: AsyncThrowingStream<String, Error>
+    /// Every text and binary message, in arrival order. Ends (or throws) when the socket closes.
+    public let frames: AsyncThrowingStream<WebSocketMessage, Error>
     private let duplex: ByteDuplex
     private let lock = NSLock()
     private var isClosed = false
     private var reader: Task<Void, Never>?
+    private var outbox: AsyncStream<Data>.Continuation?
+    private var writer: Task<Void, Never>?
 
-    private init(duplex: ByteDuplex, messages: AsyncThrowingStream<String, Error>) {
+    private init(duplex: ByteDuplex, frames: AsyncThrowingStream<WebSocketMessage, Error>) {
         self.duplex = duplex
-        self.messages = messages
+        self.frames = frames
     }
 
     static let guid = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -66,14 +75,14 @@ public final class TunnelWebSocket: @unchecked Sendable {
             throw error
         }
 
-        let (stream, continuation) = AsyncThrowingStream.makeStream(of: String.self)
-        let socket = TunnelWebSocket(duplex: duplex, messages: stream)
+        let (stream, continuation) = AsyncThrowingStream.makeStream(of: WebSocketMessage.self)
+        let socket = TunnelWebSocket(duplex: duplex, frames: stream)
         socket.reader = Task { await socket.readLoop(reader, continuation) }
         continuation.onTermination = { _ in socket.close() }
         return socket
     }
 
-    private func readLoop(_ reader: ByteReader, _ continuation: AsyncThrowingStream<String, Error>.Continuation) async {
+    private func readLoop(_ reader: ByteReader, _ continuation: AsyncThrowingStream<WebSocketMessage, Error>.Continuation) async {
         var fragments = Data()
         var fragmentOpcode: UInt8 = 0
         do {
@@ -99,13 +108,14 @@ public final class TunnelWebSocket: @unchecked Sendable {
                 switch opcode {
                 case 0x0:
                     fragments.append(payload)
+                    guard fragments.count < 256 << 20 else { throw WebSocketError.protocolError("message too large") }
                     if fin {
-                        if fragmentOpcode == 0x1 { continuation.yield(String(decoding: fragments, as: UTF8.self)) }
+                        continuation.yield(Self.message(opcode: fragmentOpcode, payload: fragments))
                         fragments.removeAll()
                     }
                 case 0x1, 0x2:
                     if fin {
-                        if opcode == 0x1 { continuation.yield(String(decoding: payload, as: UTF8.self)) }
+                        continuation.yield(Self.message(opcode: opcode, payload: payload))
                     } else {
                         fragmentOpcode = opcode
                         fragments = payload
@@ -127,6 +137,10 @@ public final class TunnelWebSocket: @unchecked Sendable {
             close()
             continuation.finish(throwing: error)
         }
+    }
+
+    static func message(opcode: UInt8, payload: Data) -> WebSocketMessage {
+        opcode == 0x2 ? .binary(payload) : .text(String(decoding: payload, as: UTF8.self))
     }
 
     static func frame(opcode: UInt8, payload: Data, mask: [UInt8]) -> Data {
@@ -156,12 +170,70 @@ public final class TunnelWebSocket: @unchecked Sendable {
         try await sendFrame(opcode: 0x1, payload: Data(text.utf8))
     }
 
+    public func send(binary: Data) async throws {
+        if lock.withLock({ isClosed }) { throw WebSocketError.closed(code: 1006, reason: "") }
+        try await sendFrame(opcode: 0x2, payload: binary)
+    }
+
+    /// Queues a binary message without waiting. Messages queued one after another go out in that
+    /// order (an input stream such as RFB keys and pointer moves); concurrent `send` calls may not.
+    /// Returns false when the socket is already closed, so the caller can tell the user.
+    @discardableResult
+    public func enqueue(binary: Data) -> Bool {
+        let continuation: AsyncStream<Data>.Continuation? = lock.withLock {
+            if isClosed { return nil }
+            if outbox == nil {
+                let (stream, c) = AsyncStream.makeStream(of: Data.self, bufferingPolicy: .unbounded)
+                outbox = c
+                writer = Task { [weak self] in
+                    for await data in stream {
+                        guard let self else { return }
+                        do { try await self.sendFrame(opcode: 0x2, payload: data) } catch { self.close(); return }
+                    }
+                }
+            }
+            return outbox
+        }
+        guard let continuation else { return false }
+        if case .terminated = continuation.yield(binary) { return false }
+        return true
+    }
+
+    public var isOpen: Bool { lock.withLock { !isClosed } }
+
+    /// Payload of a close frame: the status code, big-endian, then the UTF-8 reason.
+    static func closePayload(code: Int, reason: String) -> Data {
+        var data = Data([UInt8(code >> 8 & 0xFF), UInt8(code & 0xFF)])
+        data.append(Data(reason.utf8.prefix(120)))
+        return data
+    }
+
+    /// Closes politely: sends a close frame with `code` (1000 = normal) after anything already
+    /// queued, then drops the stream. Servers treat this as the user leaving, unlike a dropped
+    /// link (Hermes' screen bridge hands control back to the agent only on a clean close).
+    public func close(code: Int, reason: String = "") async {
+        let pending: (AsyncStream<Data>.Continuation?, Task<Void, Never>?) = lock.withLock {
+            if isClosed { return (nil, nil) }
+            return (outbox, writer)
+        }
+        if let outbox = pending.0 {
+            outbox.finish()
+            await pending.1?.value
+        }
+        if lock.withLock({ !isClosed }) {
+            try? await sendFrame(opcode: 0x8, payload: Self.closePayload(code: code, reason: reason))
+        }
+        close()
+    }
+
+    /// Drops the stream at once (no close frame).
     public func close() {
-        let alreadyClosed = lock.withLock { () -> Bool in
+        let (alreadyClosed, outbox) = lock.withLock { () -> (Bool, AsyncStream<Data>.Continuation?) in
             defer { isClosed = true }
-            return isClosed
+            return (isClosed, self.outbox)
         }
         guard !alreadyClosed else { return }
+        outbox?.finish()
         duplex.close()
     }
 }

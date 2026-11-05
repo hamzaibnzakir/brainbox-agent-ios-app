@@ -188,6 +188,78 @@ final class LiveHermesTests: XCTestCase {
         try await shell.write("exit\n")
         ssh.close()
     }
+    /// Bot Screen: watch, take over, hand back. Needs a Hermes with the screen feature and
+    /// TigerVNC + Xfce on the host. HERMES_E2E_SCREEN=1 runs it; =unsupported checks that an
+    /// older Hermes is reported as such; unset skips.
+    func testBotScreenWatchTakeOverHandBack() async throws {
+        let env = try env()
+        let mode = ProcessInfo.processInfo.environment["HERMES_E2E_SCREEN"] ?? ""
+        guard !mode.isEmpty else { throw XCTSkip("HERMES_E2E_SCREEN not set") }
+        let client = try await connect(env)
+        defer { client.close() }
+        let screen = client.screen
+
+        if mode == "unsupported" {
+            do {
+                _ = try await screen.status()
+                XCTFail("an older Hermes must report Bot Screen as unsupported")
+            } catch let error as ScreenError {
+                XCTAssertEqual(error, .unsupportedHermes)
+            }
+            return
+        }
+
+        var status = try await screen.status()
+        XCTAssertTrue(status.supported, "Linux host should support Bot Screen")
+        XCTAssertTrue(status.installed, "missing on host: \(status.missing)")
+        status = try await screen.start()
+        XCTAssertTrue(status.running)
+        XCTAssertEqual(status.lease.holder, .agent)
+        let events = client.rpc.subscribe()
+
+        // Watch: the ticketed socket carries the screen's RFB greeting through the SSH tunnel.
+        let ticket = try await screen.observe()
+        let socket = try await screen.openStream(ticket)
+        var frames = socket.frames.makeAsyncIterator()
+        guard case .binary(let greeting)? = try await frames.next() else { return XCTFail("expected binary RFB") }
+        XCTAssertTrue(String(decoding: greeting.prefix(12), as: UTF8.self).hasPrefix("RFB 003.00"), "got \(greeting.prefix(12))")
+
+        // Take over: the lease names a human, every client hears it, and frames are withheld.
+        let lease = try await screen.takeOver(viewerID: ticket.viewerID)
+        XCTAssertEqual(lease.holder, .human)
+        let leaseEvent = try await waitFor(events, type: "display.lease", timeout: 15)
+        if case .lease(_, let broadcast)? = ScreenEvent(leaseEvent) { XCTAssertEqual(broadcast.holder, .human) }
+        let thumb = try await screen.thumbnail()
+        XCTAssertNil(thumb.dataURL, "no screenshots while a human holds control")
+
+        // Leaving cleanly (close 1000) hands control back to the bot.
+        await socket.close(code: 1000, reason: "viewer closed")
+        var holder = ScreenLease.Holder.human
+        for _ in 0..<40 where holder == .human {
+            try await Task.sleep(nanoseconds: 250_000_000)
+            holder = try await screen.status().lease.holder
+        }
+        XCTAssertEqual(holder, .agent, "a clean close must hand control back")
+
+        // Explicit take over / hand back; the viewer id is kept across observes on this connection.
+        let again = try await screen.observe(viewerID: ticket.viewerID)
+        XCTAssertEqual(again.viewerID, ticket.viewerID)
+        let taken = try await screen.takeOver(viewerID: again.viewerID)
+        XCTAssertEqual(taken.holder, .human)
+        let returned = try await screen.handBack(viewerID: again.viewerID)
+        XCTAssertEqual(returned.holder, .agent)
+
+        // A viewer id this connection never minted can't take control.
+        do {
+            try await screen.takeOver(viewerID: "made-up-viewer")
+            XCTFail("a foreign viewer id must be refused")
+        } catch let error as ScreenError {
+            XCTAssertEqual(error, .staleViewer)
+        }
+
+        let stopped = try await screen.stop(force: true)
+        XCTAssertFalse(stopped.running)
+    }
 }
 
 /// The engine itself (what the app drives) against the real server.
