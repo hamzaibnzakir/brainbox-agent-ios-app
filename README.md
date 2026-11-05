@@ -54,6 +54,8 @@ main) with a fake model, so no keys are needed. The older API-server proxy in
 | I want to… | Do this |
 |---|---|
 | Install it on my iPhone | Download the `BrainboxAgent-unsigned-ipa` artifact from the latest green **CI** run and follow [docs/BUILD_AND_SIDELOAD.md](docs/BUILD_AND_SIDELOAD.md) |
+| Use it on my Windows PC | Download `Brainbox-Setup-*.exe` from the latest `brainbox-2-build-N` release — [docs/DESKTOP.md](docs/DESKTOP.md) |
+| Watch Hermes' browser, take over for a CAPTCHA | Hub › **Hermes' screen** (phone) or **Workspace** (PC) — [docs/BOT_SCREEN.md](docs/BOT_SCREEN.md) |
 | Try it without a server | It starts on **Mock** — ask "check server status", "run a long deploy", "trigger an error"… |
 | Connect my Hermes | Follow [docs/HERMES_API_DEPLOYMENT.md](docs/HERMES_API_DEPLOYMENT.md), then Settings → **Hermes** (URL + device token) → Test connection |
 | Connect another agent | Run a Brainbox gateway, then Settings → Connection (URL + token) → Agent → **Remote Agent** |
@@ -66,6 +68,8 @@ main) with a fake model, so no keys are needed. The older API-server proxy in
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | layers, provider abstraction, concurrency, motion system |
 | [AGENT_PROTOCOL.md](docs/AGENT_PROTOCOL.md) | exact WebSocket protocol a backend must implement |
 | [CONNECT.md](docs/CONNECT.md) | **connect to Hermes over SSH** (Brainbox 2) |
+| [BOT_SCREEN.md](docs/BOT_SCREEN.md) | **Hermes' screen**: watch, take over, hand back; VPS checklist |
+| [DESKTOP.md](docs/DESKTOP.md) | **Brainbox for Windows**: install, pair, Workspace, tests |
 | [HERMES_API_DEPLOYMENT.md](docs/HERMES_API_DEPLOYMENT.md) | older API-server + proxy route (no longer needed) |
 | [MOTION.md](docs/MOTION.md) | motion moments shipped / deferred, Motion Lab |
 | [HERMES_INTEGRATION.md](docs/HERMES_INTEGRATION.md) | older WebSocket-gateway route (library adapter, probe) |

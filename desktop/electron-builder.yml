@@ -1,0 +1,35 @@
+# Brainbox for Windows — packaged by CI on windows-latest (npm run dist:win).
+appId: app.brainbox.desktop
+productName: Brainbox
+copyright: Brainbox
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**
+  - package.json
+  - build/icon.png
+asar: true
+# ssh2's native helpers are optional (it falls back to pure JS); don't rebuild them for Electron.
+npmRebuild: false
+win:
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  icon: build/icon.png
+  # Unsigned: Windows SmartScreen shows "Unknown publisher" until the app is code-signed.
+  signAndEditExecutable: true
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  shortcutName: Brainbox
+  artifactName: Brainbox-Setup-${version}.${ext}
+portable:
+  artifactName: Brainbox-Portable-${version}.${ext}
+linux:
+  target: dir
+  category: Development

@@ -154,6 +154,38 @@ jobs:
             tail -n 40 ~/.hermes/bot-desktop/launcher.log 2>/dev/null || true
           fi
           exit $STATUS
+      - uses: actions/setup-node@v4
+        if: always()
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Desktop app ↔ SSH ↔ real Hermes (engine tests + UI smoke)
+        if: always()
+        working-directory: desktop
+        env:
+          BRAINBOX_SHOTS: ${{ runner.temp }}/desktop-shots
+        run: |
+          sudo apt-get install -y -qq xvfb libgbm1 libnss3 >/dev/null 2>&1 || true
+          npm ci
+          npm run typecheck
+          STATUS=0
+          npx vitest run --reporter=verbose > vitest.log 2>&1 || STATUS=$?
+          grep -E "✓|×|Test Files|Tests " vitest.log | tail -n 40
+          if grep -q "↓\|skipped" vitest.log; then echo "::warning::some desktop tests were skipped"; fi
+          if [ "$STATUS" != "0" ]; then tail -n 80 vitest.log; echo "::error title=Desktop live tests::failed (${{ matrix.label }})"; exit $STATUS; fi
+          npm run build
+          xvfb-run -a -s "-screen 0 1600x1000x24" node test/ui-smoke.mjs 2>&1 | grep -vE "Fontconfig|dbus|GPU process|gpu_" | tail -n 40
+          test "${PIPESTATUS[0]}" = "0" || { echo "::error title=Desktop UI smoke::failed (${{ matrix.label }})"; exit 1; }
+          echo "::notice title=Desktop (${{ matrix.label }})::engine live tests + UI smoke passed against the real server"
+      - name: Upload desktop screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-screenshots-${{ matrix.screen == '1' && 'main' || 'vps' }}
+          path: ${{ runner.temp }}/desktop-shots
+          if-no-files-found: ignore
+          retention-days: 7
 
   gateway:
     name: Gateway tests (Python)
@@ -407,7 +439,63 @@ jobs:
           TAG="brainbox-2-build-${{ github.run_number }}"
           FILES="build/BrainboxAgent-unsigned.ipa"
           [ -f build/screenshots.zip ] && FILES="$FILES build/screenshots.zip"
+          # The Windows job may have created this build's release already: then add to it.
           gh release create "$TAG" $FILES --prerelease --target "${{ github.sha }}" \
             --title "Brainbox 2 — build ${{ github.run_number }}" \
-            --notes "Unsigned IPA built from ${{ github.sha }}. Install with Sideloadly / AltStore / SideStore. Setup: docs/CONNECT.md"
+            --notes "Built from ${{ github.sha }}. iPhone: unsigned IPA (Sideloadly / AltStore / SideStore, docs/CONNECT.md). Windows: Brainbox-Setup / Brainbox-Portable (docs/DESKTOP.md)." \
+            || gh release upload "$TAG" $FILES --clobber
           echo "::notice title=Release::$TAG"
+
+  desktop-windows:
+    name: Desktop (Windows) — installer
+    runs-on: windows-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - name: Install
+        run: npm ci
+      - name: Typecheck and unit tests
+        run: |
+          npm run typecheck
+          npx vitest run test/transcript.test.ts
+      - name: Build installer + portable exe
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: |
+          npm run dist:win
+          ls -la release
+          for f in release/Brainbox-Setup-*.exe release/Brainbox-Portable-*.exe; do
+            test -s "$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          echo "::notice title=Windows::$(ls release/*.exe | xargs -n1 basename | tr '\n' ' ')"
+      - name: Upload Windows build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Brainbox-Windows
+          path: |
+            desktop/release/Brainbox-Setup-*.exe
+            desktop/release/Brainbox-Portable-*.exe
+          retention-days: 30
+      - name: Add to this build's release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="brainbox-2-build-${{ github.run_number }}"
+          FILES=$(ls release/Brainbox-Setup-*.exe release/Brainbox-Portable-*.exe)
+          gh release upload "$TAG" $FILES --clobber \
+            || gh release create "$TAG" $FILES --prerelease --target "${{ github.sha }}" \
+                 --title "Brainbox 2 — build ${{ github.run_number }}" \
+                 --notes "Built from ${{ github.sha }}. iPhone: unsigned IPA (Sideloadly / AltStore / SideStore, docs/CONNECT.md). Windows: Brainbox-Setup / Brainbox-Portable (docs/DESKTOP.md)." \
+            || gh release upload "$TAG" $FILES --clobber
