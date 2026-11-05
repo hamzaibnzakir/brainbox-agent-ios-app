@@ -75,6 +75,29 @@ final class LiveBrowserSession {
         }
     }
 
+    /// Starts the screen if it's off, opens Hermes' browser the way the screen's dock does, then attaches.
+    func launchBrowser() async {
+        guard let model, !busy else { return }
+        busy = true
+        defer { busy = false }
+        phase = .connecting
+        do {
+            let client = try await model.client()
+            let screen = client.screen
+            let status = try await screen.status()
+            guard status.supported, status.installed else {
+                phase = .failed("Hermes' screen isn't set up on this server yet. Switch to Desktop for what's missing.")
+                return
+            }
+            if !status.running { _ = try await screen.start() }
+            _ = try await LiveBrowser(client: client).launch()
+            busy = false
+            await open(model: model)
+        } catch {
+            phase = .failed((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
+    }
+
     private func stopStreams() {
         frameTask?.cancel()
         changeTask?.cancel()
@@ -254,7 +277,17 @@ struct LiveBrowserScreen: View {
         case .noBrowser(let message), .failed(let message):
             VStack(spacing: DS.S.m) {
                 Image(systemName: "safari").font(.system(size: 40, weight: .semibold)).foregroundStyle(.white.opacity(0.7))
-                Text(message).font(DS.F.small).foregroundStyle(.white.opacity(0.8)).multilineTextAlignment(.center)
+                Text(message).font(DS.F.bodyStrong).foregroundStyle(.white).multilineTextAlignment(.center)
+                Text("Open it here, or it opens by itself when Hermes browses.")
+                    .font(DS.F.small).foregroundStyle(.white.opacity(0.7)).multilineTextAlignment(.center)
+                Button {
+                    Task { await session.launchBrowser() }
+                } label: {
+                    if session.busy { ProgressView().tint(.white) } else { Text("Open Hermes' browser") }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .frame(maxWidth: 280)
+                .disabled(session.busy)
                 Button("Try again") { Task { await session.open(model: model) } }.buttonStyle(SecondaryButtonStyle(tint: .white))
             }
             .padding(DS.S.xl)

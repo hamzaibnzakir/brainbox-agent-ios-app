@@ -200,11 +200,15 @@ public struct BrowserFrame: Sendable {
 public enum LiveBrowserError: Error, LocalizedError, Equatable {
     case noBrowser
     case noTab
+    case screenOff
+    case noDockBrowser
 
     public var errorDescription: String? {
         switch self {
-        case .noBrowser: return "Hermes' browser isn't open. It opens when Hermes browses, or start it from the screen's dock."
+        case .noBrowser: return "Hermes' browser isn't open."
         case .noTab: return "Hermes' browser has no open page."
+        case .screenOff: return "Hermes' screen is off."
+        case .noDockBrowser: return "Hermes' screen has no headed browser installed. Ask Hermes to run `hermes computer-use screen status` and install the browser it names."
         }
     }
 }
@@ -258,6 +262,69 @@ public final class LiveBrowser: @unchecked Sendable {
     echo NOPORT
     """
 
+    /// Opens Hermes' browser on its screen exactly the way the screen's dock icon does (same binary,
+    /// profile and flags, read from the dock's `.desktop` entry), optionally on `url`, then waits for its
+    /// fresh DevTools port. The screen must be running. A stale `DevToolsActivePort` (left by a browser
+    /// that stopped with an idle screen) is removed first so it can't be mistaken for a live one.
+    public func launch(url: String? = nil, timeout: TimeInterval = 20) async throws -> Int {
+        let target = url.map { RemoteBackend.shq(Self.url(from: $0)) } ?? "''"
+        let script = """
+        envf="$HOME/.hermes/bot-desktop/env"
+        [ -f "$envf" ] || { echo NOSCREEN; exit 0; }
+        set -a; . "$envf"; set +a
+        dock=$(grep -l -- '--remote-debugging-port' "${XDG_CONFIG_HOME:-$HOME/.hermes/bot-desktop/xdg}"/xfce4/panel/launcher-*/hermes.desktop 2>/dev/null | head -n1)
+        [ -n "$dock" ] || { echo NODOCK; exit 0; }
+        profile=$(sed -n 's/.*--user-data-dir=\\([^"]*\\)".*/\\1/p' "$dock" | head -n1)
+        f="${profile:-$HOME/.hermes/bot-desktop/browser-profile}/DevToolsActivePort"
+        python3 - "$dock" \(target) "$f" <<'PY'
+        import os, shlex, socket, subprocess, sys, time, urllib.request
+        def live(path):
+            try:
+                port = int(open(path).readline().strip())
+                with urllib.request.urlopen("http://127.0.0.1:%d/json/version" % port, timeout=2):
+                    return port
+            except Exception:
+                return None
+        port = live(sys.argv[3])
+        if port:
+            # Already open: just show the page asked for, in a new tab.
+            if sys.argv[2]:
+                try:
+                    req = urllib.request.Request("http://127.0.0.1:%d/json/new?%s" % (port, sys.argv[2]), method="PUT")
+                    urllib.request.urlopen(req, timeout=5).read()
+                except Exception:
+                    pass
+            sys.exit(0)
+        try:
+            os.remove(sys.argv[3])  # stale: left by a browser that stopped with an idle screen
+        except OSError:
+            pass
+        line = next(l for l in open(sys.argv[1]) if l.startswith("Exec="))[5:].strip()
+        argv = shlex.split(line.replace("\\\\\\\\", "\\\\"))
+        if sys.argv[2]:
+            argv.append(sys.argv[2])
+        subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        PY
+        i=0; while [ $i -lt \(Int(timeout * 4)) ]; do [ -s "$f" ] && break; sleep 0.25; i=$((i+1)); done
+        [ -s "$f" ] && echo "PORT=$(head -n1 "$f")" || echo NOPORT
+        """
+        let result = try await client.ssh.exec(script, timeout: timeout + 20)
+        let out = result.output
+        if out.contains("NOSCREEN") { throw LiveBrowserError.screenOff }
+        if out.contains("NODOCK") { throw LiveBrowserError.noDockBrowser }
+        guard let line = out.split(separator: "\n").first(where: { $0.hasPrefix("PORT=") }), let port = Int(line.dropFirst(5)) else {
+            throw LiveBrowserError.noBrowser
+        }
+        self.port = port
+        // Chromium writes the file a moment before it accepts connections.
+        for _ in 0..<20 {
+            if (try? await tabs())?.isEmpty == false { return port }
+            self.port = port
+            try await Task.sleep(nanoseconds: 250_000_000)
+        }
+        return port
+    }
+
     public func locate() async throws -> Int {
         let result = try await client.ssh.exec(Self.locateScript, timeout: 20)
         guard let line = result.output.split(separator: "\n").first(where: { $0.hasPrefix("PORT=") }),
@@ -297,6 +364,8 @@ public final class LiveBrowser: @unchecked Sendable {
             for await event in session.events { self?.handle(event, session: session) }
         }
         try await session.call("Page.enable")
+        // Chromium only paints (and so only streams) the tab in front.
+        try await session.call("Page.bringToFront")
         try await session.call("Page.startScreencast", ["format": "jpeg", "quality": 65, "maxWidth": .number(Double(maxWidth)),
                                                        "maxHeight": .number(Double(maxHeight)), "everyNthFrame": 1])
     }
@@ -460,7 +529,15 @@ public final class LiveBrowser: @unchecked Sendable {
     /// What the address bar means: a URL, a bare domain, or a search.
     public static func url(from text: String) -> String {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if t.hasPrefix("http://") || t.hasPrefix("https://") || t.hasPrefix("about:") { return t }
+        if t.hasPrefix("http://") || t.hasPrefix("https://") { return t }
+        // host:port (a dev server, a router page)
+        if t.range(of: "^[A-Za-z0-9.-]+:[0-9]+(/.*)?$", options: .regularExpression) != nil { return "http://" + t }
+        // Other explicit addresses: known schemes (a data: page may contain spaces), or scheme://…
+        if let colon = t.firstIndex(of: ":") {
+            let scheme = t[..<colon].lowercased()
+            if ["about", "data", "file", "chrome", "blob", "view-source"].contains(scheme) { return t }
+            if t[t.index(after: colon)...].hasPrefix("//"), scheme.range(of: "^[a-z][a-z0-9+.-]*$", options: .regularExpression) != nil { return t }
+        }
         if !t.contains(" "), t.contains("."), !t.hasPrefix(".") { return "https://" + t }
         var allowed = CharacterSet.urlQueryAllowed
         allowed.remove(charactersIn: "&=+?")

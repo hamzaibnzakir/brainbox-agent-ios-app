@@ -151,4 +151,22 @@ final class ScreenTests: XCTestCase {
         XCTAssertFalse(socket.isOpen)
         XCTAssertFalse(socket.enqueue(binary: Data([1])), "nothing is sent after close")
     }
+
+    func testAddressBarAndCDPJSON() {
+        XCTAssertEqual(LiveBrowser.url(from: "business.facebook.com"), "https://business.facebook.com")
+        XCTAssertEqual(LiveBrowser.url(from: "https://x.y/z"), "https://x.y/z")
+        XCTAssertEqual(LiveBrowser.url(from: "data:text/html,<p>hi</p>"), "data:text/html,<p>hi</p>")
+        XCTAssertEqual(LiveBrowser.url(from: "about:blank"), "about:blank")
+        XCTAssertEqual(LiveBrowser.url(from: "data:text/html,<p class=a>hi there</p>"), "data:text/html,<p class=a>hi there</p>")
+        XCTAssertEqual(LiveBrowser.url(from: "localhost:8080"), "http://localhost:8080")
+        XCTAssertTrue(LiveBrowser.url(from: "meta ads login").hasPrefix("https://www.google.com/search?q=meta%20ads%20login"))
+        XCTAssertEqual(CDPJSON.encode(["id": 1, "x": .number(200.5), "s": "a\"b\n", "ok": true]), #"{"id":1,"ok":true,"s":"a\"b\n","x":200.5}"#)
+        let tabs = BrowserTab.list(from: [
+            ["type": "page", "id": "A", "url": "https://m.facebook.com", "title": "FB", "webSocketDebuggerUrl": "ws://127.0.0.1:9/devtools/page/A"],
+            ["type": "page", "id": "B", "url": "chrome://newtab", "webSocketDebuggerUrl": "ws://127.0.0.1:9/devtools/page/B"],
+            ["type": "browser_ui", "id": "C", "url": "chrome://webui-toolbar.top-chrome/"],
+        ])
+        XCTAssertEqual(tabs.map(\.id), ["A"])
+        XCTAssertEqual(tabs.first?.socketPath, "/devtools/page/A")
+    }
 }

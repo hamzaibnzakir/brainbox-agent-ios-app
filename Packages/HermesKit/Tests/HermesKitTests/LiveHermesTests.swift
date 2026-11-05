@@ -280,16 +280,28 @@ final class LiveHermesTests: XCTestCase {
         nohup \(RemoteBackend.shq(chrome)) --user-data-dir="$d" --remote-debugging-port=0 --no-first-run --no-sandbox --password-store=basic \(RemoteBackend.shq(page)) >/dev/null 2>&1 &
         for i in $(seq 1 40); do [ -s "$d/DevToolsActivePort" ] && break; sleep 0.25; done; head -n1 "$d/DevToolsActivePort"
         """
-        let launched = try await client.ssh.exec(launch, timeout: 30)
-        XCTAssertFalse(launched.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Chromium wrote its DevTools port")
-
         let browser = LiveBrowser(client: client)
+        // The app's own path: open the browser exactly as the screen's dock does. Falls back to a
+        // direct launch when this host's dock has no headed browser seeded.
+        do {
+            let port = try await browser.launch(url: page)
+            XCTAssertGreaterThan(port, 0)
+        } catch LiveBrowserError.noDockBrowser {
+            let launched = try await client.ssh.exec(launch, timeout: 30)
+            XCTAssertFalse(launched.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Chromium wrote its DevTools port")
+        }
+
         let tabs = try await browser.tabs()
         let tab = try XCTUnwrap(tabs.first { $0.url.hasPrefix("data:") } ?? tabs.first)
         try await browser.open(tab)
-        var frames = browser.frames.makeAsyncIterator()
-        let first = await frames.next()
-        XCTAssertGreaterThan(first?.jpeg.count ?? 0, 100, "a JPEG frame of the page arrives")
+        let first = await withTaskGroup(of: BrowserFrame?.self) { group in
+            group.addTask { var it = browser.frames.makeAsyncIterator(); return await it.next() }
+            group.addTask { try? await Task.sleep(nanoseconds: 15_000_000_000); return nil }
+            let frame = await group.next() ?? nil
+            group.cancelAll()
+            return frame
+        }
+        XCTAssertGreaterThan(first?.jpeg.count ?? 0, 100, "a JPEG frame of the page arrives (the tab is brought to the front)")
 
         try await browser.enterPhoneMode(PhoneViewport(width: 393, height: 760))
         try await Task.sleep(nanoseconds: 1_500_000_000)
@@ -336,7 +348,8 @@ final class LiveHermesTests: XCTestCase {
         let v6 = try await browser.evaluate("navigator.userAgent.includes('iPhone')")
         XCTAssertEqual(v6.boolValue, false)
         await browser.stop()
-        _ = try? await client.ssh.exec("pkill -f 'bot-desktop/browser-profile' || true", timeout: 10)
+        // Only the browser itself (a looser pattern would also match the shell running this command).
+        _ = try? await client.ssh.exec("pkill -f -- 'chrom[e].*--user-data-dir=[^ ]*bot-desktop/browser-profile' || true", timeout: 10)
     }
 }
 
