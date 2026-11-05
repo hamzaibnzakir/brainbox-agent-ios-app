@@ -66,6 +66,8 @@ jobs:
             screen: "1"
     env:
       HERMES_E2E_SCREEN: ${{ matrix.screen }}
+      # Hermes' browser for the phone-mode live browser test (preinstalled on GitHub's Ubuntu images).
+      HERMES_E2E_CHROME: /usr/bin/google-chrome
     steps:
       - uses: actions/checkout@v4
       - name: Check out hermes-agent at this matrix version
@@ -146,6 +148,9 @@ jobs:
           SKIPPED=$(grep -cE "Test Case .*Live(Hermes|Engine)Tests.*skipped" e2e.log || true)
           echo "::notice title=SSH E2E (${{ matrix.label }})::$PASSED live tests passed, $SKIPPED skipped — real sshd, real hermes serve"
           if [ "$SKIPPED" != "0" ] || [ "$PASSED" = "0" ]; then echo "::error::live SSH tests did not run"; STATUS=1; fi
+          if [ "$HERMES_E2E_SCREEN" = "1" ] && ! grep -qE "Test Case .*testLiveBrowserPhoneMode.*passed" e2e.log; then
+            echo "::error::live browser (phone mode) test did not pass"; STATUS=1
+          fi
           if ! grep -qE "Test Case .*testBotScreenWatchTakeOverHandBack.*passed" e2e.log; then
             echo "::error::Bot Screen live test did not pass (HERMES_E2E_SCREEN=$HERMES_E2E_SCREEN)"; STATUS=1
           fi

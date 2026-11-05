@@ -47,7 +47,7 @@ struct RootView: View {
         .animation(.spring(response: 0.35, dampingFraction: 0.85), value: model.toast)
         .fullScreenCover(isPresented: $model.showScreen) {
             NavigationStack {
-                ScreenScreen()
+                HermesScreenView()
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Button("Close") { model.showScreen = false }.foregroundStyle(.white)

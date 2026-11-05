@@ -74,7 +74,10 @@ final class ScreenshotTests: XCTestCase {
         let tile = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Watch, take over")).firstMatch
         XCTAssertTrue(tile.waitForExistence(timeout: 10), "Hub offers Hermes' screen")
         tile.tap()
-        XCTAssertTrue(app.staticTexts["The screen is off"].waitForExistence(timeout: 10), "screen state renders")
+        XCTAssertTrue(app.buttons["Browser"].waitForExistence(timeout: 10), "opens on the browser view")
+        shot("09a-screen-browser")
+        app.buttons["Desktop"].tap()
+        XCTAssertTrue(app.staticTexts["The screen is off"].waitForExistence(timeout: 10), "desktop view renders")
         XCTAssertTrue(app.buttons["Start screen"].exists)
         shot("09-screen-off")
     }

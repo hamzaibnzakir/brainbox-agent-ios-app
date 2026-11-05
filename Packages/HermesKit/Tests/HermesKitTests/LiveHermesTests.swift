@@ -260,6 +260,84 @@ final class LiveHermesTests: XCTestCase {
         let stopped = try await screen.stop(force: true)
         XCTAssertFalse(stopped.running)
     }
+
+    /// Hermes' browser as a phone page (DevTools through SSH). Needs a running Bot Screen and a
+    /// Chromium binary: HERMES_E2E_CHROME=/path/to/chrome. Launches it the way the bot does.
+    func testLiveBrowserPhoneMode() async throws {
+        let env = try env()
+        // Hermes' browser lives on its Bot Screen; an older Hermes has none (covered by the screen test).
+        if ProcessInfo.processInfo.environment["HERMES_E2E_SCREEN"] == "unsupported" { return }
+        guard let chrome = ProcessInfo.processInfo.environment["HERMES_E2E_CHROME"], !chrome.isEmpty else {
+            throw XCTSkip("HERMES_E2E_CHROME not set")
+        }
+        let client = try await connect(env)
+        defer { client.close() }
+        _ = try await client.screen.start()
+        let page = "data:text/html,<meta name=viewport content='width=device-width'><style>.m{display:none}@media(max-width:600px){.m{display:block}.d{display:none}}</style><p class=d>DESKTOP</p><p class=m>MOBILE</p><input id=e><input id=p type=password><button onclick=\"o.textContent=e.value+'/'+p.value.length\">Go</button><p id=o></p><div style=height:3000px></div>"
+        let launch = """
+        set -a; . "$HOME/.hermes/bot-desktop/env"; set +a
+        d="$HOME/.hermes/bot-desktop/browser-profile"; mkdir -p "$d"; rm -f "$d/DevToolsActivePort"
+        nohup \(RemoteBackend.shq(chrome)) --user-data-dir="$d" --remote-debugging-port=0 --no-first-run --no-sandbox --password-store=basic \(RemoteBackend.shq(page)) >/dev/null 2>&1 &
+        for i in $(seq 1 40); do [ -s "$d/DevToolsActivePort" ] && break; sleep 0.25; done; head -n1 "$d/DevToolsActivePort"
+        """
+        let launched = try await client.ssh.exec(launch, timeout: 30)
+        XCTAssertFalse(launched.output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "Chromium wrote its DevTools port")
+
+        let browser = LiveBrowser(client: client)
+        let tabs = try await browser.tabs()
+        let tab = try XCTUnwrap(tabs.first { $0.url.hasPrefix("data:") } ?? tabs.first)
+        try await browser.open(tab)
+        var frames = browser.frames.makeAsyncIterator()
+        let first = await frames.next()
+        XCTAssertGreaterThan(first?.jpeg.count ?? 0, 100, "a JPEG frame of the page arrives")
+
+        try await browser.enterPhoneMode(PhoneViewport(width: 393, height: 760))
+        try await Task.sleep(nanoseconds: 1_500_000_000)
+        let v1 = try await browser.evaluate("innerWidth")
+        XCTAssertEqual(v1.intValue, 393)
+        let v2 = try await browser.evaluate("getComputedStyle(document.querySelector('.m')).display")
+        XCTAssertEqual(v2.stringValue, "block", "mobile layout")
+
+        func center(_ sel: String) async throws -> (Double, Double) {
+            let r = try await browser.evaluate("(()=>{const b=document.querySelector('\(sel)').getBoundingClientRect();return [b.x+b.width/2,b.y+b.height/2]})()")
+            return (r.arrayValue?[0].doubleValue ?? 0, r.arrayValue?[1].doubleValue ?? 0)
+        }
+        var (x, y) = try await center("#e")
+        browser.tap(x: x, y: y)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        let editable = await browser.editableFocused()
+        XCTAssertTrue(editable, "tapping a field focuses it, so the phone raises its keyboard")
+        browser.insert(text: "david@example.com")
+        (x, y) = try await center("#p")
+        browser.tap(x: x, y: y)
+        try await Task.sleep(nanoseconds: 300_000_000)
+        browser.insert(text: "s3cret!x")
+        browser.press(.backspace)
+        (x, y) = try await center("button")
+        browser.tap(x: x, y: y)
+        try await Task.sleep(nanoseconds: 600_000_000)
+        let v3 = try await browser.evaluate("o.textContent")
+        XCTAssertEqual(v3.stringValue, "david@example.com/7")
+
+        browser.touch(.start, points: [(200, 650)])
+        for step in stride(from: 630.0, through: 150, by: -20) {
+            browser.touch(.move, points: [(200, step)])
+            try await Task.sleep(nanoseconds: 8_000_000)
+        }
+        browser.touch(.end, points: [])
+        try await Task.sleep(nanoseconds: 800_000_000)
+        let v4 = try await browser.evaluate("scrollY")
+        XCTAssertGreaterThan(v4.doubleValue ?? 0, 100, "a finger drag scrolls the page")
+
+        await browser.leavePhoneMode()
+        try await Task.sleep(nanoseconds: 1_200_000_000)
+        let v5 = try await browser.evaluate("innerWidth")
+        XCTAssertGreaterThan(v5.intValue ?? 0, 900, "hand back restores the desktop page")
+        let v6 = try await browser.evaluate("navigator.userAgent.includes('iPhone')")
+        XCTAssertEqual(v6.boolValue, false)
+        await browser.stop()
+        _ = try? await client.ssh.exec("pkill -f 'bot-desktop/browser-profile' || true", timeout: 10)
+    }
 }
 
 /// The engine itself (what the app drives) against the real server.

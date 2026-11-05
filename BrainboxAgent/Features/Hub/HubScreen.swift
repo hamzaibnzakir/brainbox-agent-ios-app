@@ -178,7 +178,7 @@ struct HubScreen: View {
     @ViewBuilder
     private func destination(for d: Destination) -> some View {
         switch d {
-        case .screen: ScreenScreen()
+        case .screen: HermesScreenView()
         case .terminal: TerminalScreen()
         case .files: FilesScreen(path: nil)
         case .system: SystemScreen()
