@@ -24,6 +24,7 @@ struct ScreenScreen: View {
         .navigationTitle("Hermes' screen")
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Self.ink, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)   // without it the dark scheme isn't applied
         .toolbarColorScheme(.dark, for: .navigationBar)
         .toolbar { menu }
         .overlay(alignment: .top) { noticeView }
