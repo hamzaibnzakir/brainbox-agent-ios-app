@@ -378,6 +378,13 @@ public final class LiveBrowser: @unchecked Sendable {
             let meta = event.params["metadata"] ?? .null
             let w = meta["deviceWidth"]?.doubleValue ?? 0, h = meta["deviceHeight"]?.doubleValue ?? 0
             lock.withLock { lastViewport = (w, h) }
+            // Watchdog: another client on this tab (Hermes' own browser tool manages its tabs' viewports)
+            // can undo phone mode, e.g. on reload or navigation. While the person holds control, put it
+            // back as soon as a frame shows the wrong size.
+            if Self.phoneWatchdog, let phone = lock.withLock({ self.phone }), w > 0,
+               abs(w - Double(phone.width)) > 2 || abs(h - Double(phone.height)) > 2 {
+                reassertPhoneMode(phone, session: session)
+            }
             frameSink.yield(BrowserFrame(jpeg: jpeg, cssWidth: w, cssHeight: h, scrollY: meta["scrollOffsetY"]?.doubleValue ?? 0))
         case "Page.frameNavigated":
             let frame = event.params["frame"] ?? .null
@@ -412,11 +419,7 @@ public final class LiveBrowser: @unchecked Sendable {
     public func enterPhoneMode(_ viewport: PhoneViewport) async throws {
         let s = try current()
         lock.withLock { phone = viewport }
-        try await s.call("Emulation.setDeviceMetricsOverride", [
-            "width": .number(Double(viewport.width)), "height": .number(Double(viewport.height)),
-            "deviceScaleFactor": .number(viewport.scale), "mobile": .bool(viewport.mobile),
-            "screenWidth": .number(Double(viewport.width)), "screenHeight": .number(Double(viewport.height)),
-        ])
+        try await s.call("Emulation.setDeviceMetricsOverride", Self.metrics(viewport))
         try await s.call("Emulation.setTouchEmulationEnabled", ["enabled": true, "maxTouchPoints": 5])
         if viewport.mobile {
             try await s.call("Emulation.setUserAgentOverride", ["userAgent": .string(PhoneViewport.iPhoneUserAgent), "platform": "iPhone"])
@@ -435,6 +438,32 @@ public final class LiveBrowser: @unchecked Sendable {
     }
 
     public var inPhoneMode: Bool { lock.withLock { phone != nil } }
+
+    /// Off only in tests that demonstrate what happens without it.
+    nonisolated(unsafe) public static var phoneWatchdog = true
+    private var lastReassert = Date.distantPast
+    /// How many times phone mode had to be put back (tests and diagnostics).
+    public private(set) var reasserts = 0
+
+    private func reassertPhoneMode(_ viewport: PhoneViewport, session: CDPSession) {
+        let go: Bool = lock.withLock {
+            guard Date().timeIntervalSince(lastReassert) > 0.5 else { return false }
+            lastReassert = Date()
+            reasserts += 1
+            return true
+        }
+        guard go else { return }
+        session.send("Emulation.setDeviceMetricsOverride", Self.metrics(viewport))
+        session.send("Emulation.setTouchEmulationEnabled", ["enabled": true, "maxTouchPoints": 5])
+        if viewport.mobile {
+            session.send("Emulation.setUserAgentOverride", ["userAgent": .string(PhoneViewport.iPhoneUserAgent), "platform": "iPhone"])
+        }
+    }
+
+    static func metrics(_ v: PhoneViewport) -> [String: JSONValue] {
+        ["width": .number(Double(v.width)), "height": .number(Double(v.height)), "deviceScaleFactor": .number(v.scale),
+         "mobile": .bool(v.mobile), "screenWidth": .number(Double(v.width)), "screenHeight": .number(Double(v.height))]
+    }
 
     // MARK: Input (CSS pixel coordinates of the streamed viewport)
 

@@ -477,6 +477,7 @@ struct HermesScreenView: View {
         .toolbarBackground(Color(hex: 0x16171C), for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
+        .toolbar(.hidden, for: .tabBar)   // the page gets the room
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Picker("View", selection: $mode) {

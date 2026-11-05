@@ -281,6 +281,8 @@ final class LiveHermesTests: XCTestCase {
         for i in $(seq 1 40); do [ -s "$d/DevToolsActivePort" ] && break; sleep 0.25; done; head -n1 "$d/DevToolsActivePort"
         """
         let browser = LiveBrowser(client: client)
+        LiveBrowser.phoneWatchdog = ProcessInfo.processInfo.environment["HERMES_E2E_NO_WATCHDOG"] == nil
+        defer { LiveBrowser.phoneWatchdog = true }
         // The app's own path: open the browser exactly as the screen's dock does. Falls back to a
         // direct launch when this host's dock has no headed browser seeded.
         do {
@@ -305,6 +307,22 @@ final class LiveHermesTests: XCTestCase {
 
         try await browser.enterPhoneMode(PhoneViewport(width: 393, height: 760))
         try await Task.sleep(nanoseconds: 1_500_000_000)
+        // The streamed picture itself must be phone-sized (not a desktop window with a phone page in it),
+        // even when another client on the tab keeps resetting the viewport.
+        let phoneFrame = await withTaskGroup(of: BrowserFrame?.self) { group in
+            group.addTask {
+                for await frame in browser.frames where abs(frame.cssWidth - 393) < 3 && abs(frame.cssHeight - 760) < 3 { return frame }
+                return nil
+            }
+            group.addTask { try? await Task.sleep(nanoseconds: 8_000_000_000); return nil }
+            let f = await group.next() ?? nil
+            group.cancelAll()
+            return f
+        }
+        XCTAssertNotNil(phoneFrame, "frames come out phone-sized (393x760 CSS px)")
+        if let data = phoneFrame?.jpeg, let dir = ProcessInfo.processInfo.environment["HERMES_E2E_FRAMES"] {
+            try? data.write(to: URL(fileURLWithPath: dir).appendingPathComponent("phone-frame.jpg"))
+        }
         let v1 = try await browser.evaluate("innerWidth")
         XCTAssertEqual(v1.intValue, 393)
         let v2 = try await browser.evaluate("getComputedStyle(document.querySelector('.m')).display")
