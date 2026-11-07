@@ -202,12 +202,13 @@ export class HermesEngine extends EventEmitter {
     if (reply && rid && this.client) this.client.call(reply[0], { request_id: rid, [reply[1]]: "" }).catch(() => {});
   }
 
-  private async fetchRemotePrompt(key: string, chat: Chat) {
+  private async fetchRemotePrompt(key: string, chat: Chat, attempt = 0) {
     const client = this.client;
     if (!client) return;
     const r = await client.call("session.history", { session_id: chat.liveId }, 20_000).catch(() => null);
-    if (this.chats.get(key) !== chat) return;
+    if (this.chats.get(key) !== chat || !chat.transcript.remoteTurn) return;
     if (chat.transcript.placeRemotePrompt(arr(get(r, "messages")) ?? [])) this.publish(key, chat);
+    else if (!chat.transcript.busy && attempt < 4) setTimeout(() => void this.fetchRemotePrompt(key, chat, attempt + 1), 600 * (attempt + 1));
   }
 
   /** Catches every open chat up with other devices (window back in front). */

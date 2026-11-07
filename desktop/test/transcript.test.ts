@@ -119,3 +119,19 @@ describe("an interrupted reply", () => {
     expect(assistants.map((a) => [a.kind === "assistant" && a.text, a.kind === "assistant" && a.streaming])).toEqual([["Partial", false], ["Echo: never mind", true]]);
   });
 });
+
+describe("a Hermes that stores the prompt late", () => {
+  it("doesn't show the previous prompt again; waits for the new one", () => {
+    const t = new Transcript();
+    t.addUser("hello from the phone");
+    t.apply({ type: "message.start", payload: {} });
+    t.apply({ type: "message.complete", payload: { text: "Echo: hello from the phone" } });
+    t.apply({ type: "message.start", payload: {} }); // the PC's turn
+    const stale = [{ role: "user", text: "hello from the phone" }, { role: "assistant", text: "Echo: hello from the phone" }];
+    expect(t.placeRemotePrompt(stale)).toBe(false);
+    t.apply({ type: "message.complete", payload: { text: "Echo: and now from the PC" } });
+    expect(t.placeRemotePrompt([...stale, { role: "user", text: "and now from the PC" }, { role: "assistant", text: "Echo: and now from the PC" }])).toBe(true);
+    expect(t.items.map((i) => i.kind + ":" + ("text" in i ? i.text : ""))).toEqual(
+      ["user:hello from the phone", "assistant:Echo: hello from the phone", "user:and now from the PC", "assistant:Echo: and now from the PC"]);
+  });
+});

@@ -268,13 +268,17 @@ public actor HermesEngine {
         }
     }
 
-    private func fetchRemotePrompt(_ key: String) async {
+    private func fetchRemotePrompt(_ key: String, attempt: Int = 0) async {
         guard let client, let live = chats[key]?.liveID,
               let history = try? await client.rpc.call("session.history", ["session_id": .string(live)], timeout: 20),
-              var chat = chats[key], chat.liveID == live else { return }
+              var chat = chats[key], chat.liveID == live, chat.transcript.remoteTurn else { return }
         if chat.transcript.placeRemotePrompt(history["messages"]?.arrayValue ?? []) {
             chats[key] = chat
             continuation.yield(.transcript(chat: key, chat.transcript))
+        } else if !chat.transcript.busy, attempt < 4 {
+            // Turn over but the prompt isn't stored yet: ask again shortly.
+            try? await Task.sleep(nanoseconds: UInt64(600_000_000 * (attempt + 1)))
+            await fetchRemotePrompt(key, attempt: attempt + 1)
         }
     }
 

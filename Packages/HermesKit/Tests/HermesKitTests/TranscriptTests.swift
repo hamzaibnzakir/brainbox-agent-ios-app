@@ -204,4 +204,17 @@ final class CrossDeviceTranscriptTests: XCTestCase {
         t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: second"]))
         XCTAssertEqual(lines(t), ["user:first", "assistant:Echo: first", "user:second", "assistant:Echo: second"])
     }
+
+    func testStaleHistoryDoesNotRepeatThePreviousPrompt() {
+        var t = Transcript()
+        t.addUser("hello from the phone")
+        t.apply(GatewayEvent(type: "message.start"))
+        t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: hello from the phone"]))
+        t.apply(GatewayEvent(type: "message.start"))
+        let stale: [JSONValue] = [["role": "user", "text": "hello from the phone"], ["role": "assistant", "text": "Echo: hello from the phone"]]
+        XCTAssertFalse(t.placeRemotePrompt(stale))
+        t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: and now from the PC"]))
+        XCTAssertTrue(t.placeRemotePrompt(stale + [["role": "user", "text": "and now from the PC"]]))
+        XCTAssertEqual(lines(t), ["user:hello from the phone", "assistant:Echo: hello from the phone", "user:and now from the PC", "assistant:Echo: and now from the PC"])
+    }
 }

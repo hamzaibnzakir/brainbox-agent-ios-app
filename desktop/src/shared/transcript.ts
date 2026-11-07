@@ -443,6 +443,10 @@ export class Transcript implements TranscriptState {
   /** Shows the prompt another device sent, above the reply it started (from `session.history`). */
   placeRemotePrompt(messages: Json[]): boolean {
     if (!this.remoteTurn) return false;
+    // Some Hermes versions store the prompt only after the reply starts: wait for a NEW user message.
+    const stored = messages.filter((m) => str(get(m, "role")) === "user").length;
+    const shown = this.items.slice(0, this.turnStart).filter((i) => i.kind === "user").length;
+    if (stored <= shown) return false;
     const last = [...messages].reverse().find((m) => str(get(m, "role")) === "user");
     const text = last ? str(get(last, "text")) ?? str(get(last, "content")) : undefined;
     if (text === undefined) return false;

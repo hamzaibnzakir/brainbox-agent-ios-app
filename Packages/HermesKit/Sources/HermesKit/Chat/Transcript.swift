@@ -419,7 +419,11 @@ public struct Transcript: Hashable, Sendable {
     /// Shows the prompt another device sent, above the reply it started (from `session.history`).
     @discardableResult
     public mutating func placeRemotePrompt(_ messages: [JSONValue]) -> Bool {
-        guard remoteTurn, let last = messages.last(where: { $0["role"]?.stringValue == "user" }),
+        guard remoteTurn else { return false }
+        // Some Hermes versions store the prompt only after the reply starts: wait for a NEW user message.
+        let stored = messages.filter { $0["role"]?.stringValue == "user" }.count
+        let shown = items.prefix(turnStart).filter { if case .user = $0.kind { return true }; return false }.count
+        guard stored > shown, let last = messages.last(where: { $0["role"]?.stringValue == "user" }),
               let text = last["text"]?.stringValue ?? last["content"]?.stringValue else { return false }
         remoteTurn = false
         if turnStart > 0, turnStart <= items.count, case .user(let shown, _) = items[turnStart - 1].kind, shown == text { return true }
