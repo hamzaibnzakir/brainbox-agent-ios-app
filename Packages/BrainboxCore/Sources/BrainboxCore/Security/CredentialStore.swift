@@ -17,6 +17,9 @@ public struct CredentialKey: Hashable, Sendable, RawRepresentable {
 
     /// Bearer token presented to the Brainbox gateway in `auth.hello`.
     public static let gatewayToken = CredentialKey(rawValue: "gateway.token")
+    /// Bearer token for the Hermes backend: a Brainbox proxy device token
+    /// (recommended) or, for development only, the Hermes API_SERVER_KEY.
+    public static let hermesToken = CredentialKey(rawValue: "hermes.token")
 }
 
 public enum CredentialStoreError: Error, Equatable, LocalizedError {

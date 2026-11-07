@@ -1,0 +1,42 @@
+name: Publish IPA
+
+# Push a tag like `ipa-<run_id>` to re-publish the unsigned IPA artifact from
+# that CI run as a GitHub pre-release (handy for downloading on a phone).
+# Nothing is rebuilt — it's the exact artifact CI produced and verified.
+
+on:
+  push:
+    tags: ["ipa-*"]
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read run id from tag
+        id: tag
+        run: |
+          id="${GITHUB_REF_NAME#ipa-}"
+          [[ "$id" =~ ^[0-9]+$ ]] || { echo "::error::tag must be ipa-<numeric run id>"; exit 1; }
+          echo "run_id=$id" >> "$GITHUB_OUTPUT"
+      - name: Download the CI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: BrainboxAgent-unsigned-ipa
+          run-id: ${{ steps.tag.outputs.run_id }}
+          github-token: ${{ github.token }}
+          path: dist
+      - name: Create pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ls -la dist
+          ipa=$(ls dist/*.ipa | head -1)
+          cp "$ipa" dist/BrainboxAgent-unsigned.ipa
+          gh release create "$GITHUB_REF_NAME" dist/BrainboxAgent-unsigned.ipa \
+            -R "$GITHUB_REPOSITORY" --prerelease \
+            --title "Brainbox Agent (unsigned IPA) — CI run ${GITHUB_REF_NAME#ipa-}" \
+            --notes "Unsigned IPA from CI run ${GITHUB_REF_NAME#ipa-}. Install with Sideloadly / AltStore / SideStore (they sign it with your Apple ID). See docs/BUILD_AND_SIDELOAD.md."

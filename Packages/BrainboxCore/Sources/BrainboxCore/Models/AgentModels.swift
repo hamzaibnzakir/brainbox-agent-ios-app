@@ -10,7 +10,7 @@ public enum ProviderKind: String, Codable, CaseIterable, Sendable, Identifiable 
     case mock
     /// Any backend that speaks the Brainbox Agent Protocol through a gateway.
     case remote
-    /// Hermes adapter. Pending integration — see docs/HERMES_INTEGRATION.md.
+    /// Hermes Agent API Server (directly, or via the Brainbox gateway proxy).
     case hermes
 
     public var id: String { rawValue }
@@ -19,11 +19,11 @@ public enum ProviderKind: String, Codable, CaseIterable, Sendable, Identifiable 
         switch self {
         case .mock: return "Mock (Development)"
         case .remote: return "Remote Agent"
-        case .hermes: return "Hermes (Pending)"
+        case .hermes: return "Hermes API"
         }
     }
 
-    public var isAvailable: Bool { self != .hermes }
+    public var isAvailable: Bool { true }
 }
 
 /// Describes the agent behind a provider.
