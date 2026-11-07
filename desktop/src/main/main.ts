@@ -260,7 +260,9 @@ function createWindow() {
     return { action: "deny" };
   });
   win.webContents.on("will-navigate", (e) => e.preventDefault());
-  win.on("focus", () => { if (engine.state.kind === "connected") engine.ensureAlive().catch(() => {}); });
+  win.on("focus", () => {
+    if (engine.state.kind === "connected") engine.ensureAlive().then((ok) => { if (ok) return engine.refreshAll(); }).catch(() => {});
+  });
   win.on("closed", () => { win = undefined; });
 }
 

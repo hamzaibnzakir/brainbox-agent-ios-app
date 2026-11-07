@@ -182,6 +182,10 @@ export class HermesEngine extends EventEmitter {
     const before = new Set(chat.transcript.pendingRequests.map((r) => r.requestId));
     if (!chat.transcript.apply(event)) return;
     this.publish(key, chat);
+    // Another device on this backend started the turn: fetch its prompt so both screens match.
+    if (chat.transcript.remoteTurn && (event.type === "message.start" || event.type === "message.complete")) {
+      void this.fetchRemotePrompt(key, chat);
+    }
     const title = chat.transcript.title ?? "Hermes";
     if (event.type === "message.complete" && wasBusy) this.emit("turnFinished", key, title, chat.transcript.lastCompletedText ?? "");
     for (const r of chat.transcript.pendingRequests) if (!before.has(r.requestId)) this.emit("needsAttention", key, title, r);
@@ -196,6 +200,35 @@ export class HermesEngine extends EventEmitter {
     const reply = unsupported[event.type];
     const rid = str(get(event.payload, "request_id"));
     if (reply && rid && this.client) this.client.call(reply[0], { request_id: rid, [reply[1]]: "" }).catch(() => {});
+  }
+
+  private async fetchRemotePrompt(key: string, chat: Chat) {
+    const client = this.client;
+    if (!client) return;
+    const r = await client.call("session.history", { session_id: chat.liveId }, 20_000).catch(() => null);
+    if (this.chats.get(key) !== chat) return;
+    if (chat.transcript.placeRemotePrompt(arr(get(r, "messages")) ?? [])) this.publish(key, chat);
+  }
+
+  /** Catches every open chat up with other devices (window back in front). */
+  async refreshAll() {
+    await Promise.all([...this.chats.keys()].map((k) => this.refresh(k).catch(() => {})));
+  }
+
+  /** Brings an idle chat up to date with what other devices did (window focus, chat reopened). */
+  async refresh(key: string) {
+    const chat = this.chats.get(key);
+    const client = this.client;
+    if (!chat || !client || chat.transcript.busy) return;
+    const r = await client.call("session.history", { session_id: chat.liveId }, 20_000).catch(() => null);
+    const messages = arr(get(r, "messages"));
+    if (!messages || chat.transcript.busy || this.chats.get(key) !== chat) return;
+    const shown = chat.transcript.items.filter((i) => i.kind === "user" || i.kind === "assistant").length;
+    const stored = messages.filter((m) => { const role = str(get(m, "role")); return role === "user" || (role === "assistant" && (str(get(m, "text")) ?? "")); }).length;
+    if (stored !== shown) {
+      chat.transcript.hydrate(messages);
+      this.publish(key, chat);
+    }
   }
 
   private applyOpenRequests(chat: Chat, live: string, frames: Json[]) {

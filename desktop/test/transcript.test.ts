@@ -67,3 +67,23 @@ describe("helpers", () => {
     expect(shq("it's")).toBe("'it'\\''s'");
   });
 });
+
+describe("turns from another device", () => {
+  it("places the other device's prompt above its reply, once", () => {
+    const t = new Transcript();
+    t.addUser("mine");
+    t.apply({ type: "message.start", payload: {} });
+    expect(t.remoteTurn).toBe(false);
+    t.apply({ type: "message.complete", payload: { text: "Echo: mine" } });
+
+    t.apply({ type: "message.start", payload: {} });
+    expect(t.remoteTurn).toBe(true);
+    t.apply({ type: "message.delta", payload: { text: "Echo: theirs" } });
+    const history = [{ role: "user", text: "mine" }, { role: "assistant", text: "Echo: mine" }, { role: "user", text: "theirs" }];
+    expect(t.placeRemotePrompt(history)).toBe(true);
+    expect(t.placeRemotePrompt(history)).toBe(false);
+    t.apply({ type: "message.complete", payload: { text: "Echo: theirs" } });
+    expect(t.items.map((i) => i.kind + ":" + ("text" in i ? i.text : ""))).toEqual(
+      ["user:mine", "assistant:Echo: mine", "user:theirs", "assistant:Echo: theirs"]);
+  });
+});

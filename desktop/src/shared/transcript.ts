@@ -149,6 +149,9 @@ export class Transcript implements TranscriptState {
   lastSeq = 0;
   lastCompletedText?: string;
 
+  /** The running turn was started by another device (phone / another PC): its prompt isn't here yet. */
+  remoteTurn = false;
+  private turnStart = 0;
   private streamingId?: string;
   private seen = new Set<number>();
 
@@ -205,6 +208,9 @@ export class Transcript implements TranscriptState {
     const p = event.payload;
     switch (event.type) {
       case "message.start":
+        // Our own sends set "Sending" first; anything else is a turn another device started.
+        this.remoteTurn = this.status !== "Sending" && !this.busy;
+        this.turnStart = this.items.length;
         this.busy = true;
         this.status = "Thinking";
         break;
@@ -428,6 +434,21 @@ export class Transcript implements TranscriptState {
   }
 
   // ------------------------------------------------------------ local echoes
+
+  /** Shows the prompt another device sent, above the reply it started (from `session.history`). */
+  placeRemotePrompt(messages: Json[]): boolean {
+    if (!this.remoteTurn) return false;
+    const last = [...messages].reverse().find((m) => str(get(m, "role")) === "user");
+    const text = last ? str(get(last, "text")) ?? str(get(last, "content")) : undefined;
+    if (text === undefined) return false;
+    this.remoteTurn = false;
+    const before = this.items[this.turnStart - 1];
+    if (before?.kind === "user" && before.text === text) return true;
+    const ts = num(get(last, "timestamp"));
+    this.items.splice(Math.min(this.turnStart, this.items.length), 0,
+      { id: newId("u-"), date: ts ? ts * 1000 : Date.now(), kind: "user", text, attachments: [] });
+    return true;
+  }
 
   addUser(text: string, attachments: string[] = []): void {
     this.finishStreaming();

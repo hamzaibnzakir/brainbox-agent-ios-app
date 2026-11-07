@@ -164,6 +164,9 @@ public struct Transcript: Hashable, Sendable {
     /// The pet's mood, mirroring agent/pet/state.py's priority order.
     public var petMood: PetMood = .idle
 
+    /// The running turn was started by another device on the shared backend: its prompt isn't here yet.
+    public var remoteTurn = false
+    private var turnStart = 0
     private var streamingID: String?
     private var seenSeqs: Set<Int> = []
 
@@ -217,6 +220,9 @@ public struct Transcript: Hashable, Sendable {
         let p = event.payload
         switch event.type {
         case "message.start":
+            // Our own sends set "Sending" first; anything else is a turn another device started.
+            remoteTurn = status != "Sending" && !busy
+            turnStart = items.count
             busy = true
             status = "Thinking"
             petMood = .busy
@@ -404,6 +410,18 @@ public struct Transcript: Hashable, Sendable {
     }
 
     // MARK: Local echoes
+
+    /// Shows the prompt another device sent, above the reply it started (from `session.history`).
+    @discardableResult
+    public mutating func placeRemotePrompt(_ messages: [JSONValue]) -> Bool {
+        guard remoteTurn, let last = messages.last(where: { $0["role"]?.stringValue == "user" }),
+              let text = last["text"]?.stringValue ?? last["content"]?.stringValue else { return false }
+        remoteTurn = false
+        if turnStart > 0, turnStart <= items.count, case .user(let shown, _) = items[turnStart - 1].kind, shown == text { return true }
+        let date = last["timestamp"]?.doubleValue.map { Date(timeIntervalSince1970: $0) } ?? Date()
+        items.insert(ChatItem(kind: .user(text: text, attachments: []), date: date), at: min(turnStart, items.count))
+        return true
+    }
 
     public mutating func addUser(_ text: String, attachments: [String] = []) {
         finishStreaming()

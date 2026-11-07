@@ -80,7 +80,8 @@ final class LiveHermesTests: XCTestCase {
     func test2_backendChatToolApprovalAndReuse() async throws {
         let env = try env()
         let client = try await connect(env)
-        XCTAssertFalse(client.backend.reused)
+        // Fresh, or the shared backend another device (an earlier test) started.
+        XCTAssertTrue(!client.backend.reused || client.backend.adopted)
         XCTAssertNotNil(client.ready, "gateway.ready arrives")
 
         // REST through the tunnel, authenticated.
@@ -435,6 +436,62 @@ final class LiveEngineTests: XCTestCase {
         let transcript = await engine.transcript(chat)
         XCTAssertEqual(transcript?.items.filter { if case .user = $0.kind { return true }; return false }.count, 3)
         await engine.disconnect()
+    }
+}
+
+/// The phone and the PC share one backend: a chat sent from either shows up on both, live,
+/// with both prompts and both replies in the same order.
+final class LiveSharedBackendTests: XCTestCase {
+    func testTwoDevicesSeeEachOthersTurns() async throws {
+        let e = ProcessInfo.processInfo.environment
+        guard let host = e["HERMES_E2E_SSH_HOST"], let key = e["HERMES_E2E_SSH_KEY"], let raw = Data(base64Encoded: key) else {
+            throw XCTSkip("HERMES_E2E_* not set")
+        }
+        let target = SSHTarget(host: host, port: Int(e["HERMES_E2E_SSH_PORT"] ?? "22") ?? 22, username: e["HERMES_E2E_SSH_USER"] ?? "root")
+        let identity = try SSHIdentity(rawRepresentation: raw)
+        func options() -> HermesClient.Options {
+            .init(target: target, identity: identity, hostKeys: MemoryHostKeyStore(), ownershipID: RemoteBackend.makeOwnershipID())
+        }
+        let phone = HermesEngine(persistence: MemoryEnginePersistence())
+        let pc = HermesEngine(persistence: MemoryEnginePersistence())
+        await phone.connect(options())
+        await pc.connect(options())
+        let phoneState = await phone.state, pcState = await pc.state
+        guard case .connected = phoneState, case .connected(let pcInfo) = pcState else { return XCTFail("\(phoneState) \(pcState)") }
+        XCTAssertTrue(pcInfo.reusedBackend, "the second device adopts the running backend")
+
+        let chat = try await phone.newChat()
+        _ = try await pc.open(chat)
+        func lines(_ t: Transcript?) -> [String] {
+            (t?.items ?? []).compactMap {
+                switch $0.kind {
+                case .user(let text, _): return "user:\(text)"
+                case .assistant(let text, _, _): return "assistant:\(text)"
+                default: return nil
+                }
+            }
+        }
+        func settle(_ engine: HermesEngine, until done: ([String]) -> Bool) async -> [String] {
+            let deadline = Date().addingTimeInterval(60)
+            while Date() < deadline {
+                let t = await engine.transcript(chat)
+                if t?.busy == false, done(lines(t)) { return lines(t) }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+            return lines(await engine.transcript(chat))
+        }
+
+        try await phone.send(chat, text: "hello from the phone")
+        let seenOnPC = await settle(pc) { $0.contains("user:hello from the phone") && $0.contains { $0.hasPrefix("assistant:Echo") } }
+        XCTAssertEqual(seenOnPC.first, "user:hello from the phone", "\(seenOnPC)")
+
+        try await pc.send(chat, text: "and now from the PC")
+        let seenOnPhone = await settle(phone) { $0.count == 4 && $0.contains("user:and now from the PC") }
+        let finalPC = await settle(pc) { $0.count == 4 }
+        XCTAssertEqual(seenOnPhone.map { String($0.prefix { $0 != ":" }) }, ["user", "assistant", "user", "assistant"], "\(seenOnPhone)")
+        XCTAssertEqual(seenOnPhone, finalPC)
+        await phone.disconnect()
+        await pc.disconnect()
     }
 }
 

@@ -51,7 +51,8 @@ public final class HermesClient: @unchecked Sendable {
         // Fast path: the backend this phone started is usually still running. Go straight to
         // its gateway with the saved token (the token itself proves it's ours); only if that
         // fails run the full locate / verify / spawn sequence.
-        if let known = options.knownBackend {
+        // A per-device backend from an older build goes through ensure() so it is retired.
+        if let known = options.knownBackend, known.shared == true {
             progress(.gateway)
             if let client = try? await attach(ssh: ssh, backend: BackendHandle(record: known, reused: true, version: known.version),
                                               readyTimeout: 2) {

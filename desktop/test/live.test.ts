@@ -77,6 +77,38 @@ live("desktop engine ↔ SSH ↔ real Hermes", () => {
     again.disconnect();
   });
 
+  it("two devices share one backend and see each other's turns", async () => {
+    // A phone and a PC: their own ownership ids and their own saved state, like real devices.
+    const store = () => { const r: Record<string, BackendRecord | undefined> = {}; return { loadBackend: (id: string) => r[id], saveBackend: (id: string, v?: BackendRecord) => { r[id] = v; } }; };
+    const phone = new HermesEngine(store());
+    const pc = new HermesEngine(store());
+    await phone.connect({ target: env!.target, identity: env!.identity, hostKeys, ownershipId: makeOwnershipId() });
+    await pc.connect({ target: env!.target, identity: env!.identity, hostKeys, ownershipId: makeOwnershipId() });
+    expect(pc.client!.backend.record.pid).toBe(phone.client!.backend.record.pid);
+    expect(pc.client!.backend.reused).toBe(true);
+
+    const chat = await phone.newChat();
+    await pc.open(chat);
+    let onPC: TranscriptState | undefined, onPhone: TranscriptState | undefined;
+    let pcStreamed = 0;
+    pc.on("transcript", (k: string, t: TranscriptState) => { if (k === chat) { onPC = t; if (t.items.some((i) => i.kind === "assistant" && i.streaming)) pcStreamed++; } });
+    phone.on("transcript", (k: string, t: TranscriptState) => { if (k === chat) onPhone = t; });
+    const texts = (t?: TranscriptState) => (t?.items ?? []).flatMap((i) => (i.kind === "user" || i.kind === "assistant" ? [`${i.kind}:${i.text}`] : []));
+
+    await phone.send(chat, "hello from the phone");
+    await waitFor(() => (texts(onPC).some((x) => x.startsWith("assistant:Echo")) && onPC!.busy === false && texts(onPC).includes("user:hello from the phone")) || undefined);
+    expect(pcStreamed).toBeGreaterThan(0);
+
+    await pc.send(chat, "and now from the PC");
+    await waitFor(() => (texts(onPhone).filter((x) => x.startsWith("assistant:Echo")).length >= 2 && onPhone!.busy === false && texts(onPhone).includes("user:and now from the PC")) || undefined);
+    // Both screens show the same conversation, in the same order.
+    await waitFor(() => (texts(onPC).length === 4) || undefined);
+    expect(texts(onPC)).toEqual(texts(onPhone));
+    expect(texts(onPC).map((x) => x.split(":")[0])).toEqual(["user", "assistant", "user", "assistant"]);
+    phone.disconnect();
+    pc.disconnect();
+  });
+
   it("Bot Screen: watch, take over, hand back", async () => {
     if (!env!.screen) return;
     const client = await HermesClient.connect({ target: env!.target, identity: env!.identity, hostKeys, ownershipId, knownBackend: Object.values(records)[0] });

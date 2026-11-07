@@ -177,6 +177,8 @@ final class AppModel {
         case .idle, .connecting:
             if await engine.client == nil { await connect() }
         }
+        // Catch up on turns sent from another device (the PC) while the phone was away.
+        if let chat = currentChat { await engine.refresh(chat) }
         await refreshSessions()
     }
 

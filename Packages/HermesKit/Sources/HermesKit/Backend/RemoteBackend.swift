@@ -20,6 +20,13 @@ import Foundation
 ///
 /// The backend binds loopback only; the phone reaches it through SSH
 /// direct-tcpip channels, never over the open internet.
+///
+/// Shared: every Brainbox device (phones, PCs) on the server uses ONE backend, so a chat is
+/// live on all of them at once (Hermes' gateway owns execution; clients attach to the same
+/// session). It lives in `~/.hermes/desktop-ssh/<sharedOwner>/` with its token in a 0600 file
+/// next to the lock, so any device that can SSH in as this user adopts it instead of starting
+/// its own. Backends from older builds (one per device, under the device's ownership id) are
+/// stopped. Same layout as the Windows app (desktop/src/main/hermes/backend.ts).
 public struct RemoteBackendRecord: Codable, Hashable, Sendable {
     public var pid: Int
     public var port: Int
@@ -28,12 +35,23 @@ public struct RemoteBackendRecord: Codable, Hashable, Sendable {
     public var hermesPath: String
     /// Hermes version seen when this backend was verified (for fast reconnects).
     public var version: String?
+    /// Started under the shared directory (older builds kept one backend per device).
+    public var shared: Bool?
 }
 
 public struct BackendHandle: Sendable {
     public var record: RemoteBackendRecord
     public var reused: Bool
     public var version: String?
+    /// Reused a backend another device started.
+    public var adopted = false
+
+    public init(record: RemoteBackendRecord, reused: Bool, version: String?, adopted: Bool = false) {
+        self.record = record
+        self.reused = reused
+        self.version = version
+        self.adopted = adopted
+    }
 }
 
 public enum BackendError: Error, LocalizedError, Equatable {
@@ -92,8 +110,13 @@ public struct RemoteBackend: Sendable {
     /// Single-quotes a value for POSIX sh.
     public static func shq(_ value: String) -> String { "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
 
-    var runtimeDir: String { "$HOME/.hermes/desktop-ssh/\(ownershipID)" }
+    /// Hermes requires 32 hex for the runtime dir: sha256("brainbox-shared-backend")[:32], fixed.
+    public static let sharedOwner = "9bfaf1f3f5d1b43167520d9fb4c60c03"
+
+    var runtimeDir: String { "$HOME/.hermes/desktop-ssh/\(Self.sharedOwner)" }
     var lockPath: String { "\(runtimeDir)/brainbox-mobile.lock.json" }
+    var tokenPath: String { "\(runtimeDir)/backend.token" }
+    var legacyDir: String { "$HOME/.hermes/desktop-ssh/\(ownershipID)" }
 
     // MARK: Locate
 
@@ -115,10 +138,49 @@ public struct RemoteBackend: Sendable {
 
     // MARK: Reuse
 
+    /// The shared lock plus its token (lock JSON on the first line, the token on the second).
     func readLock() async throws -> RemoteBackendRecord? {
-        let result = try await ssh.exec("cat \(lockPath) 2>/dev/null", timeout: 20)
-        guard let data = result.output.data(using: .utf8), !data.isEmpty else { return nil }
-        return try? JSONDecoder().decode(LockFile.self, from: data).record(token: "")
+        let result = try await ssh.exec("tr -d '\\n' < \(lockPath) 2>/dev/null; echo; cat \(tokenPath) 2>/dev/null", timeout: 20)
+        let lines = result.output.components(separatedBy: "\n")
+        guard let data = lines.first?.data(using: .utf8), !data.isEmpty,
+              let lock = try? JSONDecoder().decode(LockFile.self, from: data) else { return nil }
+        var record = lock.record(token: lines.count > 1 ? lines[1].trimmingCharacters(in: .whitespacesAndNewlines) : "")
+        record.shared = true
+        return record
+    }
+
+    /// The backend another device started, when it is alive and its token still opens it.
+    public func adopt() async -> BackendHandle? {
+        guard let lock = try? await readLock(), lock.token.count == 64,
+              lock.token.allSatisfy({ $0.isHexDigit && !$0.isUppercase }),
+              await pidAlive(lock), let version = await verify(lock) else { return nil }
+        var record = lock
+        record.version = version
+        return BackendHandle(record: record, reused: true, version: version, adopted: true)
+    }
+
+    /// Stops a backend an older build started for this device alone (only if its argv proves it).
+    func retireLegacy(_ record: RemoteBackendRecord?) async {
+        guard let record, record.shared != true, await pidAlive(record) else { return }
+        _ = try? await ssh.exec("kill \(record.pid) 2>/dev/null; rm -f \(legacyDir)/brainbox-mobile.lock.json; true", timeout: 20)
+    }
+
+    /// Serialises starts across devices: two connecting at once must not start two backends.
+    func withSpawnLock<T: Sendable>(_ body: () async throws -> T) async throws -> T {
+        let dir = "\(runtimeDir)/spawn.lock"
+        _ = try await ssh.exec("""
+        umask 077; mkdir -p "$HOME/.hermes/desktop-ssh" "\(runtimeDir)"; chmod 700 "$HOME/.hermes/desktop-ssh" "\(runtimeDir)"
+        for i in $(seq 1 90); do mkdir "\(dir)" 2>/dev/null && { echo GOT; exit 0; }
+          find "\(dir)" -maxdepth 0 -mmin +3 -exec rmdir {} \\; 2>/dev/null; sleep 1; done; echo BUSY
+        """, timeout: 100)
+        do {
+            let value = try await body()
+            _ = try? await ssh.exec("rmdir \"\(dir)\" 2>/dev/null; true", timeout: 15)
+            return value
+        } catch {
+            _ = try? await ssh.exec("rmdir \"\(dir)\" 2>/dev/null; true", timeout: 15)
+            throw error
+        }
     }
 
     func pidAlive(_ record: RemoteBackendRecord) async -> Bool {
@@ -152,18 +214,25 @@ public struct RemoteBackend: Sendable {
 
     /// Reuses `known` when it is still ours and alive; otherwise starts a fresh backend.
     public func ensure(known: RemoteBackendRecord?, progress: @Sendable (BackendStep) -> Void = { _ in }) async throws -> BackendHandle {
-        if let known {
-            progress(.reusing)
-            if await pidAlive(known), let version = await verify(known) {
-                var record = known
-                record.version = version
-                return BackendHandle(record: record, reused: true, version: version)
-            }
+        progress(.reusing)
+        if let known, known.shared == true, await pidAlive(known), let version = await verify(known) {
+            var record = known
+            record.version = version
+            return BackendHandle(record: record, reused: true, version: version)
         }
-        progress(.locating)
-        let hermes = try await locateHermes()
-        progress(.starting)
-        return try await spawn(hermesPath: hermes, progress: progress)
+        if let adopted = await adopt() {
+            await retireLegacy(known)
+            return adopted
+        }
+        await retireLegacy(known)
+        return try await withSpawnLock {
+            // Another device may have finished starting one while we waited for the lock.
+            if let late = await adopt() { return late }
+            progress(.locating)
+            let hermes = try await locateHermes()
+            progress(.starting)
+            return try await spawn(hermesPath: hermes, progress: progress)
+        }
     }
 
     public func spawn(hermesPath: String, progress: @Sendable (BackendStep) -> Void = { _ in }) async throws -> BackendHandle {
@@ -219,10 +288,11 @@ public struct RemoteBackend: Sendable {
             throw BackendError.notReady(tail)
         }
 
-        let record = RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath, version: nil)
+        let record = RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath, version: nil, shared: true)
         let lock = LockFile(record: record)
         if let data = try? JSONEncoder().encode(lock) {
-            _ = try? await ssh.exec("umask 077; cat > \(lockPath).tmp && mv -f \(lockPath).tmp \(lockPath)", stdin: data, timeout: 20)
+            // Token first, lock last: a device that reads the lock always finds the matching token.
+            _ = try? await ssh.exec("umask 077; printf %s \(token) > \(tokenPath).tmp && mv -f \(tokenPath).tmp \(tokenPath) && cat > \(lockPath).tmp && mv -f \(lockPath).tmp \(lockPath)", stdin: data, timeout: 20)
         }
         let version = await verify(record)
         var verified = record
@@ -230,10 +300,11 @@ public struct RemoteBackend: Sendable {
         return BackendHandle(record: verified, reused: false, version: version)
     }
 
-    /// Stops the backend this phone started (never anything else).
+    /// Stops the shared Brainbox backend (never anything else); other devices reconnect to a new one.
     public func stop(_ record: RemoteBackendRecord) async {
         if await pidAlive(record) {
-            _ = try? await ssh.exec("kill \(record.pid) 2>/dev/null; rm -f \(lockPath)", timeout: 20)
+            let files = record.shared == true ? "\(lockPath) \(tokenPath)" : "\(legacyDir)/brainbox-mobile.lock.json"
+            _ = try? await ssh.exec("kill \(record.pid) 2>/dev/null; rm -f \(files)", timeout: 20)
         }
     }
 
@@ -257,7 +328,7 @@ public struct RemoteBackend: Sendable {
         }
 
         func record(token: String) -> RemoteBackendRecord {
-            RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath, version: nil)
+            RemoteBackendRecord(pid: pid, port: port, nonce: nonce, token: token, hermesPath: hermesPath, version: nil, shared: nil)
         }
     }
 }

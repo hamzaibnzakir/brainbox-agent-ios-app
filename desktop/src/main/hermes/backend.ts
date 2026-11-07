@@ -1,6 +1,11 @@
 // Starts or reuses `hermes serve` on the server over SSH, the way Hermes Desktop's SSH mode does.
-// A port of HermesKit's RemoteBackend.swift: same scripts, same lockfile, same ownership checks,
-// so the phone and the PC never touch each other's backends (each has its own ownership id).
+// A port of HermesKit's RemoteBackend.swift: same scripts, same lockfile, same ownership checks.
+//
+// Shared: every Brainbox device (phone, PCs) on this server uses ONE backend, so a chat is live on
+// all of them at once (Hermes' gateway owns execution; clients attach to the same session). The
+// backend lives in ~/.hermes/desktop-ssh/<SHARED_OWNER>/ with its token in a 0600 file next to the
+// lock, so any device that can SSH in as this user can adopt it instead of starting its own.
+// Backends from older builds (one per device, under the device's ownership id) are stopped.
 //
 // Not HERMES_DESKTOP=1 (unless asked): on a server that already runs the Hermes gateway (Telegram,
 // cron), Desktop mode would start its own cron ticker and reap "unsupervised" gateway processes.
@@ -15,11 +20,15 @@ export interface BackendRecord {
   token: string;
   hermesPath: string;
   version?: string;
+  /** Started under the shared directory (older builds kept one backend per device). */
+  shared?: boolean;
 }
 
 export interface BackendHandle {
   record: BackendRecord;
   reused: boolean;
+  /** Reused a backend another device started. */
+  adopted?: boolean;
   version?: string;
 }
 
@@ -36,12 +45,18 @@ export const makeOwnershipId = () => randomHex(16);
 /** Single-quotes a value for POSIX sh. */
 export const shq = (v: string) => "'" + v.replace(/'/g, "'\\''") + "'";
 
+/** Hermes requires 32 hex for the runtime dir: sha256("brainbox-shared-backend")[:32], fixed. */
+export const SHARED_OWNER = "9bfaf1f3f5d1b43167520d9fb4c60c03";
+
 export class RemoteBackend {
   readyTimeoutMs = 120_000;
+  /** `ownershipId` names this device's legacy directory (cleaned up); the backend itself is shared. */
   constructor(private ssh: SSHConnection, private ownershipId: string, private desktopMode = false) {}
 
-  get runtimeDir() { return `$HOME/.hermes/desktop-ssh/${this.ownershipId}`; }
+  get runtimeDir() { return `$HOME/.hermes/desktop-ssh/${SHARED_OWNER}`; }
   get lockPath() { return `${this.runtimeDir}/brainbox-mobile.lock.json`; }
+  get tokenPath() { return `${this.runtimeDir}/backend.token`; }
+  get legacyDir() { return `$HOME/.hermes/desktop-ssh/${this.ownershipId}`; }
 
   async locateHermes(): Promise<string> {
     const script = `for c in "$(bash -lc 'command -v hermes' 2>/dev/null </dev/null)" "$(sh -lc 'command -v hermes' 2>/dev/null </dev/null)" \\
@@ -57,12 +72,42 @@ echo HERMES_MISSING`;
   }
 
   async readLock(): Promise<BackendRecord | undefined> {
-    const res = await this.ssh.exec(`cat ${this.lockPath} 2>/dev/null`, { timeoutMs: 20_000 });
+    // Lock JSON on the first line, the token (if the file is there) on the second.
+    const res = await this.ssh.exec(`tr -d '\n' < ${this.lockPath} 2>/dev/null; echo; cat ${this.tokenPath} 2>/dev/null`, { timeoutMs: 20_000 });
+    const [json, token = ""] = res.output.split("\n");
     try {
-      const lock = JSON.parse(res.output);
-      return { pid: lock.pid, port: lock.port, nonce: lock.nonce, token: "", hermesPath: lock.hermesPath };
+      const lock = JSON.parse(json);
+      if (typeof lock.pid !== "number" || typeof lock.port !== "number" || typeof lock.nonce !== "string") return undefined;
+      return { pid: lock.pid, port: lock.port, nonce: lock.nonce, token: token.trim(), hermesPath: lock.hermesPath, shared: true };
     } catch {
       return undefined;
+    }
+  }
+
+  /** The backend another device started, when it is alive and its token still opens it. */
+  async adopt(): Promise<BackendHandle | undefined> {
+    const lock = await this.readLock().catch(() => undefined);
+    if (!lock?.token || !/^[0-9a-f]{64}$/.test(lock.token) || !(await this.pidAlive(lock))) return undefined;
+    const version = await this.verify(lock);
+    return version ? { record: { ...lock, version }, reused: true, adopted: true, version } : undefined;
+  }
+
+  /** Stops a backend an older build started for this device alone (only if its argv proves it). */
+  async retireLegacy(r: BackendRecord | undefined) {
+    if (!r || r.shared || !(await this.pidAlive(r))) return;
+    await this.ssh.exec(`kill ${r.pid} 2>/dev/null; rm -f ${this.legacyDir}/brainbox-mobile.lock.json; true`, { timeoutMs: 20_000 }).catch(() => undefined);
+  }
+
+  /** Serialises starts across devices: two connecting at once must not start two backends. */
+  private async withSpawnLock<T>(body: () => Promise<T>): Promise<T> {
+    const dir = `${this.runtimeDir}/spawn.lock`;
+    await this.ssh.exec(`umask 077; mkdir -p "$HOME/.hermes/desktop-ssh" "${this.runtimeDir}"; chmod 700 "$HOME/.hermes/desktop-ssh" "${this.runtimeDir}"
+for i in $(seq 1 90); do mkdir "${dir}" 2>/dev/null && { echo GOT; exit 0; }
+  find "${dir}" -maxdepth 0 -mmin +3 -exec rmdir {} \\; 2>/dev/null; sleep 1; done; echo BUSY`, { timeoutMs: 100_000 });
+    try {
+      return await body();
+    } finally {
+      await this.ssh.exec(`rmdir "${dir}" 2>/dev/null; true`, { timeoutMs: 15_000 }).catch(() => undefined);
     }
   }
 
@@ -97,17 +142,26 @@ echo HERMES_MISSING`;
   }
 
   async ensure(known: BackendRecord | undefined, progress: (s: BackendStep) => void = () => {}): Promise<BackendHandle> {
-    if (known) {
-      progress("Checking the running backend");
-      if (await this.pidAlive(known)) {
-        const version = await this.verify(known);
-        if (version) return { record: { ...known, version }, reused: true, version };
-      }
+    progress("Checking the running backend");
+    if (known?.shared && await this.pidAlive(known)) {
+      const version = await this.verify(known);
+      if (version) return { record: { ...known, version }, reused: true, version };
     }
-    progress("Finding Hermes on the server");
-    const hermes = await this.locateHermes();
-    progress("Starting Hermes");
-    return this.spawn(hermes, progress);
+    const adopted = await this.adopt();
+    if (adopted) {
+      await this.retireLegacy(known);
+      return adopted;
+    }
+    await this.retireLegacy(known);
+    return this.withSpawnLock(async () => {
+      // Another device may have finished starting one while we waited for the lock.
+      const late = await this.adopt();
+      if (late) return late;
+      progress("Finding Hermes on the server");
+      const hermes = await this.locateHermes();
+      progress("Starting Hermes");
+      return this.spawn(hermes, progress);
+    });
   }
 
   async spawn(hermesPath: string, progress: (s: BackendStep) => void = () => {}): Promise<BackendHandle> {
@@ -159,19 +213,23 @@ echo "PID=$child"`;
       throw new BackendError("notReady", `Hermes started but never reported ready. Last log lines:\n${tail}`);
     }
 
-    const record: BackendRecord = { pid, port, nonce, token, hermesPath };
+    const record: BackendRecord = { pid, port, nonce, token, hermesPath, shared: true };
     const lock = {
       schemaVersion: 1, owner: "brainbox-mobile", pid, port, nonce, hermesPath,
       tokenFingerprint: createHash("sha256").update(token).digest("hex").slice(0, 32),
     };
-    await this.ssh.exec(`umask 077; cat > ${this.lockPath}.tmp && mv -f ${this.lockPath}.tmp ${this.lockPath}`,
+    // Token first, lock last: a device that reads the lock always finds the matching token.
+    await this.ssh.exec(`umask 077; printf %s ${token} > ${this.tokenPath}.tmp && mv -f ${this.tokenPath}.tmp ${this.tokenPath} && cat > ${this.lockPath}.tmp && mv -f ${this.lockPath}.tmp ${this.lockPath}`,
       { stdin: JSON.stringify(lock), timeoutMs: 20_000 }).catch(() => undefined);
     const version = await this.verify(record);
     return { record: { ...record, version }, reused: false, version };
   }
 
-  /** Stops the backend this PC started (never anything else). */
+  /** Stops the shared Brainbox backend (never anything else); other devices reconnect to a new one. */
   async stop(r: BackendRecord): Promise<void> {
-    if (await this.pidAlive(r)) await this.ssh.exec(`kill ${r.pid} 2>/dev/null; rm -f ${this.lockPath}`, { timeoutMs: 20_000 }).catch(() => undefined);
+    if (await this.pidAlive(r)) {
+      const files = !r.shared ? `${this.legacyDir}/brainbox-mobile.lock.json` : `${this.lockPath} ${this.tokenPath}`;
+      await this.ssh.exec(`kill ${r.pid} 2>/dev/null; rm -f ${files}`, { timeoutMs: 20_000 }).catch(() => undefined);
+    }
   }
 }

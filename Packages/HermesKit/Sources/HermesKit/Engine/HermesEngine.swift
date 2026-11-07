@@ -255,6 +255,10 @@ public actor HermesEngine {
         if event.type == "message.complete", wasBusy {
             continuation.yield(.turnFinished(chat: key, title: title, text: chat.transcript.lastCompletedText ?? ""))
         }
+        // Another device on this backend started the turn: fetch its prompt so both screens match.
+        if chat.transcript.remoteTurn, event.type == "message.start" || event.type == "message.complete" {
+            Task { await self.fetchRemotePrompt(key) }
+        }
         for request in chat.transcript.pendingRequests where !before.contains(request.requestID) {
             continuation.yield(.needsAttention(chat: key, title: title, request: request))
         }
@@ -262,6 +266,37 @@ public actor HermesEngine {
         if let method = Self.unsupportedRequestReply[event.type], let rid = event.payload["request_id"]?.stringValue, let client {
             Task { try? await client.rpc.call(method.0, ["request_id": .string(rid), method.1: ""]) }
         }
+    }
+
+    private func fetchRemotePrompt(_ key: String) async {
+        guard let client, let live = chats[key]?.liveID,
+              let history = try? await client.rpc.call("session.history", ["session_id": .string(live)], timeout: 20),
+              var chat = chats[key], chat.liveID == live else { return }
+        if chat.transcript.placeRemotePrompt(history["messages"]?.arrayValue ?? []) {
+            chats[key] = chat
+            continuation.yield(.transcript(chat: key, chat.transcript))
+        }
+    }
+
+    /// Brings an idle chat up to date with what other devices did (app back in front, chat reopened).
+    public func refresh(_ key: String) async {
+        guard let client, let chat = chats[key], !chat.transcript.busy,
+              let history = try? await client.rpc.call("session.history", ["session_id": .string(chat.liveID)], timeout: 20),
+              let messages = history["messages"]?.arrayValue,
+              var current = chats[key], !current.transcript.busy, current.liveID == chat.liveID else { return }
+        let shown = current.transcript.items.filter {
+            if case .user = $0.kind { return true }
+            if case .assistant = $0.kind { return true }
+            return false
+        }.count
+        let stored = messages.filter {
+            let role = $0["role"]?.stringValue
+            return role == "user" || (role == "assistant" && !($0["text"]?.stringValue ?? "").isEmpty)
+        }.count
+        guard stored != shown else { return }
+        current.transcript.hydrate(messages: messages)
+        chats[key] = current
+        continuation.yield(.transcript(chat: key, current.transcript))
     }
 
     static let unsupportedRequestReply: [String: (String, String)] = [

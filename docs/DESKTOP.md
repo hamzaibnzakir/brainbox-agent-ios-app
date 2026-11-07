@@ -25,10 +25,20 @@ Code: `desktop/` (Electron + TypeScript + React). Built by CI on `windows-latest
    refuses to connect until you choose **Reset trusted server key**.
 
 Under the hood it is the phone's connection, ported: SSH (key auth only) → start or reuse
-`hermes serve --isolated --host 127.0.0.1 --port 0` (one-shot token via a private file, its own
-ownership id so it never touches the phone's backend) → Hermes' JSON-RPC gateway through an SSH
-tunnel. No port is opened on the server or the PC. After updating Hermes on the server, use
-**Connection › Restart backend**.
+`hermes serve --isolated --host 127.0.0.1 --port 0` (one-shot token via a private file) → Hermes'
+JSON-RPC gateway through an SSH tunnel. No port is opened on the server or the PC. After updating
+Hermes on the server, use **Connection › Restart backend** (the phone reconnects to the new one).
+
+## One chat, every device
+
+The phone and every PC use **one shared backend** on the server
+(`~/.hermes/desktop-ssh/9bfaf1f3f5d1b43167520d9fb4c60c03/`, token in a 0600 file next to the lock;
+whoever connects first starts it, the rest adopt it). Hermes' gateway owns the conversation, so a
+chat open on both devices is the same live chat: start a message on the phone, hand the phone to
+someone, and the reply keeps streaming on the PC — and the other way round. Each device also shows
+the prompt the other one sent (fetched from `session.history`), and catches up when its window or
+app comes back to the front. Backends that older builds started per device are stopped on the
+first connect.
 
 ## Using it
 

@@ -29,7 +29,9 @@ export class HermesClient {
   static async connect(opts: ClientOptions, progress: (s: ConnectStep) => void = () => {}): Promise<HermesClient> {
     progress({ step: "ssh" });
     const ssh = await SSHConnection.connect(opts.target, opts.identity, opts.hostKeys);
-    if (opts.knownBackend) {
+    // Fast path: the shared backend we used last time. A per-device one from an older build goes
+    // through ensure() so it is retired in favour of the shared one.
+    if (opts.knownBackend?.shared) {
       progress({ step: "gateway" });
       try {
         return await HermesClient.attach(ssh, { record: opts.knownBackend, reused: true, version: opts.knownBackend.version }, 2000);
