@@ -101,7 +101,9 @@ try {
     step("screen");
     await page.keyboard.press("Control+j");
     const start = page.getByRole("button", { name: "Start screen" });
-    await page.locator(".dock .screen-bar").waitFor({ timeout: 30_000 });
+    const watching = page.getByText("Hermes is in control");
+    // The dock checks the screen first: wait until it shows either the live screen or the Start button.
+    await start.or(watching).first().waitFor({ timeout: 60_000 });
     if (await start.isVisible().catch(() => false)) await start.click();
     await page.getByText("Hermes is in control").waitFor({ timeout: 120_000 });
     await page.waitForTimeout(2500);
