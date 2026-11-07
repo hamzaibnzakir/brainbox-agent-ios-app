@@ -56,9 +56,9 @@ export function TerminalPane({ connected, active }: { connected: boolean; active
   useEffect(() => { if (active) { try { fit.current?.fit(); } catch { /* */ } term.current?.focus(); } }, [active]);
 
   return (
-    <div style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0 }}>
+    <div className="term-wrap">
       {closed && (
-        <div className="banner" style={{ margin: 8 }}>
+        <div className="banner">
           <span style={{ flex: 1 }}>{closed}</span>
           {connected && <button className="btn small" onClick={open}>New shell</button>}
         </div>

@@ -29,7 +29,7 @@ interface Plain {
   lastChat?: string;
 }
 
-const DEFAULT_PREFS: Preferences = { notifyOnFinish: true, notifyOnApproval: true, desktopBackend: false, theme: "system" };
+const DEFAULT_PREFS: Preferences = { notifyOnFinish: true, notifyOnApproval: true, desktopBackend: false, theme: "dark" };
 
 export class Store implements HostKeyStore, EnginePersistence {
   private plainPath: string;

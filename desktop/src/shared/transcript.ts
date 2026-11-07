@@ -152,6 +152,8 @@ export class Transcript implements TranscriptState {
   /** The running turn was started by another device (phone / another PC): its prompt isn't here yet. */
   remoteTurn = false;
   private turnStart = 0;
+  /** Prompts this device sent whose turn hasn't started yet (Hermes queues a prompt sent mid-reply). */
+  private localPending = 0;
   private streamingId?: string;
   private seen = new Set<number>();
 
@@ -208,8 +210,11 @@ export class Transcript implements TranscriptState {
     const p = event.payload;
     switch (event.type) {
       case "message.start":
-        // Our own sends set "Sending" first; anything else is a turn another device started.
-        this.remoteTurn = this.status !== "Sending" && !this.busy;
+        // A turn for a prompt we sent, or one another device started?
+        this.remoteTurn = this.localPending === 0;
+        if (this.localPending > 0) this.localPending -= 1;
+        // An interrupted reply never gets its message.complete: close it, the new turn starts fresh.
+        this.finishStreaming();
         this.turnStart = this.items.length;
         this.busy = true;
         this.status = "Thinking";
@@ -451,10 +456,17 @@ export class Transcript implements TranscriptState {
   }
 
   addUser(text: string, attachments: string[] = []): void {
-    this.finishStreaming();
+    // Sent while a reply is still streaming: Hermes queues it, and the reply keeps growing above.
+    if (!this.busy) this.finishStreaming();
     this.items.push({ id: newId("u-"), date: Date.now(), kind: "user", text, attachments });
+    this.localPending += 1;
+    if (!this.busy) this.status = "Sending";
     this.busy = true;
-    this.status = "Sending";
+  }
+
+  /** The prompt never reached Hermes. */
+  sendFailed(): void {
+    if (this.localPending > 0) this.localPending -= 1;
   }
 
   addCommand(name: string, output: string): void {

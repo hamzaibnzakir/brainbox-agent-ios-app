@@ -192,9 +192,15 @@ function registerIPC() {
   handle("closeChat", (id: string) => engine.closeChat(id));
   handle("deleteSession", async (id: string, source: string) => {
     if (!["tui", "desktop", "cli", ""].includes(source)) throw new Error(`Brainbox doesn't delete ${source} history.`);
-    await engine.call(undefined, "session.delete", { session_id: id });
+    try {
+      await engine.call(undefined, "session.delete", { session_id: id });
+    } catch (err) {
+      if ((err as { code?: number }).code === 4023) throw new Error("That chat is open on another device (or still running). Close it there, then delete.");
+      throw err;
+    }
   });
-  handle("renameSession", (id: string, title: string) => engine.call(id, "session.title", { title }));
+  // session.title needs a live session: attach to the chat first (a no-op when it's already open).
+  handle("renameSession", async (id: string, title: string) => { await engine.open(id); return engine.call(id, "session.title", { title }); });
   handle("send", (chat: string, text: string, files: { name: string; data: string; isImage: boolean }[] = []) =>
     engine.send(chat, text, files.map((f) => ({ filename: f.name, data: Buffer.from(f.data, "base64"), isImage: f.isImage }))));
   handle("interrupt", (chat: string) => engine.interrupt(chat));
@@ -203,6 +209,19 @@ function registerIPC() {
   handle("background", (chat: string, text: string) => engine.background(chat, text));
   handle("btw", (chat: string, text: string) => engine.btw(chat, text));
   handle("call", (chat: string | undefined, method: string, params: Record<string, Json>) => engine.call(chat, method, params));
+  // Hermes' REST API (cron, skills, memory, files, server health) through the SSH tunnel.
+  handle("rest", (method: string, apiPath: string, body?: Json) => {
+    const client = engine.client;
+    if (!client) throw new Error("Not connected to Hermes.");
+    if (!["GET", "POST", "PUT", "PATCH", "DELETE"].includes(method) || !/^\/api\/(?!ws\b|display\/ws\b)[\w./?=&%:+,-]*$/.test(apiPath)) {
+      throw new Error("That request isn't allowed.");
+    }
+    return client.tunnel.json(method, apiPath, body, 60_000);
+  });
+  handle("titleBar", (color: string, symbolColor: string) => {
+    try { win?.setTitleBarOverlay({ color, symbolColor, height: 40 }); } catch { /* not on this platform */ }
+  });
+  handle("refreshChat", (chat: string) => engine.refresh(chat));
 
   handle("screen.status", () => screen.status());
   handle("screen.start", () => screen.start());
@@ -245,6 +264,9 @@ function createWindow() {
     backgroundColor: "#0c0d10",
     icon: path.join(__dirname, "../../../build/icon.png"),
     autoHideMenuBar: true,
+    // Our own title bar (drag region in the page) with the native window buttons on top.
+    titleBarStyle: "hidden",
+    titleBarOverlay: { color: "#0c0d10", symbolColor: "#a9a9b3", height: 40 },
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

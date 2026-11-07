@@ -437,7 +437,7 @@ public actor HermesEngine {
         do {
             try await client.rpc.call("prompt.submit", ["session_id": .string(live), "text": .string(text)], timeout: 60)
         } catch {
-            mutate(key) { $0.addError((error as? LocalizedError)?.errorDescription ?? "Couldn't send.") }
+            mutate(key) { $0.sendFailed(); $0.addError((error as? LocalizedError)?.errorDescription ?? "Couldn't send.") }
             throw error
         }
     }

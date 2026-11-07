@@ -87,3 +87,35 @@ describe("turns from another device", () => {
       ["user:mine", "assistant:Echo: mine", "user:theirs", "assistant:Echo: theirs"]);
   });
 });
+
+describe("sending while a reply streams", () => {
+  it("keeps the reply in one piece and treats the queued turn as ours", () => {
+    const t = new Transcript();
+    t.addUser("first");
+    t.apply({ type: "message.start", payload: {} });
+    t.apply({ type: "message.delta", payload: { text: "Echo: fi" } });
+    t.addUser("second"); // queued by Hermes
+    t.apply({ type: "message.delta", payload: { text: "rst" } });
+    t.apply({ type: "message.complete", payload: { text: "Echo: first" } });
+    t.apply({ type: "message.start", payload: {} });
+    expect(t.remoteTurn).toBe(false);
+    t.apply({ type: "message.delta", payload: { text: "Echo: second" } });
+    t.apply({ type: "message.complete", payload: { text: "Echo: second" } });
+    expect(t.items.map((i) => i.kind + ":" + ("text" in i ? i.text : ""))).toEqual(
+      ["user:first", "assistant:Echo: first", "user:second", "assistant:Echo: second"]);
+  });
+});
+
+describe("an interrupted reply", () => {
+  it("stops streaming when the next turn starts", () => {
+    const t = new Transcript();
+    t.addUser("long one");
+    t.apply({ type: "message.start", payload: {} });
+    t.apply({ type: "message.delta", payload: { text: "Partial" } });
+    t.addUser("never mind");
+    t.apply({ type: "message.start", payload: {} }); // no message.complete for the interrupted turn
+    t.apply({ type: "message.delta", payload: { text: "Echo: never mind" } });
+    const assistants = t.items.filter((i) => i.kind === "assistant");
+    expect(assistants.map((a) => [a.kind === "assistant" && a.text, a.kind === "assistant" && a.streaming])).toEqual([["Partial", false], ["Echo: never mind", true]]);
+  });
+});

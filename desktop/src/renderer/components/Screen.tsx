@@ -5,6 +5,7 @@
 import RFB from "@novnc/novnc";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { bb, ScreenLease, ScreenStatus } from "../api";
+import { Icon } from "../ui/icons";
 
 type Phase =
   | { kind: "checking" }
@@ -47,7 +48,7 @@ class BridgeChannel {
   }
 }
 
-export function ScreenPane({ connected, active, say }: { connected: boolean; active: boolean; say: (t: string) => void }) {
+export function ScreenPane({ connected, active, say, onClose }: { connected: boolean; active: boolean; say: (t: string) => void; onClose?: () => void }) {
   const [phase, setPhase] = useState<Phase>({ kind: "checking" });
   const [status, setStatus] = useState<ScreenStatus>();
   const [lease, setLease] = useState<ScreenLease>({ holder: "agent", since: 0, epoch: 0, reason: "" });
@@ -217,20 +218,22 @@ export function ScreenPane({ connected, active, say }: { connected: boolean; act
   return (
     <div className="screen">
       <div className="screen-bar">
-        {inControl ? <span className="pill bad">✋ You're in control</span>
-          : someoneElse ? <span className="pill warn">Someone else is in control</span>
-          : live ? <span className="pill volt">✦ Hermes is in control</span>
-          : <span className="pill muted">{phaseLabel(phase)}</span>}
-        {live && inControl && <span className="notice" style={{ color: "rgba(243,243,245,0.6)" }}>Your keyboard and mouse drive the screen</span>}
-        <span style={{ flex: 1 }} />
-        {live && <button className="btn small ghost" style={{ color: "#f3f3f5" }} onClick={() => setFit(!fit)}>{fit ? "Actual size" : "Fit"}</button>}
-        {live && inControl && <button className="btn small ghost" style={{ color: "#f3f3f5" }} onClick={() => rfb.current?.sendCtrlAltDel()}>Ctrl+Alt+Del</button>}
-        {someoneElse && <button className="btn small ghost" style={{ color: "#f3f3f5" }} disabled={busy} onClick={() => handBack(true)}>Hand back (force)</button>}
-        {status?.running && <button className="btn small ghost" style={{ color: "#f3f3f5" }} disabled={busy}
-                                   onClick={async () => { if (confirm("Turn Hermes' screen off?")) { teardown(); try { apply(await bb.invoke<ScreenStatus>("screen.stop", someoneElse)); } catch (e) { say((e as Error).message); } } }}>Turn off</button>}
+        <div className="who">
+          {inControl ? <span className="pill bad"><Icon name="hand" size={12} />You're in control</span>
+            : someoneElse ? <span className="pill warn"><Icon name="hand" size={12} />Someone else is in control</span>
+            : live ? <span className="pill volt"><span className="dot pulse" />Hermes is in control</span>
+            : <span className="pill muted">{phaseLabel(phase)}</span>}
+          <span className="sub">{live ? (inControl ? "Your keyboard and mouse drive the screen" : "Watching live") : "Hermes' screen"}</span>
+        </div>
+        {live && <button className="icon-btn" title={fit ? "Actual size" : "Fit to window"} onClick={() => setFit(!fit)}><Icon name="maximize" size={15} /></button>}
+        {live && inControl && <button className="icon-btn" title="Send Ctrl+Alt+Del" onClick={() => rfb.current?.sendCtrlAltDel()}><Icon name="keyboard" size={15} /></button>}
+        {status?.running && <button className="icon-btn" title="Turn the screen off" disabled={busy}
+                                   onClick={async () => { if (confirm("Turn Hermes' screen off?")) { teardown(); try { apply(await bb.invoke<ScreenStatus>("screen.stop", someoneElse)); } catch (e) { say((e as Error).message); } } }}><Icon name="power" size={15} /></button>}
+        {someoneElse && <button className="btn small ghost" disabled={busy} onClick={() => handBack(true)}>Hand back (force)</button>}
         {live && (inControl
-          ? <button className="btn small good" disabled={busy} onClick={() => handBack()}>Hand back</button>
-          : <button className="btn small danger" disabled={busy} onClick={takeOver}>Take over</button>)}
+          ? <button className="btn small good" disabled={busy} onClick={() => handBack()}><Icon name="check" size={13} />Hand back</button>
+          : <button className="btn small danger" disabled={busy} onClick={takeOver}><Icon name="hand" size={13} />Take over</button>)}
+        {onClose && <button className="icon-btn" title="Close (Ctrl+J)" onClick={onClose}><Icon name="x" size={15} /></button>}
       </div>
       <div className={"screen-view" + (inControl ? " control" : "")}>
         <div className="vnc" ref={host} style={{ visibility: live || phase.kind === "connecting" ? "visible" : "hidden" }} />
@@ -292,5 +295,5 @@ function Overlay({ phase, busy, onStart, onRetry, say }: { phase: Phase; busy: b
     default:
       body = <></>;
   }
-  return <div className="screen-overlay"><div className="box">{body}</div></div>;
+  return <div className="screen-overlay"><div className="box"><div className="glyph"><Icon name="monitor" size={24} /></div>{body}</div></div>;
 }

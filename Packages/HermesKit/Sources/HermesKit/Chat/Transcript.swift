@@ -167,6 +167,8 @@ public struct Transcript: Hashable, Sendable {
     /// The running turn was started by another device on the shared backend: its prompt isn't here yet.
     public var remoteTurn = false
     private var turnStart = 0
+    /// Prompts this device sent whose turn hasn't started yet (Hermes queues a prompt sent mid-reply).
+    private var localPending = 0
     private var streamingID: String?
     private var seenSeqs: Set<Int> = []
 
@@ -220,8 +222,11 @@ public struct Transcript: Hashable, Sendable {
         let p = event.payload
         switch event.type {
         case "message.start":
-            // Our own sends set "Sending" first; anything else is a turn another device started.
-            remoteTurn = status != "Sending" && !busy
+            // A turn for a prompt we sent, or one another device started?
+            remoteTurn = localPending == 0
+            if localPending > 0 { localPending -= 1 }
+            // An interrupted reply never gets its message.complete: close it, the new turn starts fresh.
+            finishStreaming()
             turnStart = items.count
             busy = true
             status = "Thinking"
@@ -424,11 +429,18 @@ public struct Transcript: Hashable, Sendable {
     }
 
     public mutating func addUser(_ text: String, attachments: [String] = []) {
-        finishStreaming()
+        // Sent while a reply is still streaming: Hermes queues it, and the reply keeps growing above.
+        if !busy { finishStreaming() }
         items.append(ChatItem(kind: .user(text: text, attachments: attachments)))
+        localPending += 1
+        if !busy { status = "Sending" }
         busy = true
-        status = "Sending"
         petMood = .busy
+    }
+
+    /// The prompt never reached Hermes.
+    public mutating func sendFailed() {
+        if localPending > 0 { localPending -= 1 }
     }
 
     public mutating func addCommand(_ name: String, output: String) {

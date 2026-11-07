@@ -349,6 +349,7 @@ export class HermesEngine extends EventEmitter {
     try {
       await client.call("prompt.submit", { session_id: chat.liveId, text });
     } catch (err) {
+      chat.transcript.sendFailed();
       chat.transcript.addError(errorText(err) || "Couldn't send.");
       this.publish(key, chat);
       throw err;

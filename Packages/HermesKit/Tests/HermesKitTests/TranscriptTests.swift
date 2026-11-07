@@ -162,3 +162,46 @@ final class MediaRefTests: XCTestCase {
         XCTAssertTrue(MediaRef.extract(from: "cd /root && ls /etc").refs.isEmpty)
     }
 }
+
+/// Turns from another device on the shared backend, and prompts sent while a reply streams.
+final class CrossDeviceTranscriptTests: XCTestCase {
+    private func lines(_ t: Transcript) -> [String] {
+        t.items.compactMap {
+            switch $0.kind {
+            case .user(let text, _): return "user:\(text)"
+            case .assistant(let text, _, _): return "assistant:\(text)"
+            default: return nil
+            }
+        }
+    }
+
+    func testOtherDevicesPromptIsPlacedAboveItsReply() {
+        var t = Transcript()
+        t.addUser("mine")
+        t.apply(GatewayEvent(type: "message.start"))
+        XCTAssertFalse(t.remoteTurn)
+        t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: mine"]))
+        t.apply(GatewayEvent(type: "message.start"))
+        XCTAssertTrue(t.remoteTurn)
+        t.apply(GatewayEvent(type: "message.delta", payload: ["text": "Echo: theirs"]))
+        let history: [JSONValue] = [["role": "user", "text": "mine"], ["role": "assistant", "text": "Echo: mine"], ["role": "user", "text": "theirs"]]
+        XCTAssertTrue(t.placeRemotePrompt(history))
+        XCTAssertFalse(t.placeRemotePrompt(history))
+        t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: theirs"]))
+        XCTAssertEqual(lines(t), ["user:mine", "assistant:Echo: mine", "user:theirs", "assistant:Echo: theirs"])
+    }
+
+    func testPromptSentMidReplyKeepsTheReplyWhole() {
+        var t = Transcript()
+        t.addUser("first")
+        t.apply(GatewayEvent(type: "message.start"))
+        t.apply(GatewayEvent(type: "message.delta", payload: ["text": "Echo: fi"]))
+        t.addUser("second")
+        t.apply(GatewayEvent(type: "message.delta", payload: ["text": "rst"]))
+        t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: first"]))
+        t.apply(GatewayEvent(type: "message.start"))
+        XCTAssertFalse(t.remoteTurn)
+        t.apply(GatewayEvent(type: "message.complete", payload: ["text": "Echo: second"]))
+        XCTAssertEqual(lines(t), ["user:first", "assistant:Echo: first", "user:second", "assistant:Echo: second"])
+    }
+}

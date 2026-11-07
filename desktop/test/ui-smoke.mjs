@@ -48,16 +48,16 @@ const shot = async (name) => { await page.screenshot({ path: path.join(shots, na
 const step = (name) => console.log("step:", name);
 let failed = false;
 try {
+  page.on("pageerror", (err) => { failed = true; console.error("PAGE ERROR:", err.message); });
   step("connect");
-  await page.getByText("Online").waitFor({ timeout: 120_000 });
+  await page.locator(".statusbar .dot.good").waitFor({ timeout: 120_000 });
   step("chat");
-  await page.getByRole("button", { name: "New chat" }).click();
-  const box = page.locator("textarea");
+  await page.getByRole("button", { name: "New", exact: true }).click();
+  const box = page.locator(".composer textarea");
   await box.fill("hello from the desktop app");
   await box.press("Enter");
   await page.locator(".msg-assistant", { hasText: "Echo:" }).first().waitFor({ timeout: 60_000 });
-  await page.getByRole("tab", { name: "Chat" }).click();
-  await page.getByText("Sending").waitFor({ state: "detached", timeout: 30_000 }).catch(() => {});
+  await page.locator(".chat-head .s", { hasText: "Live on all your devices" }).waitFor({ timeout: 30_000 });
   await shot("01-chat");
 
   step("approval");
@@ -69,10 +69,39 @@ try {
   await approve.click();
   await page.locator(".msg-assistant", { hasText: "approved by the user" }).first().waitFor({ timeout: 60_000 });
 
+  step("slash + palette");
+  await box.fill("/he");
+  await page.locator(".popover.up .pop-item", { hasText: "/help" }).first().waitFor({ timeout: 20_000 });
+  await box.fill("");
+  await page.keyboard.press("Control+k");
+  await page.locator(".palette input").fill("server");
+  await page.locator(".palette .pop-item", { hasText: "Go to Server" }).click();
+  await page.locator(".stat").first().waitFor({ timeout: 30_000 });
+
+  step("pages");
+  for (const [key, sel] of [["4", ".page-head"], ["5", ".skill-card"], ["6", ".editor"], ["7", ".file-row"], ["8", ".stat"], [",", ".page-head"]]) {
+    await page.keyboard.press("Control+" + key);
+    await page.locator(sel).first().waitFor({ timeout: 30_000 });
+  }
+
+  step("scrolling");
+  await page.keyboard.press("Control+1");
+  const doc = await page.evaluate(() => [document.documentElement.scrollHeight, innerHeight]);
+  if (doc[0] > doc[1] + 1) throw new Error(`the window grew past the screen: ${doc}`);
+  const list = page.locator(".session-list");
+  const [, sh, ch] = await list.evaluate((el) => [el.scrollTop, el.scrollHeight, el.clientHeight]);
+  if (sh > ch + 20) {
+    await list.hover();
+    await page.mouse.wheel(0, 600);
+    await page.waitForTimeout(300);
+    if ((await list.evaluate((el) => el.scrollTop)) <= 0) throw new Error("the chats list doesn't scroll with the wheel");
+  }
+
   if (e.HERMES_E2E_SCREEN === "1") {
     step("screen");
-    await page.getByRole("tab", { name: "Workspace" }).click();
+    await page.keyboard.press("Control+j");
     const start = page.getByRole("button", { name: "Start screen" });
+    await page.locator(".dock .screen-bar").waitFor({ timeout: 30_000 });
     if (await start.isVisible().catch(() => false)) await start.click();
     await page.getByText("Hermes is in control").waitFor({ timeout: 120_000 });
     await page.waitForTimeout(2500);
@@ -87,13 +116,16 @@ try {
   }
 
   step("terminal");
-  await page.getByRole("tab", { name: "Terminal" }).click();
+  await page.keyboard.press("Control+3");
+  await page.locator(".xterm").waitFor({ timeout: 20_000 });
   await page.waitForTimeout(2000);
+  await page.locator(".xterm").click();
   await page.keyboard.type("echo brainbox-desktop-$((6*7))\n");
   await page.waitForTimeout(1500);
   const termText = await page.locator(".xterm-rows").innerText();
   if (!termText.includes("brainbox-desktop-42")) throw new Error("terminal output missing: " + termText.slice(-300));
   await shot("05-terminal");
+  if (failed) throw new Error("the page reported errors");
   console.log("UI SMOKE OK");
 } catch (err) {
   failed = true;

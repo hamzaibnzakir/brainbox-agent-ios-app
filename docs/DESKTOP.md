@@ -42,14 +42,24 @@ first connect.
 
 ## Using it
 
+Dark-first design with the phone's palette; a navigation rail on the left, a status bar at the bottom.
+
 | | |
 |---|---|
-| **Workspace** | Chat on the left, Hermes' screen on the right. |
-| **Chat** | Streaming replies, tool cards, approvals (once / session / always / deny), questions, sudo/secret prompts (masked), slash commands, `/bg`, `/btw`, file and image attachments, Stop. |
-| **Screen** | Hermes' Bot Screen. **Take over** → your keyboard and mouse drive it (red frame); Ctrl+Alt+Del button; **Hand back** when done. **Hand back (force)** clears a hold left by another device or an earlier connection. **Actual size / Fit**, **Turn off**, and install guidance when the server lacks the packages. |
+| **Chats** | Every Hermes chat grouped by day, with search; Telegram / cron / other-app chats sit under *Other apps* and open read-only. Right-click (or ⋯) to rename or delete. A pulsing dot marks chats Hermes is working on — from any device. |
+| **Conversation** | Streaming replies with Markdown, tables and highlighted code (Copy on every block), collapsible reasoning and tool rows, approvals (once / this chat / always / deny), questions, masked sudo/secret prompts, the plan (todos), *Jump to latest*. |
+| **Composer** | Enter sends, Shift+Enter new line, ↑ recalls earlier prompts, `/` opens Hermes' command list (Tab completes), model picker, attach / drop / paste files and images, Stop (or Esc). |
+| **Hermes' screen** | Ctrl+J docks it beside the chat (drag the divider to resize) or open it full size from the rail. **Take over** → your keyboard, mouse and touchpad drive it (red frame); Ctrl+Alt+Del; **Hand back**. Same viewer in both places, so switching never drops control. |
 | **Terminal** | A real login shell on the server (xterm.js over an SSH PTY). |
-| **Sessions** | Every Hermes chat; Telegram and cron chats open read-only. |
-| **Notifications** | Windows notifications when a reply lands, when Hermes needs approval, and when it stops at a step only you can do on its screen (click → opens the Workspace). |
+| **Scheduled jobs** | Hermes' cron: create (with presets and delivery target), edit, pause / resume, run now, delete. |
+| **Skills** | All skills by category with search; switch each on or off; read its SKILL.md; "Use in a chat". |
+| **Memory** | Edit Hermes' notes (`MEMORY.md`) and what it knows about you (`USER.md`) like documents (Ctrl+S); memory providers. |
+| **Files** | Browse the server, open and edit text files, copy paths, "Ask Hermes" about a file. |
+| **Server** | Live CPU / memory / disk, Hermes version and RAM, model and context size, component health. |
+| **Settings** | Connection, this PC's key, notifications, theme (dark / light / system), restart backend, reset server key. |
+
+Keyboard: **Ctrl+K** search everything (chats, pages, actions) · **Ctrl+N** new chat · **Ctrl+J** screen beside
+the chat · **Ctrl+B** hide/show the chats list · **Ctrl+1…8** pages · **Ctrl+,** settings · **Ctrl+Shift+F** search chats.
 
 While Hermes drives its browser, the chat shows **"Hermes is using its browser — watch live"**;
 when a browser turn ends by asking for you, it shows **"Hermes needs you on its screen"**.
