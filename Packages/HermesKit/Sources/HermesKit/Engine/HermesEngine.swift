@@ -86,6 +86,13 @@ public actor HermesEngine {
     private var wantConnected = false
     private var pump: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var heartbeat: Task<Void, Never>?
+    /// False while the phone has no network: retries wait for it instead of failing on a timer.
+    private var networkUp = true
+    /// While connected, ping Hermes this often; a ping that doesn't answer rebuilds the link at once
+    /// (instead of finding out on the next message you send).
+    public var heartbeatInterval: TimeInterval = 10
+    public func setHeartbeatInterval(_ seconds: TimeInterval) { heartbeatInterval = seconds }
 
     private struct Chat {
         var liveID: String
@@ -116,6 +123,7 @@ public actor HermesEngine {
     public func disconnect() {
         wantConnected = false
         reconnectTask?.cancel()
+        heartbeat?.cancel()
         pump?.cancel()
         client?.close()
         client = nil
@@ -144,6 +152,28 @@ public actor HermesEngine {
         return false
     }
 
+    /// The phone's network changed (Wi-Fi ↔ cellular, back online, gone). Back online: check the
+    /// link right away and rebuild it if it's dead, skipping any backoff wait. Gone: stop retrying
+    /// until it returns.
+    public func networkChanged(available: Bool) async {
+        networkUp = available
+        guard wantConnected else { return }
+        if !available {
+            if !state.isConnected { setState(.reconnecting(attempt: 1, reason: "Waiting for the network")) }
+            reconnectTask?.cancel()
+            return
+        }
+        reconnectTask?.cancel()
+        if let client {
+            // The old socket may be bound to the network that just went away: give it a moment.
+            if await client.isAlive(timeout: 1.5) { return }
+            client.close()
+            self.client = nil
+        }
+        await establish(isReconnect: true, reason: "Reconnecting")
+        if !state.isConnected, case .reconnecting = state { scheduleReconnect(reason: "Still reconnecting", attempt: 2) }
+    }
+
     /// Drop and rebuild the connection now (app returned to foreground, network changed).
     public func reconnectNow(reason: String = "Reconnecting") async {
         guard wantConnected else { return }
@@ -155,6 +185,7 @@ public actor HermesEngine {
     private func establish(isReconnect: Bool, reason: String = "") async {
         guard var options else { return }
         options.knownBackend = persistence.loadBackend(for: options.target.hostID)
+        if isReconnect { options.sshTimeout = min(options.sshTimeout, 8) }
         setState(isReconnect ? .reconnecting(attempt: 1, reason: reason) : .connecting("Connecting over SSH"))
         do {
             let client = try await HermesClient.connect(options) { [weak self] step in
@@ -170,6 +201,7 @@ public actor HermesEngine {
             startPump(client)
             await reattachChats()
             setState(.connected(info))
+            startHeartbeat(client)
         } catch {
             client = nil
             let message = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
@@ -205,12 +237,34 @@ public actor HermesEngine {
         }
     }
 
+    /// Retry quickly while the network is up (0.3 s, 1 s, 2 s, then every 4 s); with no network,
+    /// wait for `networkChanged(available: true)` instead.
+    static func retryDelay(attempt: Int) -> TimeInterval {
+        [0.3, 1, 2, 4][min(max(attempt, 1), 4) - 1]
+    }
+
+    private func startHeartbeat(_ watched: HermesClient) {
+        heartbeat?.cancel()
+        let interval = heartbeatInterval
+        heartbeat = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled, let self else { return }
+                guard await self.client === watched else { return }
+                if await watched.isAlive(timeout: 3) { continue }
+                await self.lost(watched)
+                return
+            }
+        }
+    }
+
     private func scheduleReconnect(reason: String, attempt: Int) {
         guard wantConnected else { return }
-        setState(.reconnecting(attempt: attempt, reason: reason))
+        setState(.reconnecting(attempt: attempt, reason: networkUp ? reason : "Waiting for the network"))
         reconnectTask?.cancel()
+        guard networkUp else { return }
         reconnectTask = Task { [weak self] in
-            let delay = min(30.0, pow(2.0, Double(min(attempt, 5))) * 0.5)
+            let delay = Self.retryDelay(attempt: attempt)
             try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
             guard !Task.isCancelled, let self else { return }
             await self.retry(attempt: attempt)
@@ -237,6 +291,7 @@ public actor HermesEngine {
     private func lost(_ dropped: HermesClient) {
         guard client === dropped else { return }
         client = nil
+        heartbeat?.cancel()
         dropped.close()
         scheduleReconnect(reason: "Connection lost", attempt: 1)
     }
@@ -318,7 +373,7 @@ public actor HermesEngine {
         let results = await withTaskGroup(of: (String, JSONValue?, JSONValue?).self) { group in
             for (key, chat) in snapshot {
                 group.addTask {
-                    guard let resumed = try? await client.rpc.call("session.resume", ["session_id": .string(key)], timeout: 60) else {
+                    guard let resumed = try? await client.rpc.call("session.resume", ["session_id": .string(key), "source": .string(Self.clientSource)], timeout: 60) else {
                         return (key, nil, nil)
                     }
                     let live = resumed["session_id"]?.stringValue ?? chat.liveID
@@ -369,9 +424,15 @@ public actor HermesEngine {
     public func transcript(_ chat: String) -> Transcript? { chats[chat]?.transcript }
 
     /// Starts a new Hermes session and returns its chat key.
+    /// How Brainbox introduces itself to Hermes: as its graphical desktop app, so the agent is told
+    /// that Markdown tables render and files arrive inline (MEDIA:/path) — not the terminal UI, where
+    /// Hermes tells the agent there is no attachment channel. Telegram/cron chats are never opened
+    /// through here (they're viewed read-only), so their source is never touched.
+    public static let clientSource = "desktop"
+
     public func newChat() async throws -> String {
         let client = try requireClient()
-        let result = try await client.rpc.call("session.create", [:])
+        let result = try await client.rpc.call("session.create", ["source": .string(Self.clientSource)])
         guard let live = result["session_id"]?.stringValue else { throw RPCError(code: -1, message: "Hermes didn't create a session.") }
         let key = result["stored_session_id"]?.stringValue ?? live
         var chat = Chat(liveID: live)
@@ -387,7 +448,7 @@ public actor HermesEngine {
     public func open(_ stored: String) async throws -> Transcript {
         let client = try requireClient()
         if let chat = chats[stored] { return chat.transcript }
-        let result = try await client.rpc.call("session.resume", ["session_id": .string(stored)], timeout: 90)
+        let result = try await client.rpc.call("session.resume", ["session_id": .string(stored), "source": .string(Self.clientSource)], timeout: 90)
         guard let live = result["session_id"]?.stringValue else { throw RPCError(code: -1, message: "Hermes couldn't open that session.") }
         var chat = Chat(liveID: live)
         chat.transcript.hydrate(messages: result["messages"]?.arrayValue ?? [])

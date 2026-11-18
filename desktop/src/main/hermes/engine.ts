@@ -42,6 +42,10 @@ interface Chat {
   transcript: Transcript;
 }
 
+/** Brainbox introduces itself as Hermes' graphical desktop app: the agent is then told tables render
+ *  and files arrive inline (MEDIA:/path) — not the terminal UI, which has no attachment channel. */
+export const CLIENT_SOURCE = "desktop";
+
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Events: "state" (LinkState), "transcript" (chat, state), "turnFinished" (chat, title, text),
@@ -55,6 +59,7 @@ export class HermesEngine extends EventEmitter {
   private chats = new Map<string, Chat>();
   private liveToChat = new Map<string, string>();
   private batchAnswers = new Map<string, Record<string, Json>>();
+  private writable = new Set<string>();
 
   constructor(private persistence: EnginePersistence) {
     super();
@@ -248,7 +253,7 @@ export class HermesEngine extends EventEmitter {
     await Promise.all([...this.chats.entries()].map(async ([key, chat]) => {
       let resumed: Json;
       try {
-        resumed = await client.call("session.resume", { session_id: key }, 60_000);
+        resumed = await client.call("session.resume", this.writable.has(key) ? { session_id: key, source: CLIENT_SOURCE } : { session_id: key }, 60_000);
       } catch {
         return;
       }
@@ -296,23 +301,26 @@ export class HermesEngine extends EventEmitter {
 
   async newChat(): Promise<string> {
     const client = this.requireClient();
-    const r = await client.call("session.create", {});
+    const r = await client.call("session.create", { source: CLIENT_SOURCE });
     const live = str(get(r, "session_id"));
     if (!live) throw new RPCError(-1, "Hermes didn't create a session.");
     const key = str(get(r, "stored_session_id")) ?? live;
     const chat: Chat = { liveId: live, transcript: new Transcript() };
     chat.transcript.model = str(get(get(r, "info"), "model"));
     this.chats.set(key, chat);
+    this.writable.add(key);
     this.liveToChat.set(live, key);
     this.publish(key, chat);
     return key;
   }
 
-  async open(stored: string): Promise<TranscriptState> {
+  /** `writable` false for Telegram/cron chats: viewed read-only, their source is never touched. */
+  async open(stored: string, writable = true): Promise<TranscriptState> {
     const client = this.requireClient();
     const existing = this.chats.get(stored);
     if (existing) return existing.transcript.snapshot();
-    const r = await client.call("session.resume", { session_id: stored }, 90_000);
+    const r = await client.call("session.resume", writable ? { session_id: stored, source: CLIENT_SOURCE } : { session_id: stored }, 90_000);
+    if (writable) this.writable.add(stored);
     const live = str(get(r, "session_id"));
     if (!live) throw new RPCError(-1, "Hermes couldn't open that session.");
     const chat: Chat = { liveId: live, transcript: new Transcript() };

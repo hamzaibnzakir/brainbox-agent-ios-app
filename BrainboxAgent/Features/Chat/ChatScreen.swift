@@ -28,7 +28,7 @@ struct ChatScreen: View {
             VStack(spacing: DS.S.s) {
                 if let prompt = screenPrompt { ScreenPromptBar(text: prompt.text, urgent: prompt.urgent) { model.showScreen = true } }
                 if !transcript.todos.isEmpty { TodoPanel(todos: transcript.todos, expanded: $showTodos) }
-                Composer(chat: chat, busy: transcript.busy, status: transcript.status)
+                Composer(chat: chat, busy: transcript.busy, status: transcript.status, pending: transcript.pendingRequests.first)
             }
         }
         .toolbar { toolbar }
@@ -219,6 +219,14 @@ struct Composer: View {
     var chat: String?
     var busy: Bool
     var status: String?
+    /// A question / approval Hermes is waiting on. While it's open the composer answers it.
+    var pending: PendingRequest? = nil
+    /// Batch questions already answered, per request.
+    @State private var answered: [String: Set<String>] = [:]
+
+    private var answerTarget: AnswerTarget? {
+        AnswerTarget.from(pending, answered: pending.flatMap { answered[$0.requestID] } ?? [])
+    }
 
     @Environment(AppModel.self) private var model
     @State private var text = ""
@@ -233,7 +241,15 @@ struct Composer: View {
 
     var body: some View {
         VStack(spacing: DS.S.s) {
-            if !suggestions.isEmpty { suggestionList }
+            if let target = answerTarget {
+                AnswerBar(target: target, answer: { answer($0, target: target) },
+                          skip: target.secure ? { answer("", target: target) } : nil)
+            } else if let pending, pending.resolution == nil, case .approval(let command, _, let choices) = pending.kind {
+                ApprovalBar(command: command, choices: choices) { choice in
+                    Task { await model.respond(pending, answer: choice, chat: chat) }
+                }
+            }
+            if !suggestions.isEmpty, answerTarget == nil { suggestionList }
             if !attachments.isEmpty { attachmentStrip }
             if voice.phase == .recording || voice.phase == .transcribing || voice.phase == .speaking { voiceBar }
             if case .failed(let message) = voice.phase {
@@ -257,14 +273,21 @@ struct Composer: View {
                 .disabled(!model.isConnected)
 
                 HStack(alignment: .bottom, spacing: DS.S.xs) {
-                    TextField(model.isConnected ? (busy ? "Message Hermes (queued after this turn)" : "Message Hermes") : "Offline",
-                              text: $text, axis: .vertical)
+                    Group {
+                        if answerTarget?.secure == true {
+                            SecureField("Type it here", text: $text)
+                                .textInputAutocapitalization(.never).autocorrectionDisabled()
+                                .onSubmit(send)
+                        } else {
+                            TextField(placeholder, text: $text, axis: .vertical)
+                                .lineLimit(1...8)
+                                .onChange(of: text) { _, new in if answerTarget == nil { updateSuggestions(new) } }
+                        }
+                    }
                         .font(DS.F.body)
-                        .lineLimit(1...8)
                         .focused($focused)
                         .padding(.leading, DS.S.m)
                         .padding(.vertical, DS.S.s + 4)
-                        .onChange(of: text) { _, new in updateSuggestions(new) }
                     trailingButton
                         .padding(.trailing, DS.S.xs)
                         .padding(.bottom, DS.S.xs)
@@ -297,9 +320,33 @@ struct Composer: View {
         .task(id: model.isConnected) { await loadCatalog() }
     }
 
+    private var placeholder: String {
+        guard model.isConnected else { return "Offline" }
+        if answerTarget != nil { return "Answer Hermes…" }
+        return busy ? "Message Hermes (sent after this reply)" : "Message Hermes"
+    }
+
+    /// Answers the open question; the composer goes back to normal once Hermes has it.
+    private func answer(_ value: String, target: AnswerTarget) {
+        guard let pending else { return }
+        text = ""
+        Haptic.success()
+        if case .clarifyBatch = pending.kind, let qid = target.questionID {
+            answered[pending.requestID, default: []].insert(qid)
+        }
+        Task { await model.respond(pending, answer: value, questionID: target.questionID, chat: chat) }
+    }
+
     @ViewBuilder private var trailingButton: some View {
         let hasContent = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty
-        if busy && !hasContent {
+        if answerTarget != nil {
+            Button(action: send) {
+                Image(systemName: "arrow.up").font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
+                    .frame(width: 36, height: 36).background(hasContent ? DS.C.volt : DS.C.ink3, in: Circle())
+            }
+            .disabled(!model.isConnected || !hasContent)
+            .accessibilityLabel("Send answer")
+        } else if busy && !hasContent {
             Button { Task { await model.stop() } } label: {
                 Image(systemName: "stop.fill").font(.system(size: 14, weight: .bold)).foregroundStyle(DS.C.userText)
                     .frame(width: 36, height: 36).background(DS.C.ink, in: Circle())
@@ -414,6 +461,12 @@ struct Composer: View {
     }
 
     private func send() {
+        if let target = answerTarget {
+            let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty || target.secure else { return }
+            answer(target.secure ? text : value, target: target)
+            return
+        }
         let message = text
         let files = attachments
         text = ""

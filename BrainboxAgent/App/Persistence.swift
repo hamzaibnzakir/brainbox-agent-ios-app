@@ -134,6 +134,8 @@ struct Preferences: Codable, Equatable {
     var desktopBackend = false
     /// Keep the app (and SSH) running in the background until it's swiped away.
     var stayConnected = true
+    /// Run the terminal inside tmux (when the server has it) so it survives disconnects.
+    var persistentTerminal = true
 
     init() {}
 
@@ -148,6 +150,7 @@ struct Preferences: Codable, Equatable {
         haptics = try c.decodeIfPresent(Bool.self, forKey: .haptics) ?? d.haptics
         notifyOnFinish = try c.decodeIfPresent(Bool.self, forKey: .notifyOnFinish) ?? d.notifyOnFinish
         notifyOnApproval = try c.decodeIfPresent(Bool.self, forKey: .notifyOnApproval) ?? d.notifyOnApproval
+        persistentTerminal = try c.decodeIfPresent(Bool.self, forKey: .persistentTerminal) ?? d.persistentTerminal
         lockWithFaceID = try c.decodeIfPresent(Bool.self, forKey: .lockWithFaceID) ?? d.lockWithFaceID
         speakReplies = try c.decodeIfPresent(Bool.self, forKey: .speakReplies) ?? d.speakReplies
         autoReconnect = try c.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? d.autoReconnect

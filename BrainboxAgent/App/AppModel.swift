@@ -1,6 +1,7 @@
 import BrainboxCore
 import Foundation
 import HermesKit
+import Network
 import Observation
 import SwiftUI
 
@@ -71,6 +72,8 @@ final class AppModel {
     var showScreen = false
     /// The chat whose last turn used the browser and then asked you to step in (login, CAPTCHA…).
     var screenAsk: String?
+    /// The terminal session (kept while you move around the app; tmux keeps it on the server).
+    let shell = ShellSession()
 
     enum Tab: Hashable { case chat, sessions, agents, hub }
 
@@ -103,6 +106,27 @@ final class AppModel {
             }
         }
         if profile != nil { Task { await connect() } }
+        watchNetwork()
+    }
+
+    @ObservationIgnored private let pathMonitor = NWPathMonitor()
+    @ObservationIgnored private var lastPath: (up: Bool, interfaces: [String])?
+
+    /// Wi-Fi ↔ cellular, back online, offline: tell the engine at once, so a dead link is rebuilt in
+    /// about a second instead of after a timeout.
+    private func watchNetwork() {
+        pathMonitor.pathUpdateHandler = { [weak self] path in
+            let up = path.status == .satisfied
+            let interfaces = path.availableInterfaces.map(\.name)
+            Task { @MainActor in
+                guard let self else { return }
+                defer { self.lastPath = (up, interfaces) }
+                guard let last = self.lastPath else { return }   // the first report is just the current state
+                guard last.up != up || last.interfaces != interfaces else { return }
+                await self.engine.networkChanged(available: up)
+            }
+        }
+        pathMonitor.start(queue: DispatchQueue(label: "brainbox.network"))
     }
 
     private func handle(_ update: EngineUpdate) {
@@ -112,6 +136,7 @@ final class AppModel {
             connection = state
             if state.isConnected, !wasConnected {
                 Task { await refreshSessions(); await loadPet() }
+                shell.reattachIfNeeded(model: self)
                 if currentChat == nil { Task { await restoreLastChat() } }
             }
         case .transcript(let chat, let transcript):

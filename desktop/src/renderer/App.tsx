@@ -49,6 +49,7 @@ export function App() {
   const [prefill, setPrefill] = useState<{ chat?: string; text: string }>();
   const [focusKey, setFocusKey] = useState(0);
   const restored = useRef(false);
+  const sessionsRef = useRef<SessionSummary[]>([]);
   const searchRef = useRef<HTMLInputElement>(null);
   const dragging = useRef(false);
 
@@ -75,7 +76,7 @@ export function App() {
   }, [applyTheme]);
 
   const refreshSessions = useCallback(async () => {
-    try { setSessions(await bb.invoke<SessionSummary[]>("sessions")); } catch { /* the banner says why */ }
+    try { const list = await bb.invoke<SessionSummary[]>("sessions"); sessionsRef.current = list; setSessions(list); } catch { /* the banner says why */ }
   }, []);
 
   const show = useCallback((v: View) => {
@@ -87,7 +88,8 @@ export function App() {
     show("chat");
     setChat(id);
     try {
-      const t = await bb.invoke<TranscriptState>("openChat", id);
+      const source = sessionsRef.current.find((s) => s.id === id)?.source ?? "";
+      const t = await bb.invoke<TranscriptState>("openChat", id, !isReadOnly(source));
       setTranscripts((all) => ({ ...all, [id]: t }));
       bb.invoke("refreshChat", id).catch(() => {});
     } catch (e) { say((e as Error).message); }

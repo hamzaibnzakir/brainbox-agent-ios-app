@@ -26,6 +26,9 @@ public final class HermesClient: @unchecked Sendable {
         public var ownershipID: String
         public var knownBackend: RemoteBackendRecord?
         public var desktopMode: Bool
+        /// How long the SSH connect + handshake may take. Reconnects use a short one: a link that
+        /// doesn't come up in a few seconds is retried instead of waited on.
+        public var sshTimeout: TimeInterval = 20
 
         public init(target: SSHTarget, identity: SSHIdentity, hostKeys: HostKeyStore, ownershipID: String,
                     knownBackend: RemoteBackendRecord? = nil, desktopMode: Bool = false) {
@@ -47,7 +50,8 @@ public final class HermesClient: @unchecked Sendable {
     /// SSH in, start or reuse `hermes serve`, open the gateway.
     public static func connect(_ options: Options, progress: @escaping @Sendable (Step) -> Void = { _ in }) async throws -> HermesClient {
         progress(.ssh)
-        let ssh = try await SSHConnection.connect(to: options.target, identity: options.identity, hostKeys: options.hostKeys)
+        let ssh = try await SSHConnection.connect(to: options.target, identity: options.identity, hostKeys: options.hostKeys,
+                                                  timeout: .milliseconds(Int64(options.sshTimeout * 1000)))
         // Fast path: the backend this phone started is usually still running. Go straight to
         // its gateway with the saved token (the token itself proves it's ours); only if that
         // fails run the full locate / verify / spawn sequence.

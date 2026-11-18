@@ -507,6 +507,64 @@ final class LiveReconnectTests: XCTestCase {
                 try SSHIdentity(rawRepresentation: raw))
     }
 
+    /// The link dies silently (no FIN — what a dropped Wi-Fi or a NAT that forgot us looks like):
+    /// the heartbeat notices and the engine is back on its own, without the user doing anything.
+    func testHeartbeatRecoversASilentlyDeadLink() async throws {
+        let (target, identity) = try env()
+        let engine = HermesEngine(persistence: MemoryEnginePersistence())
+        await engine.setHeartbeatInterval(1)
+        let options = HermesClient.Options(target: target, identity: identity, hostKeys: MemoryHostKeyStore(),
+                                           ownershipID: LiveHermesTests.ownership)
+        await engine.connect(options)
+        guard let client = await engine.client else { return XCTFail("not connected") }
+        // The server-side sshd process serving this connection.
+        let pid = try await client.ssh.exec("echo $PPID").output.trimmingCharacters(in: .whitespacesAndNewlines)
+        XCTAssertFalse(pid.isEmpty)
+        let helper = try await SSHConnection.connect(to: target, identity: identity, hostKeys: MemoryHostKeyStore())
+        _ = try await helper.exec("kill -STOP \(pid)")
+        let start = Date()
+        var back = false
+        while Date().timeIntervalSince(start) < 20 {
+            try await Task.sleep(nanoseconds: 200_000_000)
+            if let now = await engine.client, now !== client, await engine.state.isConnected { back = true; break }
+        }
+        let elapsed = Date().timeIntervalSince(start)
+        _ = try? await helper.exec("kill -CONT \(pid); kill \(pid) 2>/dev/null; true")
+        helper.close()
+        print("SILENT_DEATH_RECOVERY_SECONDS=\(elapsed)")
+        XCTAssertTrue(back, "the engine rebuilt the link by itself")
+        XCTAssertLessThan(elapsed, 10)
+        let chat = try await engine.newChat()
+        try await engine.send(chat, text: "still here?")
+        await engine.disconnect()
+    }
+
+    /// The terminal runs inside tmux: drop the connection, open a new one, and the same session —
+    /// with its earlier output — is still there.
+    func testTerminalSessionSurvivesADroppedConnection() async throws {
+        let (target, identity) = try env()
+        let first = try await SSHConnection.connect(to: target, identity: identity, hostKeys: MemoryHostKeyStore())
+        guard (try await first.exec("command -v tmux").succeeded) else { throw XCTSkip("no tmux on this server") }
+        _ = try await first.exec("tmux kill-session -t brainbox-test 2>/dev/null; true")
+        let shell = try await first.openShell(columns: 100, rows: 30, command: "tmux new-session -A -s brainbox-test")
+        try await Task.sleep(nanoseconds: 800_000_000)
+        try await shell.write("echo survived-$((6*7))\r")
+        try await Task.sleep(nanoseconds: 800_000_000)
+        first.close()   // the phone loses its connection
+
+        let second = try await SSHConnection.connect(to: target, identity: identity, hostKeys: MemoryHostKeyStore())
+        let again = try await second.openShell(columns: 100, rows: 30, command: "tmux new-session -A -s brainbox-test")
+        var screen = ""
+        let deadline = Date().addingTimeInterval(8)
+        for try await event in again.events {
+            if case .data(let d) = event { screen += String(decoding: d, as: UTF8.self) }
+            if screen.contains("survived-42") || Date() > deadline { break }
+        }
+        XCTAssertTrue(screen.contains("survived-42"), "re-attached to the running session: \(screen.suffix(300))")
+        _ = try? await second.exec("tmux kill-session -t brainbox-test 2>/dev/null; true")
+        second.close()
+    }
+
     func testForegroundCheckAndFastReconnect() async throws {
         let (target, identity) = try env()
         let persistence = MemoryEnginePersistence()

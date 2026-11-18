@@ -10,7 +10,9 @@ final class MediaStore {
     static let shared = MediaStore()
     private var cache: [String: URL] = [:]
     private var inFlight: [String: Task<URL, Error>] = [:]
-    static let maxBytes = 200 * 1024 * 1024
+    static let maxBytes = 1024 * 1024 * 1024
+    /// Download progress per file (0…1), for the tiles to show while a big file streams in.
+    private(set) var progress: [String: Double] = [:]
 
     enum MediaError: LocalizedError {
         case tooLarge(Int), missing, failed(String)
@@ -39,9 +41,11 @@ final class MediaStore {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let name = String(abs(ref.location.hashValue)) + "-" + (ref.filename.isEmpty ? "file" : ref.filename)
         let target = dir.appendingPathComponent(name)
-        let data: Data
         if ref.isRemoteURL, let url = URL(string: ref.location) {
-            data = try await URLSession.shared.data(from: url).0
+            let (tmp, _) = try await URLSession.shared.download(from: url)
+            try? FileManager.default.removeItem(at: target)
+            try FileManager.default.moveItem(at: tmp, to: target)
+            return target
         } else {
             let client = try await model.client()
             let quoted = ref.location.hasPrefix("~/") ? "\"$HOME\"/" + RemoteBackend.shq(String(ref.location.dropFirst(2)))
@@ -49,11 +53,21 @@ final class MediaStore {
             let size = try await client.ssh.exec("stat -c %s -- \(quoted) 2>/dev/null || stat -f %z -- \(quoted) 2>/dev/null", timeout: 20)
             guard let bytes = Int(size.output.trimmingCharacters(in: .whitespacesAndNewlines)) else { throw MediaError.missing }
             guard bytes <= Self.maxBytes else { throw MediaError.tooLarge(bytes) }
-            let result = try await client.ssh.exec("cat -- \(quoted)", timeout: 600)
-            guard result.succeeded else { throw MediaError.failed(result.errorOutput.isEmpty ? "Couldn't read the file." : result.errorOutput) }
-            data = result.stdout
+            // Stream to disk: never the whole file in memory, no overall time limit while bytes flow.
+            let location = ref.location
+            let total = Double(max(bytes, 1))
+            let result = try await client.ssh.execToFile("cat -- \(quoted)", destination: target) { got in
+                Task { @MainActor in
+                    let p = min(1, Double(got) / total)
+                    MediaStore.shared.progress[location] = p
+                }
+            }
+            progress[location] = nil
+            guard result.succeeded else {
+                try? FileManager.default.removeItem(at: target)
+                throw MediaError.failed(result.errorOutput.isEmpty ? "Couldn't read the file." : result.errorOutput)
+            }
         }
-        try data.write(to: target)
         return target
     }
 }
@@ -170,7 +184,20 @@ struct MediaTile: View {
         HStack(spacing: DS.S.s + 4) {
             ZStack {
                 RoundedRectangle(cornerRadius: 10, style: .continuous).fill(DS.C.voltSoft).frame(width: 40, height: 40)
-                if loading { ProgressView().controlSize(.small) }
+                if loading {
+                    // Big files stream in: show how far along they are.
+                    TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+                        if let p = MediaStore.shared.progress[ref.location] {
+                            ZStack {
+                                Circle().stroke(DS.C.line, lineWidth: 3)
+                                Circle().trim(from: 0, to: p).stroke(DS.C.volt, style: StrokeStyle(lineWidth: 3, lineCap: .round)).rotationEffect(.degrees(-90))
+                                Text("\(Int(p * 100))").font(.system(size: 10, weight: .bold).monospacedDigit()).foregroundStyle(DS.C.ink2)
+                            }.frame(width: 28, height: 28)
+                        } else {
+                            ProgressView().controlSize(.small)
+                        }
+                    }
+                }
                 else { Image(systemName: symbol).font(.system(size: 17, weight: .semibold)).foregroundStyle(DS.C.volt) }
             }
             VStack(alignment: .leading, spacing: 2) {
@@ -189,7 +216,9 @@ struct MediaTile: View {
     static func docSymbol(_ name: String) -> String {
         switch (name as NSString).pathExtension.lowercased() {
         case "pdf": return "doc.richtext.fill"
-        case "zip", "gz", "tar": return "doc.zipper"
+        case "zip", "gz", "tar", "tgz", "rar", "7z": return "doc.zipper"
+        case "html", "htm": return "globe"
+        case "json", "yaml", "yml", "xml", "py", "js", "ts", "sh", "log", "md", "txt": return "doc.text.fill"
         case "csv", "xlsx", "xls": return "tablecells.fill"
         default: return "doc.fill"
         }

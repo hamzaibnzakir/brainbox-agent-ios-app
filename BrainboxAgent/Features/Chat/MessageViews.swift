@@ -48,16 +48,15 @@ struct UserBubble: View {
                     Label(name, systemImage: "paperclip").font(DS.F.caption).foregroundStyle(DS.C.userText.opacity(0.8))
                 }
                 if !text.isEmpty {
-                    Text(text).font(.system(size: 17 * scale)).foregroundStyle(DS.C.userText).textSelection(.enabled)
+                    // Native selection: long-press a word, drag the handles (no whole-bubble menu).
+                    SelectableText(attributed: NSAttributedString(string: text, attributes: [
+                        .font: UIFont.systemFont(ofSize: 17 * scale), .foregroundColor: UIColor(DS.C.userText)]), hugsWidth: true)
                 }
             }
             .padding(.horizontal, DS.S.m)
             .padding(.vertical, DS.S.s + 4)
             .background(DS.C.userBubble, in: UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 20,
                                                                     bottomTrailingRadius: 6, topTrailingRadius: 20, style: .continuous))
-            .contextMenu {
-                Button { UIPasteboard.general.string = text } label: { Label("Copy", systemImage: "doc.on.doc") }
-            }
         }
     }
 }
@@ -96,13 +95,34 @@ struct AssistantMessage: View {
             }
             if streaming {
                 TypingDots()
+            } else if !parts.text.isEmpty {
+                MessageActions(text: parts.text)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contextMenu {
-            Button { UIPasteboard.general.string = text } label: { Label("Copy", systemImage: "doc.on.doc") }
-            ShareLink(item: text) { Label("Share", systemImage: "square.and.arrow.up") }
+    }
+}
+
+/// Copy / share the whole reply. (Long-press inside the text selects words instead.)
+struct MessageActions: View {
+    var text: String
+    @State private var copied = false
+    var body: some View {
+        HStack(spacing: DS.S.m) {
+            Button {
+                UIPasteboard.general.string = text
+                Haptic.tap()
+                copied = true
+                Task { try? await Task.sleep(nanoseconds: 1_400_000_000); copied = false }
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc").contentTransition(.symbolEffect(.replace))
+            }
+            .accessibilityLabel(copied ? "Copied" : "Copy reply")
+            ShareLink(item: text) { Image(systemName: "square.and.arrow.up") }.accessibilityLabel("Share reply")
         }
+        .font(.system(size: 14, weight: .medium))
+        .foregroundStyle(DS.C.ink3)
+        .padding(.top, 2)
     }
 }
 
@@ -317,32 +337,10 @@ struct RequestCard: View {
                 }
                 Button("Deny") { send("deny") }.buttonStyle(SecondaryButtonStyle(tint: DS.C.bad)).frame(maxWidth: .infinity, alignment: .leading)
             }
-        case .clarify(_, let choices, let multi):
-            VStack(alignment: .leading, spacing: DS.S.s) {
-                if !choices.isEmpty {
-                    FlowChips(items: choices, selected: picked) { choice in
-                        if multi { if picked.contains(choice) { picked.remove(choice) } else { picked.insert(choice) } }
-                        else { send(choice) }
-                    }
-                }
-                answerField(placeholder: choices.isEmpty ? "Your answer" : "Or type something else")
-                if multi, !picked.isEmpty {
-                    Button("Send \(picked.count) selected") { send(picked.sorted().joined(separator: ", ")) }.buttonStyle(SecondaryButtonStyle())
-                }
-            }
-        case .clarifyBatch(let questions):
-            ClarifyBatchForm(questions: questions) { qid, value in
-                Task { await model.respond(request, answer: value, questionID: qid, chat: chat) }
-            }
-        case .sudo, .secret:
-            HStack(spacing: DS.S.s) {
-                SecureField("Type it here", text: $answer)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .padding(.horizontal, DS.S.m).frame(minHeight: 44)
-                    .background(DS.C.raised, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-                Button("Send") { send(answer) }.buttonStyle(SecondaryButtonStyle()).disabled(answer.isEmpty)
-                Button("Skip") { send("") }.buttonStyle(SecondaryButtonStyle(tint: DS.C.ink3))
-            }
+        case .clarify, .clarifyBatch, .sudo, .secret:
+            // Answered from the message box at the bottom, right above the keyboard.
+            Label("Answer in the message box below", systemImage: "arrow.down.circle")
+                .font(DS.F.caption).foregroundStyle(DS.C.ink3)
         }
     }
 

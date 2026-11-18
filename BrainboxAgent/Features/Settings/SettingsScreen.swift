@@ -87,6 +87,12 @@ struct SettingsScreen: View {
             }
 
             Section {
+                Toggle("Keep terminal sessions running (tmux)", isOn: $model.preferences.persistentTerminal)
+            } header: { Text("Terminal") } footer: {
+                Text("When your server has tmux, the terminal keeps running when you leave it, lock the phone or lose signal — Brainbox picks it back up where you left off.")
+            }
+
+            Section {
                 Button("Edit config.yaml") { showConfig = true }
                 NavigationLink { UpdatesScreen() } label: { Text("Updates & doctor") }
             } header: { Text("Advanced") }

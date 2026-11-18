@@ -41,6 +41,34 @@ final class MarkdownParserTests: XCTestCase {
         XCTAssertEqual(MarkdownParser.codeBlocks(in: "a\n```\nb\n```"), ["b"])
     }
 
+    func testPipeTables() {
+        let text = """
+        Here's the comparison:
+
+        | Plan | Price | Notes |
+        |:-----|------:|:-----:|
+        | Basic | $5 | 1 site |
+        | Pro | $12 | `a|b` pipes in code |
+        | Max | $30 |
+        Done.
+        """
+        let blocks = MarkdownParser.parse(text)
+        XCTAssertEqual(blocks.first, .paragraph("Here's the comparison:"))
+        guard case .table(let header, let align, let rows) = blocks[1] else { return XCTFail("\(blocks)") }
+        XCTAssertEqual(header, ["Plan", "Price", "Notes"])
+        XCTAssertEqual(align, [.leading, .trailing, .center])
+        XCTAssertEqual(rows, [["Basic", "$5", "1 site"], ["Pro", "$12", "`a|b` pipes in code"], ["Max", "$30", ""]])
+        XCTAssertEqual(blocks.last, .paragraph("Done."))
+        // No outer pipes, escaped pipe, and a header-only table while it streams.
+        guard case .table(let h2, _, let r2) = MarkdownParser.parse("a | b\n--- | ---\n1 \\| 2 | 3")[0] else { return XCTFail() }
+        XCTAssertEqual(h2, ["a", "b"])
+        XCTAssertEqual(r2, [["1 | 2", "3"]])
+        guard case .table(_, _, let r3) = MarkdownParser.parse("| x | y |\n|---|---|")[0] else { return XCTFail() }
+        XCTAssertTrue(r3.isEmpty)
+        // A lone pipe in prose is not a table.
+        XCTAssertEqual(MarkdownParser.parse("use a | b here\nnext line"), [.paragraph("use a | b here\nnext line")])
+    }
+
     func testHashWithoutSpaceIsNotHeading() {
         XCTAssertEqual(MarkdownParser.parse("#hashtag"), [.paragraph("#hashtag")])
     }

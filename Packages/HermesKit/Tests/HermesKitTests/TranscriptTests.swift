@@ -131,6 +131,23 @@ final class ServerRequestTests: XCTestCase {
 }
 
 final class MediaRefTests: XCTestCase {
+    func testDesktopStyleDeliveries() {
+        let text = """
+        Your report:
+        MEDIA:/root/out/My Q3 Report.pdf
+        MEDIA:"/root/clips/demo reel.mp4"
+        ::preview{file="/root/site/chart.html"}
+        Also see [the data](/root/out/data.csv) and [raw](file:///root/out/raw.json).
+        """
+        let (shown, refs) = MediaRef.extract(from: text)
+        XCTAssertEqual(refs.map(\.location), ["/root/out/My Q3 Report.pdf", "/root/clips/demo reel.mp4", "/root/site/chart.html",
+                                             "/root/out/data.csv", "/root/out/raw.json"])
+        XCTAssertEqual(refs.map(\.kind), [.document, .video, .document, .document, .document])
+        XCTAssertFalse(shown.contains("MEDIA:"))
+        XCTAssertFalse(shown.contains("::preview"))
+        XCTAssertTrue(shown.contains("Your report:"))
+    }
+
     func testMediaTagsImagesAndPaths() {
         let text = """
         Here's the chart:

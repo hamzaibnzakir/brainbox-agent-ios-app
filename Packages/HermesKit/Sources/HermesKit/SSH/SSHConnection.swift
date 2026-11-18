@@ -175,6 +175,12 @@ public final class SSHConnection: @unchecked Sendable {
         let bootstrap = ClientBootstrap(group: loop)
             .connectTimeout(timeout)
             .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_NODELAY), value: 1)
+            // TCP keepalive: the OS notices a dead link (Wi-Fi dropped, NAT forgot us) within ~25 s
+            // even when nothing is being sent, instead of the socket looking fine forever.
+            .channelOption(ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_KEEPALIVE), value: 1)
+            .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), Self.keepIdleOption), value: 10)
+            .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_KEEPINTVL), value: 5)
+            .channelOption(ChannelOptions.socket(SocketOptionLevel(IPPROTO_TCP), TCP_KEEPCNT), value: 3)
             .channelInitializer { channel in
                 channel.eventLoop.makeCompletedFuture {
                     let ssh = NIOSSHHandler(
@@ -209,6 +215,12 @@ public final class SSHConnection: @unchecked Sendable {
         }
         return SSHConnection(target: target, hostKey: hostDelegate.seen ?? "", channel: channel)
     }
+
+    #if canImport(Darwin)
+    static let keepIdleOption = TCP_KEEPALIVE
+    #else
+    static let keepIdleOption = TCP_KEEPIDLE
+    #endif
 
     static func describe(_ error: Error) -> String {
         if let ssh = error as? SSHError { return ssh.localizedDescription }
@@ -283,23 +295,81 @@ public final class SSHConnection: @unchecked Sendable {
         }
     }
 
+    /// Runs a command and streams its stdout straight into `destination` (a file download that
+    /// never holds the whole file in memory). Fails only when nothing arrives for `idleTimeout`
+    /// seconds, so a big video on a slow link keeps going as long as bytes keep flowing.
+    public func execToFile(_ command: String, destination: URL, idleTimeout: TimeInterval = 45,
+                           progress: (@Sendable (Int64) -> Void)? = nil) async throws -> SSHExecResult {
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+        let handle = try FileHandle(forWritingTo: destination)
+        defer { try? handle.close() }
+        let stream = try await openChannel(.session)
+        try await stream.channel.triggerUserOutboundEvent(
+            SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false)).get()
+        try? await stream.channel.close(mode: .output).get()
+        let activity = ActivityClock()
+        return try await withThrowingTaskGroup(of: SSHExecResult.self) { group in
+            group.addTask {
+                var err = Data(), status: Int?, total: Int64 = 0
+                for try await event in stream.events {
+                    activity.touch()
+                    switch event {
+                    case .data(let d):
+                        try handle.write(contentsOf: d)
+                        total += Int64(d.count)
+                        progress?(total)
+                    case .stderr(let d): err.append(d)
+                    case .exit(let code): status = code
+                    case .eof: break
+                    }
+                }
+                return SSHExecResult(stdout: Data(), stderr: err, exitStatus: status)
+            }
+            group.addTask {
+                while true {
+                    try await Task.sleep(nanoseconds: 1_000_000_000)
+                    if activity.idle > idleTimeout {
+                        stream.close()
+                        throw SSHError.timedOut("downloading from the server (no data for \(Int(idleTimeout))s)")
+                    }
+                }
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
     /// A TCP stream to `host:port` as seen from the server (`ssh -L`'s building block).
     public func openDirectTCPIP(host: String = "127.0.0.1", port: Int) async throws -> SSHByteStream {
         let origin = try SocketAddress(ipAddress: "127.0.0.1", port: 0)
         return try await openChannel(.directTCPIP(.init(targetHost: host, targetPort: port, originatorAddress: origin)))
     }
 
-    /// An interactive login shell on a PTY.
-    public func openShell(term: String = "xterm-256color", columns: Int, rows: Int) async throws -> SSHByteStream {
+    /// An interactive login shell on a PTY — or, with `command`, that command on a PTY
+    /// (e.g. `tmux new -A -s brainbox`, so the session outlives the connection).
+    public func openShell(term: String = "xterm-256color", columns: Int, rows: Int, command: String? = nil) async throws -> SSHByteStream {
         let stream = try await openChannel(.session)
         try await stream.channel.triggerUserOutboundEvent(SSHChannelRequestEvent.PseudoTerminalRequest(
             wantReply: false, term: term, terminalCharacterWidth: columns, terminalRowHeight: rows,
             terminalPixelWidth: 0, terminalPixelHeight: 0,
             // Say which keys erase and interrupt instead of relying on the server's defaults.
             terminalModes: SSHTerminalModes([.VERASE: 127, .VINTR: 3]))).get()
-        try await stream.channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: false)).get()
+        if let command {
+            try await stream.channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ExecRequest(command: command, wantReply: false)).get()
+        } else {
+            try await stream.channel.triggerUserOutboundEvent(SSHChannelRequestEvent.ShellRequest(wantReply: false)).get()
+        }
         return stream
     }
+}
+
+/// When a stream last saw bytes (for idle timeouts).
+final class ActivityClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var last = Date()
+    func touch() { lock.lock(); last = Date(); lock.unlock() }
+    var idle: TimeInterval { lock.lock(); defer { lock.unlock() }; return Date().timeIntervalSince(last) }
 }
 
 public struct SSHExecResult: Sendable {

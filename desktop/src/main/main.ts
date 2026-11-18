@@ -188,7 +188,7 @@ function registerIPC() {
     })).filter((s) => s.id);
   });
   handle("newChat", async () => { const c = await engine.newChat(); store.lastChat = c; return c; });
-  handle("openChat", async (id: string) => { const t = await engine.open(id); store.lastChat = id; return t; });
+  handle("openChat", async (id: string, writable = true) => { const t = await engine.open(id, writable); store.lastChat = id; return t; });
   handle("closeChat", (id: string) => engine.closeChat(id));
   handle("deleteSession", async (id: string, source: string) => {
     if (!["tui", "desktop", "cli", ""].includes(source)) throw new Error(`Brainbox doesn't delete ${source} history.`);

@@ -328,13 +328,37 @@ function Composer(props: ChatProps) {
       }).catch(() => {});
   }, [connected]);
 
-  const slashQuery = !slashClosed && /^\/\S*$/.test(text) ? text.toLowerCase() : undefined;
+  // A question Hermes is waiting on: its turn is paused, so a normal message would only queue behind
+  // it. While one is open, Enter answers it instead.
+  const pendingReq = [...transcript.items].reverse().flatMap((i) => (i.kind === "request" && !i.request.resolution ? [i.request] : []))[0];
+  const answering = pendingReq && pendingReq.request.kind !== "approval" ? pendingReq : undefined;
+  const answerQuestion = (value: string) => {
+    if (!answering || !chat) return;
+    const r = answering.request;
+    const qid = r.kind === "clarifyBatch" ? r.questions.find((q) => !(answeredIds.current.get(answering.requestId) ?? new Set()).has(q.id))?.id : answering.questionId;
+    if (r.kind === "clarifyBatch" && qid) {
+      const set = answeredIds.current.get(answering.requestId) ?? new Set<string>();
+      set.add(qid);
+      answeredIds.current.set(answering.requestId, set);
+    }
+    bb.invoke("respond", chat, answering.requestId, value, qid).catch((e) => props.say((e as Error).message));
+  };
+  const answeredIds = useRef(new Map<string, Set<string>>());
+
+  const slashQuery = !answering && !slashClosed && /^\/\S*$/.test(text) ? text.toLowerCase() : undefined;
   const matches = useMemo(() => slashQuery === undefined ? [] : commands.filter(([k]) => k.toLowerCase().startsWith(slashQuery)).slice(0, 40),
     [slashQuery, commands]);
   useEffect(() => { setSel(0); }, [slashQuery]);
 
   const submit = () => {
     if (!connected) return;
+    if (answering) {
+      const secure = answering.request.kind === "sudo" || answering.request.kind === "secret";
+      if (!text.trim() && !secure) return;
+      answerQuestion(secure ? text : text.trim());
+      setText("");
+      return;
+    }
     const t = text;
     const f = files;
     if (!t.trim() && f.length === 0) return;
@@ -436,7 +460,7 @@ function Composer(props: ChatProps) {
           </div>
         )}
         <textarea ref={area} rows={1} value={text} spellCheck
-                  placeholder={connected ? "Message Hermes…" : "Waiting for the connection…"}
+                  placeholder={!connected ? "Waiting for the connection…" : answering ? "Answer Hermes' question — Enter sends it" : transcript.busy ? "Message Hermes (sent after this reply)…" : "Message Hermes…"}
                   onChange={(e) => { setText(e.target.value); setSlashClosed(false); }}
                   onKeyDown={onKey}
                   onPaste={(e) => { if (e.clipboardData.files.length) { e.preventDefault(); addFiles(e.clipboardData.files); } }} />
