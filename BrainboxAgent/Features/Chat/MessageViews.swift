@@ -332,8 +332,10 @@ struct RequestCard: View {
             VStack(spacing: DS.S.s) {
                 HStack(spacing: DS.S.s) {
                     ForEach(ordered, id: \.self) { choice in
-                        Button(Self.label(choice)) { send(choice) }
-                            .buttonStyle(SecondaryButtonStyle(tint: choice == "once" ? DS.C.good : DS.C.ink2))
+                        Button { send(choice) } label: {
+                            Text(Self.label(choice)).lineLimit(1).minimumScaleFactor(0.85).frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(SecondaryButtonStyle(tint: choice == "once" ? DS.C.good : DS.C.ink2))
                     }
                 }
                 Button("Deny") { send("deny") }.buttonStyle(SecondaryButtonStyle(tint: DS.C.bad)).frame(maxWidth: .infinity, alignment: .leading)

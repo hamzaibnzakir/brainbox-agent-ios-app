@@ -108,14 +108,18 @@ struct ApprovalBar: View {
             HStack(spacing: DS.S.s) {
                 Image(systemName: "hand.raised.fill").foregroundStyle(DS.C.warn)
                 Text("Approve this command?").font(DS.F.smallStrong).foregroundStyle(DS.C.ink)
+                Spacer(minLength: 0)
+                Button("Deny") { Haptic.tap(); choose("deny") }
+                    .font(DS.F.smallStrong).foregroundStyle(DS.C.bad).lineLimit(1)
             }
             Text(command).font(DS.F.monoSmall).foregroundStyle(DS.C.ink2).lineLimit(2)
             HStack(spacing: DS.S.s) {
                 ForEach(["once", "session", "always"].filter(choices.contains), id: \.self) { c in
-                    Button(RequestCard.label(c)) { Haptic.tap(); choose(c) }
-                        .buttonStyle(SecondaryButtonStyle(tint: c == "once" ? DS.C.good : DS.C.ink2))
+                    Button { Haptic.tap(); choose(c) } label: {
+                        Text(RequestCard.label(c)).lineLimit(1).minimumScaleFactor(0.85).frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(SecondaryButtonStyle(tint: c == "once" ? DS.C.good : DS.C.ink2))
                 }
-                Button("Deny") { Haptic.tap(); choose("deny") }.buttonStyle(SecondaryButtonStyle(tint: DS.C.bad))
             }
         }
         .padding(DS.S.m)
