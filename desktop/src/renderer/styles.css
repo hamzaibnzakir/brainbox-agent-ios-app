@@ -4,29 +4,29 @@
    the window never grows past the screen and touchpads / wheels scroll the region under them. */
 
 :root {
-  --bg: #0b0c0f;
-  --panel: #101115;
-  --surface: #16171c;
-  --raised: #1d1e24;
-  --hover: #23242b;
-  --line: #24252c;
-  --line2: #30313a;
+  --bg: #09090b;
+  --panel: #0e0e11;
+  --surface: #131317;
+  --raised: #1b1b21;
+  --hover: #222229;
+  --line: #25252c;
+  --line2: #313139;
   --ink: #f3f3f5;
   --ink2: rgba(243, 243, 245, 0.72);
   --ink3: rgba(243, 243, 245, 0.48);
   --ink4: rgba(243, 243, 245, 0.28);
-  --volt: #8c82ff;
-  --volt-strong: #7266ff;
-  --volt-soft: rgba(140, 130, 255, 0.14);
-  --volt-line: rgba(140, 130, 255, 0.38);
+  --volt: #ff6a3d;
+  --volt-strong: #f2582a;
+  --volt-soft: rgba(255, 106, 61, 0.14);
+  --volt-line: rgba(255, 106, 61, 0.42);
   --good: #4ade80;
   --good-soft: rgba(74, 222, 128, 0.13);
   --warn: #fbbf24;
   --warn-soft: rgba(251, 191, 36, 0.13);
   --bad: #f87171;
   --bad-soft: rgba(248, 113, 113, 0.13);
-  --user-bg: #f3f3f5;
-  --user-ink: #111216;
+  --user-bg: linear-gradient(135deg, #ff7a4d, #ee4f22);
+  --user-ink: #ffffff;
   --code-bg: #0e0f13;
   --shadow: 0 24px 60px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.35);
   --shadow-s: 0 6px 18px rgba(0, 0, 0, 0.35);
@@ -37,7 +37,7 @@
 }
 
 :root[data-theme="light"] {
-  --bg: #f4f3ef;
+  --bg: #f6f5f2;
   --panel: #efeee9;
   --surface: #ffffff;
   --raised: #fbfaf7;
@@ -48,17 +48,17 @@
   --ink2: rgba(17, 18, 22, 0.72);
   --ink3: rgba(17, 18, 22, 0.5);
   --ink4: rgba(17, 18, 22, 0.3);
-  --volt: #5b4df5;
-  --volt-strong: #4a3cf0;
-  --volt-soft: rgba(91, 77, 245, 0.1);
-  --volt-line: rgba(91, 77, 245, 0.35);
+  --volt: #e8541f;
+  --volt-strong: #d1461a;
+  --volt-soft: rgba(232, 84, 31, 0.1);
+  --volt-line: rgba(232, 84, 31, 0.38);
   --good: #16a34a;
   --good-soft: rgba(22, 163, 74, 0.1);
   --warn: #d97706;
   --warn-soft: rgba(217, 119, 6, 0.1);
   --bad: #dc2626;
   --bad-soft: rgba(220, 38, 38, 0.09);
-  --user-bg: #111216;
+  --user-bg: linear-gradient(135deg, #ff7a4d, #e8541f);
   --user-ink: #ffffff;
   --code-bg: #f6f5f1;
   --shadow: 0 24px 60px rgba(59, 52, 32, 0.18), 0 2px 8px rgba(59, 52, 32, 0.08);
@@ -105,9 +105,9 @@ code, pre, kbd { font-family: var(--mono); }
 .brand { display: flex; align-items: center; gap: 9px; font: 600 13px/1 var(--font-display); letter-spacing: 0.01em; white-space: nowrap; }
 .logo {
   width: 22px; height: 22px; border-radius: 7px; display: grid; place-items: center; flex: 0 0 auto;
-  background: linear-gradient(140deg, #a59dff, #6a5cff 60%, #4b3df0);
+  background: linear-gradient(140deg, #ffb07a, #ff6a3d 55%, #e8451a);
   color: #fff; font: 700 12px/1 var(--font-display);
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 4px 14px rgba(114, 102, 255, 0.35);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08) inset, 0 4px 14px rgba(255, 106, 61, 0.35);
 }
 .palette-trigger {
   margin: 0 auto; width: min(440px, 40vw); height: 28px; display: flex; align-items: center; gap: 8px;
@@ -215,7 +215,7 @@ code, pre, kbd { font-family: var(--mono); }
 .btn:hover { background: var(--hover); }
 .btn:active { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: default; transform: none; }
-.btn.primary { background: var(--volt); border-color: transparent; color: #fff; box-shadow: 0 4px 16px rgba(114, 102, 255, 0.28); }
+.btn.primary { background: var(--volt); border-color: transparent; color: #fff; box-shadow: 0 4px 16px rgba(255, 106, 61, 0.3); }
 .btn.primary:hover { background: var(--volt-strong); }
 .btn.ghost { background: transparent; border-color: transparent; color: var(--ink2); }
 .btn.ghost:hover { background: var(--surface); color: var(--ink); }
@@ -288,7 +288,7 @@ kbd {
 
 .msg-user { align-self: flex-end; max-width: min(80%, 640px); display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .msg-user .bubble {
-  padding: 10px 15px; border-radius: 18px 18px 5px 18px; background: var(--user-bg); color: var(--user-ink);
+  padding: 10px 15px; border-radius: 18px 18px 5px 18px; background: var(--user-bg); color: var(--user-ink); box-shadow: 0 6px 18px rgba(255, 106, 61, 0.22);
   white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; user-select: text; font-size: 14px;
 }
 .msg-user .att { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
@@ -298,7 +298,7 @@ kbd {
 .msg-assistant { display: flex; gap: 12px; align-items: flex-start; }
 .avatar {
   width: 28px; height: 28px; flex: 0 0 28px; border-radius: 9px; display: grid; place-items: center; margin-top: 1px;
-  background: linear-gradient(140deg, #a59dff, #6a5cff 60%, #4b3df0); color: #fff; font: 700 13px/1 var(--font-display);
+  background: linear-gradient(140deg, #ffb07a, #ff6a3d 55%, #e8451a); color: #fff; font: 700 13px/1 var(--font-display);
 }
 .msg-assistant .body-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .typing { display: inline-flex; gap: 4px; padding: 8px 0; }
@@ -375,7 +375,7 @@ kbd {
 .empty-chat { min-height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 40px 24px; text-align: center; }
 .empty-chat .hero {
   width: 60px; height: 60px; border-radius: 19px; display: grid; place-items: center; color: #fff; font: 700 26px/1 var(--font-display);
-  background: linear-gradient(140deg, #a59dff, #6a5cff 60%, #4b3df0); box-shadow: 0 18px 50px rgba(114, 102, 255, 0.35);
+  background: linear-gradient(140deg, #ffb07a, #ff6a3d 55%, #e8451a); box-shadow: 0 18px 50px rgba(255, 106, 61, 0.35);
 }
 .empty-chat h2 { margin: 8px 0 0; font: 600 24px/1.2 var(--font-display); letter-spacing: -0.01em; }
 .empty-chat p { margin: 0; max-width: 520px; color: var(--ink3); }
@@ -435,7 +435,7 @@ kbd {
 .attachments { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 12px 0; }
 .send-btn {
   width: 34px; height: 34px; border-radius: 11px; border: 0; display: grid; place-items: center; cursor: pointer; flex: 0 0 auto;
-  background: var(--volt); color: #fff; transition: background .12s, opacity .12s;
+  background: linear-gradient(135deg, #ff7a4d, #ee4f22); color: #fff; transition: background .12s, opacity .12s;
 }
 .send-btn:hover { background: var(--volt-strong); }
 .send-btn:disabled { background: var(--line2); color: var(--ink3); cursor: default; }
@@ -481,10 +481,10 @@ kbd {
 .screen-view { flex: 1; min-height: 0; position: relative; overflow: hidden; }
 .screen-view.control { box-shadow: inset 0 0 0 2px var(--bad); }
 .screen-view .vnc { position: absolute; inset: 0; overflow: auto; }
-.screen-overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at center, rgba(140, 130, 255, 0.08), transparent 60%), #07080a; color: #f3f3f5; }
+.screen-overlay { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; background: radial-gradient(ellipse at center, rgba(255, 106, 61, 0.08), transparent 60%), #07080a; color: #f3f3f5; }
 .screen-overlay .box { max-width: 460px; display: flex; flex-direction: column; align-items: center; gap: 12px; text-align: center; color: rgba(243, 243, 245, 0.72); }
 .screen-overlay .box strong { font: 600 17px/1.3 var(--font-display); color: #f3f3f5; }
-.screen-overlay .glyph { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; background: #16171c; border: 1px solid #30313a; color: #8c82ff; }
+.screen-overlay .glyph { width: 56px; height: 56px; border-radius: 18px; display: grid; place-items: center; background: #16171c; border: 1px solid #30313a; color: #ff6a3d; }
 .screen-overlay .codebox { background: #0e0f13; border-color: #24252c; color: #f3f3f5; text-align: left; }
 
 /* ------------------------------------------------------------------ terminal */
@@ -602,7 +602,7 @@ kbd {
 .onboard { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); }
 .onboard .art {
   position: relative; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; padding: 48px;
-  background: radial-gradient(900px 500px at 20% 10%, rgba(140, 130, 255, 0.28), transparent 60%), radial-gradient(700px 500px at 90% 90%, rgba(74, 222, 128, 0.08), transparent 60%), var(--bg);
+  background: radial-gradient(900px 500px at 20% 10%, rgba(255, 106, 61, 0.22), transparent 60%), radial-gradient(700px 500px at 90% 90%, rgba(74, 222, 128, 0.08), transparent 60%), var(--bg);
   border-right: 1px solid var(--line);
 }
 .onboard .art h1 { margin: 0; font: 600 38px/1.12 var(--font-display); letter-spacing: -0.02em; max-width: 440px; }

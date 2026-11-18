@@ -1,7 +1,10 @@
 import SwiftUI
 import UIKit
 
-// Brainbox design system.
+// Brainbox design system — "Ember".
+//
+// Near-black surfaces, one warm ember accent with a soft glow, glassy hairline cards. Light mode is
+// warm paper with the same ember.
 //
 // Rules (from the mobile-app-ui-design skill):
 // * one type family (SF Pro, rounded for display), 4 sizes, 2 weights;
@@ -28,33 +31,34 @@ extension Color {
 enum DS {
     enum C {
         // 60 — neutral base
-        static let canvas = Color.dynamic(light: 0xF4F3EF, dark: 0x0C0D10)
-        static let surface = Color.dynamic(light: 0xFFFFFF, dark: 0x16171C)
-        static let raised = Color.dynamic(light: 0xFBFAF7, dark: 0x1D1E24)
-        static let line = Color.dynamic(light: 0xE6E3DC, dark: 0x2A2B33)
+        static let canvas = Color.dynamic(light: 0xF6F5F2, dark: 0x09090B)
+        static let surface = Color.dynamic(light: 0xFFFFFF, dark: 0x131317)
+        static let raised = Color.dynamic(light: 0xF1EFEA, dark: 0x1B1B21)
+        static let line = Color.dynamic(light: 0xE5E2DB, dark: 0x27272F)
         // 30 — ink
-        static let ink = Color.dynamic(light: 0x111216, dark: 0xF3F3F5)
-        static let ink2 = Color.dynamic(light: 0x111216, dark: 0xF3F3F5).opacity(0.72)
-        static let ink3 = Color.dynamic(light: 0x111216, dark: 0xF3F3F5).opacity(0.5)
-        // 10 — accent
-        static let volt = Color.dynamic(light: 0x5B4DF5, dark: 0x8C82FF)
-        static let voltSoft = Color.dynamic(light: 0x5B4DF5, dark: 0x8C82FF).opacity(0.1)
+        static let ink = Color.dynamic(light: 0x121214, dark: 0xF5F5F7)
+        static let ink2 = Color.dynamic(light: 0x121214, dark: 0xF5F5F7).opacity(0.72)
+        static let ink3 = Color.dynamic(light: 0x121214, dark: 0xF5F5F7).opacity(0.48)
+        // 10 — accent: ember (the name "volt" is kept so every screen picks it up)
+        static let volt = Color.dynamic(light: 0xE8541F, dark: 0xFF6A3D)
+        static let voltSoft = Color.dynamic(light: 0xE8541F, dark: 0xFF6A3D).opacity(0.12)
+        static let ember2 = Color.dynamic(light: 0xF59E0B, dark: 0xFFA94D)
         // meaning
         static let good = Color.dynamic(light: 0x16A34A, dark: 0x4ADE80)
         static let warn = Color.dynamic(light: 0xD97706, dark: 0xFBBF24)
         static let bad = Color.dynamic(light: 0xDC2626, dark: 0xF87171)
-        static let userBubble = Color.dynamic(light: 0x111216, dark: 0xF3F3F5)
-        static let userText = Color.dynamic(light: 0xFFFFFF, dark: 0x111216)
+        static let userBubble = Color.dynamic(light: 0xE8541F, dark: 0xF2582A)
+        static let userText = Color.dynamic(light: 0xFFFFFF, dark: 0xFFFFFF)
         static let shadow = Color.dynamic(light: 0x3B3420, dark: 0x000000)
 
         /// Category tints for the hub (soft backgrounds).
         static let tints: [Color] = [
-            .dynamic(light: 0xEDE9FF, dark: 0x25223F), .dynamic(light: 0xE3F4EA, dark: 0x1B2E24),
+            .dynamic(light: 0xFFE8DF, dark: 0x2E1A13), .dynamic(light: 0xE3F4EA, dark: 0x16271E),
             .dynamic(light: 0xFFF1DB, dark: 0x332A1A), .dynamic(light: 0xE4F0FF, dark: 0x1B2638),
             .dynamic(light: 0xFFE6E8, dark: 0x351E22), .dynamic(light: 0xEFEFEA, dark: 0x24252B),
         ]
         static let tintInks: [Color] = [
-            .dynamic(light: 0x4C3FE0, dark: 0xB3ABFF), .dynamic(light: 0x15803D, dark: 0x6EE7A0),
+            .dynamic(light: 0xC2410C, dark: 0xFFAA8A), .dynamic(light: 0x15803D, dark: 0x6EE7A0),
             .dynamic(light: 0xB45309, dark: 0xFCD38A), .dynamic(light: 0x1D4ED8, dark: 0x93BBFF),
             .dynamic(light: 0xBE123C, dark: 0xFDA4AF), .dynamic(light: 0x3F3F46, dark: 0xD4D4D8),
         ]
@@ -84,6 +88,19 @@ enum DS {
         static let xxl: CGFloat = 48
     }
 
+    /// Gradients: the ember glow used on your messages, primary buttons and the aura behind screens.
+    enum G {
+        static let ember = LinearGradient(colors: [Color(hex: 0xFF7A4D), Color(hex: 0xEE4F22)], startPoint: .topLeading, endPoint: .bottomTrailing)
+        static func aura(_ scheme: ColorScheme) -> some View {
+            ZStack {
+                RadialGradient(colors: [Color(hex: 0xFF6A3D).opacity(scheme == .dark ? 0.14 : 0.10), .clear],
+                               center: UnitPoint(x: 0.15, y: -0.05), startRadius: 0, endRadius: 460)
+                RadialGradient(colors: [Color(hex: 0xFFA94D).opacity(scheme == .dark ? 0.06 : 0.05), .clear],
+                               center: UnitPoint(x: 1.0, y: 0.25), startRadius: 0, endRadius: 380)
+            }
+        }
+    }
+
     enum R {
         static let card: CGFloat = 24
         static let control: CGFloat = 16
@@ -105,12 +122,16 @@ enum Haptic {
 struct CardStyle: ViewModifier {
     var padding: CGFloat = DS.S.l
     var tint: Color = DS.C.surface
+    @Environment(\.colorScheme) private var scheme
     func body(content: Content) -> some View {
         content
             .padding(padding)
             .background(tint, in: RoundedRectangle(cornerRadius: DS.R.card, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: DS.R.card, style: .continuous).stroke(DS.C.line.opacity(0.6), lineWidth: 0.5))
-            .shadow(color: DS.C.shadow.opacity(0.06), radius: 16, x: 0, y: 8)
+            // Glass edge: a hairline that catches light at the top.
+            .overlay(RoundedRectangle(cornerRadius: DS.R.card, style: .continuous)
+                .stroke(LinearGradient(colors: [Color.white.opacity(scheme == .dark ? 0.10 : 0.6), DS.C.line.opacity(0.5)],
+                                       startPoint: .top, endPoint: .bottom), lineWidth: 0.75))
+            .shadow(color: DS.C.shadow.opacity(scheme == .dark ? 0.35 : 0.06), radius: 18, x: 0, y: 10)
     }
 }
 
@@ -120,7 +141,40 @@ extension View {
     }
 
     func screenBackground() -> some View {
-        background(DS.C.canvas.ignoresSafeArea())
+        modifier(ScreenBackground())
+    }
+}
+
+/// Canvas with a soft ember aura at the top.
+struct ScreenBackground: ViewModifier {
+    @Environment(\.colorScheme) private var scheme
+    func body(content: Content) -> some View {
+        content.background {
+            ZStack { DS.C.canvas; DS.G.aura(scheme) }.ignoresSafeArea()
+        }
+    }
+}
+
+/// The day-1 glow: a soft ember orb that breathes slowly behind the mascot.
+struct EmberOrb: View {
+    var size: CGFloat
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breathe = false
+    var body: some View {
+        ZStack {
+            Circle().fill(RadialGradient(colors: [Color(hex: 0xFF7A4D).opacity(0.55), Color(hex: 0xFF6A3D).opacity(0.18), .clear],
+                                         center: .center, startRadius: 0, endRadius: size / 2))
+            Circle().fill(RadialGradient(colors: [Color(hex: 0xFFC27A).opacity(0.35), .clear], center: .center, startRadius: 0, endRadius: size / 4))
+        }
+        .frame(width: size, height: size)
+        .blur(radius: size * 0.08)
+        .scaleEffect(breathe ? 1.06 : 0.94)
+        .opacity(breathe ? 1 : 0.8)
+        .onAppear {
+            guard !reduceMotion, Motion.ambientEnabled else { return }
+            withAnimation(.easeInOut(duration: 3.2).repeatForever(autoreverses: true)) { breathe = true }
+        }
+        .accessibilityHidden(true)
     }
 }
 
@@ -136,7 +190,8 @@ struct PrimaryButtonStyle: ButtonStyle {
             .frame(maxWidth: .infinity, minHeight: 56)
             .background(
                 RoundedRectangle(cornerRadius: DS.R.control, style: .continuous)
-                    .fill(tint.opacity(enabled ? 1 : 0.4))
+                    .fill(tint == DS.C.volt ? AnyShapeStyle(DS.G.ember) : AnyShapeStyle(tint))
+                    .opacity(enabled ? 1 : 0.4)
                     .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous)
                         .stroke(.white.opacity(0.18), lineWidth: 1).blendMode(.overlay))
             )
@@ -163,10 +218,10 @@ struct ChipButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(DS.F.small)
-            .foregroundStyle(selected ? DS.C.userText : DS.C.ink)
+            .foregroundStyle(selected ? Color.white : DS.C.ink)
             .padding(.horizontal, DS.S.m)
             .frame(minHeight: 36)
-            .background(selected ? DS.C.ink : DS.C.surface, in: Capsule())
+            .background(selected ? AnyShapeStyle(DS.G.ember) : AnyShapeStyle(DS.C.surface), in: Capsule())
             .overlay(Capsule().stroke(DS.C.line, lineWidth: selected ? 0 : 1))
             .opacity(configuration.isPressed ? 0.7 : 1)
     }

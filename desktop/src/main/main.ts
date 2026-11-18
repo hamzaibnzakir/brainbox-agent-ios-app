@@ -261,12 +261,12 @@ function createWindow() {
   win = new BrowserWindow({
     width: 1360, height: 860, minWidth: 900, minHeight: 600,
     title: "Brainbox",
-    backgroundColor: "#0c0d10",
+    backgroundColor: "#09090b",
     icon: path.join(__dirname, "../../../build/icon.png"),
     autoHideMenuBar: true,
     // Our own title bar (drag region in the page) with the native window buttons on top.
     titleBarStyle: "hidden",
-    titleBarOverlay: { color: "#0c0d10", symbolColor: "#a9a9b3", height: 40 },
+    titleBarOverlay: { color: "#09090b", symbolColor: "#a9a9b3", height: 40 },
     webPreferences: {
       preload: path.join(__dirname, "preload.js"),
       contextIsolation: true,

@@ -16,7 +16,7 @@ struct ChatScreen: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            ConnectionBanner().padding(.top, model.isConnected ? 0 : DS.S.s)
+            ConnectionBanner().padding(.top, model.isConnected || model.isReconnecting ? 0 : DS.S.s)
             if let chat, !transcript.items.isEmpty {
                 messages(chat: chat)
             } else {
@@ -135,7 +135,10 @@ struct ChatScreen: View {
         ScrollView {
             VStack(spacing: DS.S.l) {
                 Spacer(minLength: DS.S.xxl)
-                Companion(mood: .idle, size: 96)
+                ZStack {
+                    EmberOrb(size: 190)
+                    Companion(mood: .idle, size: 96)
+                }
                 VStack(spacing: DS.S.s) {
                     Text(greeting).font(DS.F.title).foregroundStyle(DS.C.ink)
                     Text(model.isConnected ? "Hermes is ready on \(model.profile?.name ?? "your server")." : "Connect to start chatting.")
@@ -152,8 +155,9 @@ struct ChatScreen: View {
                                     Image(systemName: "arrow.up.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(DS.C.ink3)
                                 }
                                 .padding(DS.S.m)
-                                .background(DS.C.surface, in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
-                                .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous).stroke(DS.C.line, lineWidth: 1))
+                                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous)
+                                    .stroke(LinearGradient(colors: [Color.white.opacity(0.12), DS.C.line.opacity(0.6)], startPoint: .top, endPoint: .bottom), lineWidth: 0.75))
                             }
                             .buttonStyle(.plain)
                         }
@@ -267,7 +271,7 @@ struct Composer: View {
                     Button { startConversation() } label: { Label("Voice conversation", systemImage: "waveform") }
                 } label: {
                     Image(systemName: "plus").font(.system(size: 18, weight: .semibold)).foregroundStyle(DS.C.ink)
-                        .frame(width: 44, height: 44).background(DS.C.surface, in: Circle())
+                        .frame(width: 44, height: 44).background(.ultraThinMaterial, in: Circle())
                         .overlay(Circle().stroke(DS.C.line, lineWidth: 1))
                 }
                 .disabled(!model.isConnected)
@@ -292,14 +296,22 @@ struct Composer: View {
                         .padding(.trailing, DS.S.xs)
                         .padding(.bottom, DS.S.xs)
                 }
-                .background(DS.C.surface, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
-                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous).stroke(focused ? DS.C.volt.opacity(0.6) : DS.C.line, lineWidth: 1))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .background(DS.C.surface.opacity(0.55), in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(focused ? AnyShapeStyle(DS.G.ember) : AnyShapeStyle(DS.C.line), lineWidth: focused ? 1.5 : 1))
+                .shadow(color: DS.C.volt.opacity(focused ? 0.22 : 0), radius: 14, x: 0, y: 4)
+                .animation(.easeOut(duration: 0.2), value: focused)
             }
             .padding(.horizontal, DS.S.m)
             .padding(.bottom, DS.S.s)
         }
         .padding(.top, DS.S.s)
-        .background(DS.C.canvas.opacity(0.94).ignoresSafeArea(edges: .bottom))
+        // Messages fade softly under the composer instead of stopping at a hard edge.
+        .background(
+            LinearGradient(colors: [DS.C.canvas.opacity(0), DS.C.canvas.opacity(0.92), DS.C.canvas], startPoint: .top, endPoint: .init(x: 0.5, y: 0.35))
+                .ignoresSafeArea(edges: .bottom)
+        )
         .photosPicker(isPresented: $showPhotos, selection: $photoItems, maxSelectionCount: 6, matching: .images)
         .fileImporter(isPresented: $showFiles, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { for url in urls { addFile(url) } }
@@ -355,7 +367,8 @@ struct Composer: View {
         } else if hasContent {
             Button(action: send) {
                 Image(systemName: "arrow.up").font(.system(size: 16, weight: .bold)).foregroundStyle(.white)
-                    .frame(width: 36, height: 36).background(DS.C.volt, in: Circle())
+                    .frame(width: 36, height: 36).background(DS.G.ember, in: Circle())
+                    .shadow(color: DS.C.volt.opacity(0.4), radius: 8, x: 0, y: 3)
             }
             .disabled(!model.isConnected)
             .accessibilityLabel("Send")

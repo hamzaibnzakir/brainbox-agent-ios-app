@@ -26,9 +26,12 @@ struct RootView: View {
                 }
             }
         }
-        .overlay {
+        .overlay(alignment: .top) {
+            // A small pill, not a wall: your chats stay readable while the link comes back.
             if model.isReconnecting, model.profile != nil, !AppModel.isDemo {
-                ReconnectingScreen().transition(.opacity)
+                ReconnectingScreen()
+                    .padding(.top, DS.S.xs)
+                    .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
         .animation(.easeInOut(duration: 0.2), value: model.isReconnecting)
@@ -99,12 +102,8 @@ struct ConnectionBanner: View {
 
     var body: some View {
         switch model.connection {
-        case .connected:
-            EmptyView()
-        case .connecting(let step):
-            banner(symbol: "lock.shield", text: step, busy: true, action: nil)
-        case .reconnecting(let attempt, let reason):
-            banner(symbol: "arrow.triangle.2.circlepath", text: attempt > 1 ? "\(reason) (try \(attempt))" : reason, busy: true, action: nil)
+        case .connected, .connecting, .reconnecting:
+            EmptyView()   // the floating pill at the top shows progress
         case .failed(let message):
             banner(symbol: "exclamationmark.triangle.fill", text: message, busy: false, action: ("Retry", { Task { await model.connect() } }))
         case .idle:
@@ -142,26 +141,21 @@ struct ReconnectingScreen: View {
     }
 
     var body: some View {
-        ZStack {
-            Rectangle().fill(.ultraThinMaterial).ignoresSafeArea()
-            VStack(spacing: DS.S.m) {
-                Companion(mood: .busy, size: 72)
-                Text("Reconnecting to \(model.profile?.name ?? "your server")").font(DS.F.bodyStrong).foregroundStyle(DS.C.ink)
-                HStack(spacing: DS.S.s) {
-                    ProgressView().controlSize(.small)
-                    Text(step).font(DS.F.small).foregroundStyle(DS.C.ink2)
-                }
-                TimelineView(.periodic(from: .now, by: 1)) { context in
-                    if context.date.timeIntervalSince(since) > 12 {
-                        Button("Try again now") { Task { await model.engine.reconnectNow(reason: "Reconnecting") } }
-                            .buttonStyle(SecondaryButtonStyle())
-                    }
+        HStack(spacing: DS.S.s) {
+            ProgressView().controlSize(.small).tint(DS.C.volt)
+            Text(step).font(DS.F.captionStrong).foregroundStyle(DS.C.ink).lineLimit(1)
+            TimelineView(.periodic(from: .now, by: 1)) { context in
+                if context.date.timeIntervalSince(since) > 8 {
+                    Button("Try again") { Task { await model.engine.reconnectNow(reason: "Reconnecting") } }
+                        .font(DS.F.captionStrong).foregroundStyle(DS.C.volt)
                 }
             }
-            .padding(DS.S.xl)
-            .card()
-            .padding(DS.S.l)
         }
+        .padding(.horizontal, DS.S.m)
+        .frame(height: 36)
+        .background(.ultraThinMaterial, in: Capsule())
+        .overlay(Capsule().stroke(DS.C.line, lineWidth: 0.75))
+        .shadow(color: DS.C.shadow.opacity(0.25), radius: 12, y: 6)
         .onAppear { since = Date() }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Reconnecting")

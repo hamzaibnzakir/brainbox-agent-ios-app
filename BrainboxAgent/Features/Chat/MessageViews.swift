@@ -55,8 +55,9 @@ struct UserBubble: View {
             }
             .padding(.horizontal, DS.S.m)
             .padding(.vertical, DS.S.s + 4)
-            .background(DS.C.userBubble, in: UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 20,
-                                                                    bottomTrailingRadius: 6, topTrailingRadius: 20, style: .continuous))
+            .background(DS.G.ember, in: UnevenRoundedRectangle(topLeadingRadius: 20, bottomLeadingRadius: 20,
+                                                               bottomTrailingRadius: 6, topTrailingRadius: 20, style: .continuous))
+            .shadow(color: DS.C.volt.opacity(0.25), radius: 10, x: 0, y: 4)
         }
     }
 }

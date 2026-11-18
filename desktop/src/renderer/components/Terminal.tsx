@@ -26,7 +26,7 @@ export function TerminalPane({ connected, active }: { connected: boolean; active
   useEffect(() => {
     const t = new Terminal({
       fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace', fontSize: 13, cursorBlink: true,
-      theme: { background: "#0b0c0f", foreground: "#e8e8ec", cursor: "#8c82ff", selectionBackground: "#8c82ff55" },
+      theme: { background: "#09090b", foreground: "#e8e8ec", cursor: "#ff6a3d", selectionBackground: "#ff6a3d55" },
       allowProposedApi: false, scrollback: 5000,
     });
     const f = new FitAddon();

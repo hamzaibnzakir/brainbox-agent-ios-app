@@ -63,7 +63,7 @@ export function App() {
   const applyTheme = useCallback((theme: string) => {
     const light = theme === "light" || (theme === "system" && matchMedia("(prefers-color-scheme: light)").matches);
     document.documentElement.dataset.theme = light ? "light" : "dark";
-    bb.invoke("titleBar", light ? "#f4f3ef" : "#0b0c0f", light ? "#3a3a40" : "#a9a9b3").catch(() => {});
+    bb.invoke("titleBar", light ? "#f6f5f2" : "#09090b", light ? "#3a3a40" : "#a9a9b3").catch(() => {});
   }, []);
 
   const reload = useCallback(async () => {
