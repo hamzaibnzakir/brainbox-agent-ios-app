@@ -37,8 +37,11 @@ final class ShellSession {
         phase = phase == .reattaching ? .reattaching : .opening
         do {
             let client = try await model.client()
-            let hasTmux = model.preferences.persistentTerminal
-                && ((try? await client.ssh.exec("command -v tmux >/dev/null 2>&1 && echo yes", timeout: 10).output.contains("yes")) ?? false)
+            var hasTmux = false
+            if model.preferences.persistentTerminal {
+                let probe = try? await client.ssh.exec("command -v tmux >/dev/null 2>&1 && echo yes", timeout: 10)
+                hasTmux = probe?.output.contains("yes") ?? false
+            }
             persistent = hasTmux
             if hasTmux { onReset?() }
             let stream = try await client.ssh.openShell(columns: size.cols, rows: size.rows,
