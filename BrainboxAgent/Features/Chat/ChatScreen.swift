@@ -111,8 +111,11 @@ struct ChatScreen: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: DS.S.m) {
-                    ForEach(transcript.items) { item in
-                        ChatItemView(item: item, chat: chat).id(item.id)
+                    ForEach(ChatRow.group(transcript.items)) { row in
+                        switch row {
+                        case .item(let item): ChatItemView(item: item, chat: chat).id(item.id)
+                        case .tools(let tools): ToolGroup(tools: tools).id(row.id)
+                        }
                     }
                     Color.clear.frame(height: 1).id("bottom")
                 }
@@ -214,6 +217,96 @@ struct TodoPanel: View {
         .background(DS.C.surface, in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous).stroke(DS.C.line, lineWidth: 1))
         .padding(.horizontal, DS.S.m)
+    }
+}
+
+// MARK: - Grouped rows
+
+/// Consecutive tool steps fold into one compact row (like a coding assistant's "worked · 6 steps").
+enum ChatRow: Identifiable {
+    case item(ChatItem)
+    case tools([ToolActivity])
+
+    var id: String {
+        switch self {
+        case .item(let item): return item.id
+        case .tools(let tools): return "tools-" + (tools.first?.id ?? "")
+        }
+    }
+
+    static func group(_ items: [ChatItem]) -> [ChatRow] {
+        var rows: [ChatRow] = []
+        var run: [ToolActivity] = []
+        var runItems: [ChatItem] = []
+        func flush() {
+            if run.count >= 2 { rows.append(.tools(run)) }
+            else { rows.append(contentsOf: runItems.map { .item($0) }) }
+            run = []; runItems = []
+        }
+        for item in items {
+            if case .tool(let tool) = item.kind { run.append(tool); runItems.append(item) }
+            else { flush(); rows.append(.item(item)) }
+        }
+        flush()
+        return rows
+    }
+}
+
+struct ToolGroup: View {
+    var tools: [ToolActivity]
+    @State private var expanded: Bool? = nil
+
+    private var running: ToolActivity? { tools.last(where: { $0.status == .running }) }
+    private var failed: Int { tools.filter { $0.status == .failed }.count }
+    private var total: Double { tools.compactMap(\.duration).reduce(0, +) }
+    private var isExpanded: Bool { expanded ?? (failed > 0) }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: DS.S.s) {
+            Button { withAnimation(.snappy) { expanded = !isExpanded } } label: {
+                HStack(spacing: DS.S.s + 4) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10, style: .continuous).fill(tint.opacity(0.12)).frame(width: 32, height: 32)
+                        if running != nil { ProgressView().controlSize(.mini) }
+                        else { Image(systemName: failed > 0 ? "exclamationmark" : "checkmark").font(.system(size: 13, weight: .bold)).foregroundStyle(tint) }
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(title).font(DS.F.smallStrong).foregroundStyle(DS.C.ink)
+                        Text(subtitle).font(DS.F.monoSmall).foregroundStyle(DS.C.ink3).lineLimit(1)
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .semibold)).foregroundStyle(DS.C.ink3)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if isExpanded {
+                VStack(alignment: .leading, spacing: DS.S.s) {
+                    ForEach(tools, id: \.id) { ToolCard(tool: $0, expandedByDefault: false) }
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(DS.S.s + 4)
+        .background(DS.C.surface.opacity(0.6), in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous).stroke(DS.C.line, lineWidth: 1))
+    }
+
+    private var tint: Color { running != nil ? DS.C.volt : failed > 0 ? DS.C.bad : DS.C.good }
+
+    private var title: String {
+        if running != nil { return "Working · step \(tools.count)" }
+        var t = "Worked · \(tools.count) steps"
+        if total >= 1 { t += " · " + Fmt.duration(total) }
+        if failed > 0 { t += " · \(failed) failed" }
+        return t
+    }
+
+    private var subtitle: String {
+        let current = running ?? tools.last!
+        let name = current.name.replacingOccurrences(of: "_", with: " ")
+        return current.context.isEmpty ? name : "\(name) — \(current.context)"
     }
 }
 

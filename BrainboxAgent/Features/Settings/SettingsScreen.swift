@@ -147,7 +147,7 @@ struct ConfigEditor: View {
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Save") {
                         Task {
-                            guard await Biometrics.authenticate(reason: "Change Hermes' configuration") else { return }
+                            guard await Biometrics.confirm(reason: "Change Hermes' configuration") else { return }
                             if await perform(model, "PUT", "/api/config/raw", json: ["yaml_text": .string(text)], success: "Config saved") != nil {
                                 original = text
                                 dismiss()

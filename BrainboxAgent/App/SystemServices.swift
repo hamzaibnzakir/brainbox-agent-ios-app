@@ -11,10 +11,29 @@ import UserNotifications
 // MARK: - Face ID
 
 enum Biometrics {
-    static func authenticate(reason: String) async -> Bool {
+    /// A "are you sure" check for risky actions: asks Face ID / passcode when the phone has one,
+    /// and lets the action through on a phone with neither (it isn't a lock).
+    static func confirm(reason: String) async -> Bool {
         let context = LAContext()
         var error: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return true }
+        return await withCheckedContinuation { continuation in
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in continuation.resume(returning: ok) }
+        }
+    }
+
+    /// The Face ID lock (Settings › Security): never opens by itself.
+    static func authenticate(reason: String) async -> Bool {
+        let context = LAContext()
+        var error: NSError?
+        // A lock you turned on must never open by itself: with no passcode/Face ID set up on the
+        // phone there is nothing to check against, so stay locked and say why.
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else {
+            await MainActor.run {
+                Notifier.shared.model?.toast = "Set a passcode or Face ID on this iPhone to use the lock — or turn it off in Settings › Security."
+            }
+            return false
+        }
         return await withCheckedContinuation { continuation in
             context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { ok, _ in
                 continuation.resume(returning: ok)

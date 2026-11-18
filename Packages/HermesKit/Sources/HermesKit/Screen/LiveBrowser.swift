@@ -266,7 +266,7 @@ public final class LiveBrowser: @unchecked Sendable {
     /// profile and flags, read from the dock's `.desktop` entry), optionally on `url`, then waits for its
     /// fresh DevTools port. The screen must be running. A stale `DevToolsActivePort` (left by a browser
     /// that stopped with an idle screen) is removed first so it can't be mistaken for a live one.
-    public func launch(url: String? = nil, timeout: TimeInterval = 20) async throws -> Int {
+    public func launch(url: String? = nil, timeout: TimeInterval = 45) async throws -> Int {
         let target = url.map { RemoteBackend.shq(Self.url(from: $0)) } ?? "''"
         let script = """
         envf="$HOME/.hermes/bot-desktop/env"

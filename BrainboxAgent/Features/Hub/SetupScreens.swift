@@ -32,7 +32,7 @@ struct MessagingScreen: View {
                 Button(confirm?.capitalized ?? "OK", role: confirm == "stop" ? .destructive : nil) {
                     let action = confirm ?? ""
                     Task {
-                        guard await Biometrics.authenticate(reason: "\(action.capitalized) the Hermes messaging gateway") else { return }
+                        guard await Biometrics.confirm(reason: "\(action.capitalized) the Hermes messaging gateway") else { return }
                         _ = await perform(model, "POST", "/api/gateway/\(action)", success: "Gateway \(action) requested")
                         await reload()
                     }

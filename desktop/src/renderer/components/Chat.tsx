@@ -152,7 +152,9 @@ export function ChatPane(props: ChatProps) {
         ) : (
           <div className="thread">
             {groups.map((g) => g.kind === "tools"
-              ? <div key={g.items[0].id} className="msg-assistant"><div className="avatar" style={{ visibility: "hidden" }} /><div className="body-col">{g.items.map((it) => <Item key={it.id} item={it} {...props} />)}</div></div>
+              ? <div key={g.items[0].id} className="msg-assistant"><div className="avatar" style={{ visibility: "hidden" }} /><div className="body-col">
+                  {g.items.length >= 2 ? <ToolGroup items={g.items} props={props} /> : g.items.map((it) => <Item key={it.id} item={it} {...props} />)}
+                </div></div>
               : <Item key={g.item.id} item={g.item} {...props} />)}
             {waiting && (
               <div className="msg-assistant"><div className="avatar">H</div><div className="body-col"><div className="typing"><i /><i /><i /></div></div></div>
@@ -192,6 +194,33 @@ function group(items: ChatItem[]): Group[] {
     } else out.push({ kind: "one", item: it });
   }
   return out;
+}
+
+/** Consecutive tool steps fold into one row: "Worked · 6 steps · 12.4s" (live step while running). */
+function ToolGroup({ items, props }: { items: ChatItem[]; props: ChatProps }) {
+  const tools = items.flatMap((i) => (i.kind === "tool" ? [i.tool] : []));
+  const running = [...tools].reverse().find((t) => t.status === "running");
+  const failed = tools.filter((t) => t.status === "failed").length;
+  const total = tools.reduce((n, t) => n + (t.duration ?? 0), 0);
+  const [open, setOpen] = useState<boolean>();
+  const isOpen = open ?? failed > 0;
+  const current = running ?? tools[tools.length - 1];
+  const title = running ? `Working · step ${tools.length}` : `Worked · ${tools.length} steps${total >= 1 ? ` · ${total.toFixed(1)}s` : ""}${failed ? ` · ${failed} failed` : ""}`;
+  return (
+    <details className="tool" open={isOpen} onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}>
+      <summary>
+        <span className={"ti " + (running ? "running" : failed ? "failed" : "done")}>
+          {running ? <Icon name="refresh" size={12} className="spin" /> : failed ? <Icon name="x" size={12} stroke={2.6} /> : <Icon name="check" size={12} stroke={2.6} />}
+        </span>
+        <span className="name" style={{ fontFamily: "var(--font)" }}>{title}</span>
+        <span className="ctx">{current ? `${current.name}${current.context ? " — " + current.context : ""}` : ""}</span>
+        <Icon name="chevronRight" size={14} className="chev" style={{ color: "var(--ink4)" }} />
+      </summary>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "0 8px 8px" }}>
+        {items.map((it) => <Item key={it.id} item={it} {...props} />)}
+      </div>
+    </details>
+  );
 }
 
 function asText(items: ChatItem[]) {
