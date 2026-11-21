@@ -110,3 +110,29 @@ public enum BackendURLValidator {
         }
     }
 }
+
+/// Validates the Hermes backend URL (HTTPS). Plain http:// is accepted only
+/// for loopback, RFC1918 and Tailscale addresses, because the bearer token
+/// would otherwise cross the internet unencrypted.
+public enum HermesURLValidator {
+    public static func validate(_ text: String) -> BackendURLValidator.Result {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return .invalid("Enter the Hermes URL.") }
+        guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), let host = url.host, !host.isEmpty else {
+            return .invalid("That doesn't look like a URL.")
+        }
+        guard scheme == "https" || scheme == "http" else {
+            return .invalid("Use https:// (or http:// only on a private Tailscale address).")
+        }
+        if scheme == "http" && !BackendURLValidator.isPrivateHost(host) {
+            return .invalid("Plain http:// is only allowed for Tailscale/private addresses. Use https:// for anything else.")
+        }
+        guard url.user == nil, url.password == nil else {
+            return .invalid("Don't put credentials in the URL — save the token separately.")
+        }
+        guard url.query == nil, url.fragment == nil else {
+            return .invalid("Remove the ?query or #fragment from the URL.")
+        }
+        return .valid(url)
+    }
+}

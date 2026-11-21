@@ -123,6 +123,11 @@ base64 -w0 profile.mobileprovision > profile.b64
 10. Delete `brainbox.key`, `.p12` and the `.b64` files from your PC once the
     secrets are saved (keep an encrypted backup of the key).
 
+Both workflows run `scripts/ci/verify-ipa.sh` on the IPA before uploading it
+(Payload/.app structure, Info.plist keys, iphoneos/arm64, and signed vs
+unsigned as expected), so a malformed IPA fails the run instead of failing on
+your phone.
+
 **What only you can provide:** an Apple ID (free or paid), the device UDID,
 and — for option D — the Apple Developer membership, certificate and profile.
 CI cannot create these for you.

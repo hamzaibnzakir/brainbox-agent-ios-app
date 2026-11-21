@@ -14,7 +14,11 @@ public enum MarkdownBlock: Hashable, Sendable {
     case orderedList(start: Int, items: [String])
     case quote(String)
     case rule
+    /// A GitHub-style pipe table. Every row has exactly `header.count` cells.
+    case table(header: [String], alignments: [TableAlignment], rows: [[String]])
 }
+
+public enum TableAlignment: String, Hashable, Sendable { case leading, center, trailing }
 
 public enum MarkdownParser {
     public static func parse(_ text: String) -> [MarkdownBlock] {
@@ -101,6 +105,31 @@ public enum MarkdownParser {
                 continue
             }
 
+            // Pipe table: a header row followed by a delimiter row (| --- | :---: |).
+            if trimmed.contains("|"), index + 1 < lines.count,
+               let alignments = tableDelimiter(lines[index + 1].trimmingCharacters(in: .whitespaces)) {
+                let header = tableCells(trimmed)
+                if header.count >= 1, alignments.count >= 1 {
+                    flushAll()
+                    let width = max(header.count, alignments.count)
+                    func pad(_ cells: [String]) -> [String] {
+                        let cut = Array(cells.prefix(width))
+                        return cut + Array(repeating: "", count: width - cut.count)
+                    }
+                    var rows: [[String]] = []
+                    index += 2
+                    while index < lines.count {
+                        let row = lines[index].trimmingCharacters(in: .whitespaces)
+                        guard !row.isEmpty, row.contains("|") else { break }
+                        rows.append(pad(tableCells(row)))
+                        index += 1
+                    }
+                    let aligned = Array(alignments.prefix(width)) + Array(repeating: TableAlignment.leading, count: max(0, width - alignments.count))
+                    blocks.append(.table(header: pad(header), alignments: aligned, rows: rows))
+                    continue
+                }
+            }
+
             if trimmed.hasPrefix(">") {
                 flushParagraph()
                 if !bullets.isEmpty || !ordered.isEmpty { flushLists() }
@@ -123,6 +152,41 @@ public enum MarkdownParser {
         }
         flushAll()
         return blocks
+    }
+
+    /// Cells of a `| a | b |` row (outer pipes optional, `\|` stays a literal pipe).
+    static func tableCells(_ line: String) -> [String] {
+        var row = line
+        if row.hasPrefix("|") { row.removeFirst() }
+        if row.hasSuffix("|") && !row.hasSuffix("\\|") { row.removeLast() }
+        var cells: [String] = []
+        var current = ""
+        var escaped = false
+        var inCode = false
+        for c in row {
+            if escaped { current.append(c); escaped = false; continue }
+            if c == "\\" { escaped = true; continue }
+            if c == "`" { inCode.toggle() }
+            if c == "|" && !inCode { cells.append(current.trimmingCharacters(in: .whitespaces)); current = ""; continue }
+            current.append(c)
+        }
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        return cells
+    }
+
+    /// `| --- | :---: | ---: |` → alignments; nil when the line isn't a delimiter row.
+    static func tableDelimiter(_ line: String) -> [TableAlignment]? {
+        guard line.contains("-") else { return nil }
+        let cells = tableCells(line)
+        guard !cells.isEmpty, line.contains("|") || cells.count == 1 else { return nil }
+        var out: [TableAlignment] = []
+        for cell in cells {
+            let c = cell.replacingOccurrences(of: " ", with: "")
+            guard c.count >= 1, c.allSatisfy({ $0 == "-" || $0 == ":" }), c.contains("-") else { return nil }
+            let left = c.hasPrefix(":"), right = c.hasSuffix(":")
+            out.append(left && right ? .center : right ? .trailing : .leading)
+        }
+        return out
     }
 
     private static func headingLevel(_ line: String) -> (level: Int, text: String)? {
