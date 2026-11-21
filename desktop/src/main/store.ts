@@ -12,6 +12,10 @@ import { HostKeyStore, Identity, SSHTarget, generateIdentity } from "./hermes/ss
 export interface Profile {
   name: string;
   target: SSHTarget;
+  /** Talk to Hermes straight over Tailscale (the brainbox-hermes service) instead of SSH. */
+  tailscale?: boolean;
+  /** The tailnet port `tailscale serve` forwards to Hermes. */
+  hermesPort?: number;
 }
 
 export interface Preferences {
@@ -76,6 +80,10 @@ export class Store implements HostKeyStore, EnginePersistence {
     } catch { /* unreadable (another user / machine): treat as missing */ }
     return undefined;
   }
+
+  /** Hermes' access token for Tailscale mode (the server's /etc/brainbox/token), encrypted. */
+  get hermesToken(): string | undefined { return this.getSecret("hermes-token"); }
+  set hermesToken(v: string | undefined) { this.setSecret("hermes-token", v || undefined); }
 
   // ---- identity
 

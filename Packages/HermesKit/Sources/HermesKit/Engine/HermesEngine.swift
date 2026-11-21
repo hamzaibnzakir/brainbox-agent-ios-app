@@ -133,7 +133,12 @@ public actor HermesEngine {
     /// Stops the backend this phone started on the server, then disconnects.
     public func stopBackend() async {
         if let client, let options {
-            await RemoteBackend(ssh: client.ssh, ownershipID: options.ownershipID).stop(client.backend.record)
+            if client.isDirect {
+                // Tailscale mode: Hermes is a service on the server — restart it (it comes straight back).
+                _ = try? await client.ssh.exec("systemctl restart brainbox-hermes 2>&1 || sudo -n systemctl restart brainbox-hermes", timeout: 30)
+            } else if let ssh = try? await client.ssh.connection() {
+                await RemoteBackend(ssh: ssh, ownershipID: options.ownershipID).stop(client.backend.record)
+            }
             persistence.saveBackend(nil, for: options.target.hostID)
         }
         disconnect()
@@ -194,7 +199,7 @@ public actor HermesEngine {
             }
             persistence.saveBackend(client.backend.record, for: options.target.hostID)
             self.client = client
-            let info = HermesServerInfo(target: options.target, hostFingerprint: client.ssh.hostKeyFingerprint,
+            let info = HermesServerInfo(target: options.target, hostFingerprint: client.isDirect ? "Tailscale (WireGuard)" : client.ssh.hostKeyFingerprint,
                                   version: client.backend.version, hermesPath: client.backend.record.hermesPath,
                                   reusedBackend: client.backend.reused,
                                   skinAccent: client.ready?.payload["skin"]?["colors"]?["ui_accent"]?.stringValue)

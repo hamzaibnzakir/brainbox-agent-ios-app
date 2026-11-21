@@ -177,3 +177,30 @@ export class SSHConnection {
     this.client.end();
   }
 }
+
+/** SSH that connects when something needs it. In Tailscale mode the chat doesn't use SSH; the
+ *  terminal opens it on first use (over the tailnet) and it reconnects if it dropped. In SSH mode
+ *  it wraps the connection that's already open. */
+export class SSHLink {
+  private current?: SSHConnection;
+  private pending?: Promise<SSHConnection>;
+  constructor(private target: SSHTarget, private identity: Identity, private hostKeys: HostKeyStore, connection?: SSHConnection) {
+    this.current = connection;
+  }
+  async connection(): Promise<SSHConnection> {
+    if (this.current?.isActive) return this.current;
+    if (!this.pending) {
+      this.pending = SSHConnection.connect(this.target, this.identity, this.hostKeys, 10_000)
+        .then((c) => { this.current = c; return c; })
+        .finally(() => { this.pending = undefined; });
+    }
+    return this.pending;
+  }
+  get isActive() { return this.current?.isActive ?? false; }
+  get hostFingerprint() { return this.current?.hostFingerprint ?? ""; }
+  onClose(fn: () => void) { this.current?.onClose(fn); }
+  async exec(command: string, opts?: Parameters<SSHConnection["exec"]>[1]) { return (await this.connection()).exec(command, opts); }
+  async shell(cols: number, rows: number) { return (await this.connection()).shell(cols, rows); }
+  async forward(port: number) { return (await this.connection()).forward(port); }
+  close() { this.current?.close(); this.current = undefined; }
+}

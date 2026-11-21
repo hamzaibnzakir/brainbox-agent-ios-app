@@ -246,7 +246,7 @@ public struct BotScreen: Sendable {
     /// Opens the RFB stream for `ticket` through the SSH tunnel. Binary frames are raw RFB.
     public func openStream(_ ticket: ScreenTicket) async throws -> TunnelWebSocket {
         do {
-            return try await TunnelWebSocket.connect(dialer: SSHPortDialer(ssh: client.ssh, port: client.backend.record.port),
+            return try await TunnelWebSocket.connect(dialer: client.dialer,
                                                      path: ticket.socketPath)
         } catch WebSocketError.handshakeFailed(let status, let body) {
             if status == 404 { throw ScreenError.unsupportedHermes }

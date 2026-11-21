@@ -1,22 +1,43 @@
 import BrainboxCore
 import Foundation
 
-/// A live connection to Hermes over SSH: the SSH session, the backend it runs,
-/// an HTTP client for Hermes' REST API and the JSON-RPC gateway.
+/// A live connection to Hermes: its REST API and JSON-RPC gateway, reached either straight over the
+/// tailnet (Tailscale mode) or through an SSH tunnel (SSH mode), plus SSH for the features that run
+/// commands on the server (terminal, file transfers, Hermes' browser) — opened on demand.
 public final class HermesClient: @unchecked Sendable {
-    public let ssh: SSHConnection
+    public let ssh: SSHLink
     public let backend: BackendHandle
     public let http: TunnelHTTPClient
     public let rpc: GatewayRPC
     /// The first event the gateway sends (skin, version info).
     public let ready: GatewayEvent?
+    /// How to open another stream to Hermes' port (the screen viewer uses it).
+    public let dialer: TunnelDialer
+    /// Connected straight over Tailscale (no SSH in the chat path).
+    public let isDirect: Bool
 
-    init(ssh: SSHConnection, backend: BackendHandle, http: TunnelHTTPClient, rpc: GatewayRPC, ready: GatewayEvent?) {
+    init(ssh: SSHLink, backend: BackendHandle, http: TunnelHTTPClient, rpc: GatewayRPC, ready: GatewayEvent?,
+         dialer: TunnelDialer, isDirect: Bool) {
         self.ssh = ssh
         self.backend = backend
         self.http = http
         self.rpc = rpc
         self.ready = ready
+        self.dialer = dialer
+        self.isDirect = isDirect
+    }
+
+    /// Hermes running as a service on the server, reached over Tailscale: `tailscale serve` forwards
+    /// `port` on the tailnet to Hermes on the server's 127.0.0.1; `token` is its fixed access token.
+    public struct DirectEndpoint: Sendable, Equatable {
+        public var host: String
+        public var port: Int
+        public var token: String
+        public init(host: String, port: Int, token: String) {
+            self.host = host
+            self.port = port
+            self.token = token
+        }
     }
 
     public struct Options: Sendable {
@@ -29,6 +50,8 @@ public final class HermesClient: @unchecked Sendable {
         /// How long the SSH connect + handshake may take. Reconnects use a short one: a link that
         /// doesn't come up in a few seconds is retried instead of waited on.
         public var sshTimeout: TimeInterval = 20
+        /// Tailscale mode: talk to Hermes directly at this endpoint (SSH only for the terminal etc.).
+        public var direct: DirectEndpoint?
 
         public init(target: SSHTarget, identity: SSHIdentity, hostKeys: HostKeyStore, ownershipID: String,
                     knownBackend: RemoteBackendRecord? = nil, desktopMode: Bool = false) {
@@ -47,8 +70,23 @@ public final class HermesClient: @unchecked Sendable {
         case gateway
     }
 
-    /// SSH in, start or reuse `hermes serve`, open the gateway.
+    /// Tailscale mode: straight to Hermes' gateway over the tailnet. SSH mode: SSH in, start or reuse
+    /// `hermes serve`, open the gateway through the tunnel.
     public static func connect(_ options: Options, progress: @escaping @Sendable (Step) -> Void = { _ in }) async throws -> HermesClient {
+        if let direct = options.direct {
+            progress(.gateway)
+            let link = SSHLink(target: options.target, identity: options.identity, hostKeys: options.hostKeys)
+            let record = RemoteBackendRecord(pid: 0, port: direct.port, nonce: "", token: direct.token,
+                                             hermesPath: "brainbox-hermes.service", version: nil, shared: true)
+            let dialer = DirectDialer(host: direct.host, port: direct.port, connectTimeout: min(options.sshTimeout, 8))
+            do {
+                let client = try await attach(link: link, dialer: dialer, backend: BackendHandle(record: record, reused: true, version: nil),
+                                              isDirect: true)
+                return client
+            } catch BackendError.gated {
+                throw DirectError.badToken
+            }
+        }
         progress(.ssh)
         let ssh = try await SSHConnection.connect(to: options.target, identity: options.identity, hostKeys: options.hostKeys,
                                                   timeout: .milliseconds(Int64(options.sshTimeout * 1000)))
@@ -58,7 +96,7 @@ public final class HermesClient: @unchecked Sendable {
         // A per-device backend from an older build goes through ensure() so it is retired.
         if let known = options.knownBackend, known.shared == true {
             progress(.gateway)
-            if let client = try? await attach(ssh: ssh, backend: BackendHandle(record: known, reused: true, version: known.version),
+            if let client = try? await attach(ssh: ssh, options: options, backend: BackendHandle(record: known, reused: true, version: known.version),
                                               readyTimeout: 2) {
                 return client
             }
@@ -67,7 +105,7 @@ public final class HermesClient: @unchecked Sendable {
             let backend = try await RemoteBackend(ssh: ssh, ownershipID: options.ownershipID, desktopMode: options.desktopMode)
                 .ensure(known: options.knownBackend) { step in progress(.backend(step.rawValue)) }
             progress(.gateway)
-            return try await attach(ssh: ssh, backend: backend)
+            return try await attach(ssh: ssh, options: options, backend: backend)
         } catch {
             ssh.close()
             throw error
@@ -75,8 +113,16 @@ public final class HermesClient: @unchecked Sendable {
     }
 
     /// Opens HTTP + gateway to an already-running backend on `ssh`.
-    public static func attach(ssh: SSHConnection, backend: BackendHandle, readyTimeout: TimeInterval = 3) async throws -> HermesClient {
-        let dialer = SSHPortDialer(ssh: ssh, port: backend.record.port)
+    public static func attach(ssh: SSHConnection, options: Options, backend: BackendHandle, readyTimeout: TimeInterval = 3) async throws -> HermesClient {
+        // The link reconnects by itself (same key and host-key pins) if the terminal etc. need SSH later.
+        let link = SSHLink(target: options.target, identity: options.identity, hostKeys: options.hostKeys, connection: ssh)
+        return try await attach(link: link, dialer: SSHPortDialer(ssh: ssh, port: backend.record.port), backend: backend,
+                                readyTimeout: readyTimeout, isDirect: false)
+    }
+
+    static func attach(link: SSHLink, dialer: TunnelDialer, backend: BackendHandle, readyTimeout: TimeInterval = 3,
+                       isDirect: Bool) async throws -> HermesClient {
+        var backend = backend
         let http = TunnelHTTPClient(dialer: dialer, defaultHeaders: ["X-Hermes-Session-Token": backend.record.token])
         let token = backend.record.token.addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
         let socket: TunnelWebSocket
@@ -99,7 +145,16 @@ public final class HermesClient: @unchecked Sendable {
         } catch {
             // Older backends without `ping` answer "unknown method" — still alive.
         }
-        return HermesClient(ssh: ssh, backend: backend, http: http, rpc: rpc, ready: ready)
+        if isDirect, backend.version == nil {
+            // The service's version, for the connection screen (SSH mode learns it while verifying).
+            if let health = try? await http.send("GET", "/api/health", timeout: 8),
+               let body = try? JSONDecoder().decode(JSONValue.self, from: health.body) {
+                let v = body["version"]?.stringValue
+                backend.version = (v == nil || v == "unknown") ? body["displayVersion"]?.stringValue ?? v : v
+                backend.record.version = backend.version
+            }
+        }
+        return HermesClient(ssh: link, backend: backend, http: http, rpc: rpc, ready: ready, dialer: dialer, isDirect: isDirect)
     }
 
     public func close() {
@@ -109,7 +164,7 @@ public final class HermesClient: @unchecked Sendable {
 
     /// True when the gateway answers within `timeout` (a suspended or half-open link doesn't).
     public func isAlive(timeout: TimeInterval = 2) async -> Bool {
-        guard ssh.isActive, !rpc.closed else { return false }
+        guard isDirect || ssh.isActive, !rpc.closed else { return false }
         do {
             _ = try await rpc.call("ping", [:], timeout: timeout)
             return true

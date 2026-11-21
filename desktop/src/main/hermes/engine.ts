@@ -7,7 +7,7 @@ import {
   GatewayEvent, Json, PendingRequest, Transcript, TranscriptState, arr, bool, displayText, get, str, stripBoxDrawing,
 } from "../../shared/transcript";
 import { BackendError, BackendRecord, RemoteBackend } from "./backend";
-import { ClientOptions, HermesClient } from "./client";
+import { ClientOptions, DirectTokenError, HermesClient } from "./client";
 import { RPCError, parseEvent } from "./rpc";
 import { SSHError, hostId } from "./ssh";
 
@@ -56,6 +56,9 @@ export class HermesEngine extends EventEmitter {
   private options?: ClientOptions;
   private wantConnected = false;
   private reconnectTimer?: NodeJS.Timeout;
+  private heartbeat?: NodeJS.Timeout;
+  /** Ping this often while connected; a ping that doesn't answer rebuilds the link at once. */
+  heartbeatMs = 10_000;
   private chats = new Map<string, Chat>();
   private liveToChat = new Map<string, string>();
   private batchAnswers = new Map<string, Record<string, Json>>();
@@ -86,6 +89,7 @@ export class HermesEngine extends EventEmitter {
 
   disconnect() {
     this.wantConnected = false;
+    clearInterval(this.heartbeat);
     clearTimeout(this.reconnectTimer);
     const c = this.client;
     this.client = undefined;
@@ -96,7 +100,12 @@ export class HermesEngine extends EventEmitter {
   /** Stops the backend this PC started on the server, then disconnects. */
   async stopBackend() {
     if (this.client && this.options) {
-      await new RemoteBackend(this.client.ssh, this.options.ownershipId).stop(this.client.backend.record);
+      if (this.client.isDirect) {
+        // Tailscale mode: Hermes is a service on the server — restart it (it comes straight back).
+        await this.client.ssh.exec("systemctl restart brainbox-hermes 2>&1 || sudo -n systemctl restart brainbox-hermes", { timeoutMs: 30_000 }).catch(() => undefined);
+      } else {
+        await new RemoteBackend(await this.client.ssh.connection(), this.options.ownershipId).stop(this.client.backend.record);
+      }
       this.persistence.saveBackend(hostId(this.options.target), undefined);
     }
     this.disconnect();
@@ -129,22 +138,23 @@ export class HermesEngine extends EventEmitter {
       this.client = client;
       client.rpc.on("event", (e: GatewayEvent) => this.route(e));
       client.rpc.once("close", () => this.lost(client));
-      client.ssh.onClose(() => this.lost(client));
+      if (!client.isDirect) client.ssh.onClose(() => this.lost(client));
       await this.reattachChats();
       this.setState({
         kind: "connected",
         info: {
           target: `${options.target.username}@${options.target.host}`,
-          hostFingerprint: client.ssh.hostFingerprint,
+          hostFingerprint: client.isDirect ? "Tailscale (WireGuard)" : client.ssh.hostFingerprint,
           version: client.backend.version,
           hermesPath: client.backend.record.hermesPath,
           reusedBackend: client.backend.reused,
         },
       });
+      this.startHeartbeat(client);
     } catch (err) {
       this.client = undefined;
       const fatal = (err instanceof SSHError && (err.code === "hostKeyChanged" || err.code === "auth")) ||
-        (err instanceof BackendError && err.code === "gated");
+        (err instanceof BackendError && err.code === "gated") || err instanceof DirectTokenError;
       if (fatal) {
         this.wantConnected = false;
         this.setState({ kind: "failed", message: errorText(err) });
@@ -160,7 +170,7 @@ export class HermesEngine extends EventEmitter {
     if (!this.wantConnected) return;
     this.setState({ kind: "reconnecting", attempt, reason });
     clearTimeout(this.reconnectTimer);
-    const delay = Math.min(30_000, 2 ** Math.min(attempt, 5) * 500);
+    const delay = [300, 1000, 2000, 4000][Math.min(Math.max(attempt, 1), 4) - 1];
     this.reconnectTimer = setTimeout(async () => {
       if (!this.wantConnected) return;
       await this.establish(true, "Reconnecting");
@@ -168,8 +178,19 @@ export class HermesEngine extends EventEmitter {
     }, delay);
   }
 
+  private startHeartbeat(watched: HermesClient) {
+    clearInterval(this.heartbeat);
+    let checking = false;
+    this.heartbeat = setInterval(async () => {
+      if (checking || this.client !== watched) return;
+      checking = true;
+      try { if (!(await watched.isAlive(3000))) this.lost(watched); } finally { checking = false; }
+    }, this.heartbeatMs);
+  }
+
   private lost(dropped: HermesClient) {
     if (this.client !== dropped) return;
+    clearInterval(this.heartbeat);
     this.client = undefined;
     dropped.close();
     this.scheduleReconnect("Connection lost", 1);

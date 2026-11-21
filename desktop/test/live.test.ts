@@ -109,6 +109,38 @@ live("desktop engine ↔ SSH ↔ real Hermes", () => {
     pc.disconnect();
   });
 
+  const directPort = Number(process.env.HERMES_E2E_DIRECT_PORT ?? 0);
+  const directToken = process.env.HERMES_E2E_DIRECT_TOKEN ?? "";
+  (directPort && directToken ? it : it.skip)("Tailscale mode: chats straight to the Hermes service, SSH only on demand", async () => {
+    const engine = new HermesEngine(persistence);
+    const direct = { host: env!.target.host, port: directPort, token: directToken };
+    let t = Date.now();
+    await engine.connect({ target: env!.target, identity: env!.identity, hostKeys, ownershipId, direct });
+    if (engine.state.kind !== "connected") console.log("STATE", JSON.stringify(engine.state));
+    expect(engine.state.kind).toBe("connected");
+    console.log("DIRECT_CONNECT_MS=" + (Date.now() - t));
+    const client = engine.client!;
+    expect(client.isDirect).toBe(true);
+    expect(client.ssh.isActive).toBe(false);
+    const chat = await engine.newChat();
+    const finished: string[] = [];
+    engine.on("turnFinished", (key: string, _title: string, text: string) => { if (key === chat) finished.push(text); });
+    await engine.send(chat, "hello over tailscale from the pc");
+    await waitFor(() => finished.length >= 1 || undefined);
+    expect(finished[0]).toContain("hello over tailscale from the pc");
+    expect(client.ssh.isActive).toBe(false);
+    expect((await client.ssh.exec("echo pc-ssh-$((6*7))")).output).toContain("pc-ssh-42");
+    t = Date.now();
+    client.rpc.close();
+    await waitFor(() => (engine.state.kind === "connected" && engine.client !== client) || undefined);
+    console.log("DIRECT_RECONNECT_MS=" + (Date.now() - t));
+    engine.disconnect();
+    const bad = new HermesEngine(persistence);
+    await bad.connect({ target: env!.target, identity: env!.identity, hostKeys, ownershipId, direct: { ...direct, token: "wrong" } });
+    expect(bad.state.kind).toBe("failed");
+    expect(bad.state.kind === "failed" && bad.state.message).toContain("access token");
+  });
+
   it("Bot Screen: watch, take over, hand back", async () => {
     if (!env!.screen) return;
     const client = await HermesClient.connect({ target: env!.target, identity: env!.identity, hostKeys, ownershipId, knownBackend: Object.values(records)[0] });

@@ -68,9 +68,16 @@ function wireEngine() {
 async function connect() {
   const profile = store.profile;
   if (!profile) return;
+  const token = store.hermesToken;
+  if (profile.tailscale && !token) {
+    engine.state = { kind: "failed", message: "Paste the access token from the server into Settings › Connection (run the setup script there to get it)." };
+    send("bb:state", engine.state);
+    return;
+  }
   await engine.connect({
     target: profile.target, identity: store.identity(), hostKeys: store, ownershipId: store.ownershipId,
     desktopMode: store.prefs.desktopBackend,
+    direct: profile.tailscale ? { host: profile.target.host, port: profile.hermesPort ?? 8766, token: token! } : undefined,
   });
 }
 
@@ -165,7 +172,8 @@ function registerIPC() {
       version: app.getVersion(),
     };
   });
-  handle("saveProfile", (p: Profile) => { store.profile = p; });
+  handle("saveProfile", (p: Profile, token?: string) => { store.profile = p; if (token !== undefined) store.hermesToken = token.trim(); });
+  handle("hasHermesToken", () => !!store.hermesToken);
   handle("savePrefs", (p: Preferences) => { store.prefs = p; });
   handle("connect", () => connect());
   handle("disconnect", () => engine.disconnect());

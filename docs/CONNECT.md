@@ -5,6 +5,31 @@ opens an SSH connection, starts (or reuses) `hermes serve` on the server, and
 speaks Hermes' own gateway protocol through that SSH connection. Nothing new is
 installed on the server and no extra port is opened — only SSH (port 22).
 
+## Recommended: Tailscale mode
+
+Hermes runs as a small service on the server (`brainbox-hermes`) that listens **only on
+127.0.0.1** with a fixed access token; `tailscale serve` forwards your private tailnet to it.
+The phone and the PC then talk to Hermes **directly over Tailscale** — no SSH handshake on
+every (re)connect, and the connection survives Wi-Fi ↔ cellular switches because the address
+never changes. Nothing is opened to the public internet; your Telegram gateway, cron jobs and
+Hermes config are untouched. Both devices share the one service, so a chat is live on both.
+
+1. **Server (once, as root):** install Tailscale and sign in —
+   `curl -fsSL https://tailscale.com/install.sh | sh && tailscale up` — then run
+   [`scripts/tailscale/setup-vps.sh`](../scripts/tailscale/setup-vps.sh) (also copyable from the
+   app: Connection → Tailscale → *Copy setup script*). It prints the **address**, **port** (8766)
+   and **token**. Re-running it is safe. Undo instructions are at the top of the script.
+2. **Phone and PC:** install the Tailscale app, sign in with the same account, keep it on.
+3. **Brainbox → Settings → Connection → Tailscale:** paste the address, token and port, Connect.
+4. Optional (terminal, file transfers, Hermes' browser): also do the *Let this phone in* step —
+   those features still use SSH, over Tailscale, opened only when you use them.
+
+If Brainbox says it can't reach Hermes over Tailscale, check the Tailscale app is on (phone/PC)
+and on the server: `systemctl status brainbox-hermes` and `tailscale serve status`.
+"Hermes refused the access token" means paste it again from `cat /etc/brainbox/token`.
+
+The SSH mode below still works without Tailscale.
+
 ## 1. Install the app
 
 1. Download `BrainboxAgent-unsigned-ipa` from the CI run and unzip it.

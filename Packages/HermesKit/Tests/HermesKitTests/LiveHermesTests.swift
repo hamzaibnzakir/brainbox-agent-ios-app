@@ -628,3 +628,73 @@ final class LiveReconnectTests: XCTestCase {
         ssh.close()
     }
 }
+
+/// Tailscale mode: Hermes runs as a service with a fixed token; the app talks to it straight over
+/// the tailnet (here: loopback) — no SSH in the chat path; SSH opens only when a feature needs it.
+final class LiveDirectTests: XCTestCase {
+    func testChatsDirectlyAndOpensSSHOnlyOnDemand() async throws {
+        let e = ProcessInfo.processInfo.environment
+        guard let host = e["HERMES_E2E_SSH_HOST"], let key = e["HERMES_E2E_SSH_KEY"], let raw = Data(base64Encoded: key),
+              let portText = e["HERMES_E2E_DIRECT_PORT"], let port = Int(portText), let token = e["HERMES_E2E_DIRECT_TOKEN"] else {
+            throw XCTSkip("HERMES_E2E_DIRECT_* not set")
+        }
+        let target = SSHTarget(host: host, port: Int(e["HERMES_E2E_SSH_PORT"] ?? "22") ?? 22, username: e["HERMES_E2E_SSH_USER"] ?? "root")
+        var options = HermesClient.Options(target: target, identity: try SSHIdentity(rawRepresentation: raw),
+                                           hostKeys: MemoryHostKeyStore(), ownershipID: RemoteBackend.makeOwnershipID())
+        options.direct = .init(host: host, port: port, token: token)
+        let engine = HermesEngine(persistence: MemoryEnginePersistence())
+        let updates = engine.updates
+        var start = Date()
+        await engine.connect(options)
+        let connectTime = Date().timeIntervalSince(start)
+        let state = await engine.state
+        guard case .connected = state else { return XCTFail("\(state)") }
+        guard let client = await engine.client else { return XCTFail("no client") }
+        XCTAssertTrue(client.isDirect)
+        XCTAssertFalse(client.ssh.isActive, "no SSH for the chat")
+        print("DIRECT_CONNECT_SECONDS=\(connectTime)")
+
+        let chat = try await engine.newChat()
+        try await engine.send(chat, text: "hello over tailscale")
+        for await update in updates {
+            if case .turnFinished(let c, _, let text) = update, c == chat {
+                XCTAssertTrue(text.contains("hello over tailscale"), text)
+                break
+            }
+        }
+        XCTAssertFalse(client.ssh.isActive, "still no SSH after a whole turn")
+
+        // The terminal / files open SSH on demand.
+        let out = try await client.ssh.exec("echo ssh-on-demand-$((6*7))").output
+        XCTAssertTrue(out.contains("ssh-on-demand-42"))
+
+        // Reconnect: one TCP + WebSocket, no SSH handshake.
+        start = Date()
+        await engine.reconnectNow()
+        let again = await engine.state
+        XCTAssertTrue(again.isConnected, "\(again)")
+        let reconnect = Date().timeIntervalSince(start)
+        print("DIRECT_RECONNECT_SECONDS=\(reconnect)")
+        XCTAssertLessThan(reconnect, 3)
+
+        // A wrong token is reported as such.
+        var bad = options
+        bad.direct?.token = "wrong"
+        do {
+            _ = try await HermesClient.connect(bad)
+            XCTFail("connected with a wrong token")
+        } catch let error as DirectError {
+            XCTAssertEqual(error, .badToken)
+        }
+        // Nothing listening → "is Tailscale on?"
+        var gone = options
+        gone.direct?.port = 9
+        do {
+            _ = try await HermesClient.connect(gone)
+            XCTFail("connected to a closed port")
+        } catch let error as DirectError {
+            if case .unreachable = error {} else { XCTFail("\(error)") }
+        }
+        await engine.disconnect()
+    }
+}

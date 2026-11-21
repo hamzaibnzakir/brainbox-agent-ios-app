@@ -181,8 +181,15 @@ final class AppModel {
             connection = .failed("Face ID is required to use the SSH key.")
             return
         }
-        let options = HermesClient.Options(target: profile.target, identity: identity, hostKeys: store,
+        var options = HermesClient.Options(target: profile.target, identity: identity, hostKeys: store,
                                            ownershipID: store.ownershipID, desktopMode: preferences.desktopBackend)
+        if profile.tailscale {
+            guard let token = store.hermesToken, !token.isEmpty else {
+                connection = .failed("Paste the access token from the server into Settings › Connection (run the setup script there to get it).")
+                return
+            }
+            options.direct = .init(host: profile.target.host, port: profile.hermesPort, token: token)
+        }
         await engine.connect(options)
     }
 

@@ -8,7 +8,7 @@ export type LinkState =
   | { kind: "reconnecting"; attempt: number; reason: string }
   | { kind: "failed"; message: string };
 
-export interface Profile { name: string; target: { host: string; port: number; username: string } }
+export interface Profile { name: string; target: { host: string; port: number; username: string }; tailscale?: boolean; hermesPort?: number }
 export interface Preferences { notifyOnFinish: boolean; notifyOnApproval: boolean; desktopBackend: boolean; theme: "system" | "light" | "dark" }
 
 export interface AppState {

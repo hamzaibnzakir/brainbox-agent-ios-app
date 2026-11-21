@@ -48,6 +48,13 @@ final class MediaStore {
             return target
         } else {
             let client = try await model.client()
+            // Tailscale mode: ask Hermes for the file over the tailnet (no SSH key needed).
+            if client.isDirect, !ref.location.hasPrefix("~/"),
+               let response = try? await client.raw("GET", "/api/fs/download" + HermesClient.query(["path": ref.location]), timeout: 300) {
+                guard response.body.count <= Self.maxBytes else { throw MediaError.tooLarge(response.body.count) }
+                try response.body.write(to: target)
+                return target
+            }
             let quoted = ref.location.hasPrefix("~/") ? "\"$HOME\"/" + RemoteBackend.shq(String(ref.location.dropFirst(2)))
                                                        : RemoteBackend.shq(ref.location)
             let size = try await client.ssh.exec("stat -c %s -- \(quoted) 2>/dev/null || stat -f %z -- \(quoted) 2>/dev/null", timeout: 20)

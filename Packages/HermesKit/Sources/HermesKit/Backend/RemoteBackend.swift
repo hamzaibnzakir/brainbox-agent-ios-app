@@ -335,15 +335,21 @@ public struct RemoteBackend: Sendable {
 
 /// Dials the backend's loopback port through SSH, one channel per stream.
 public struct SSHPortDialer: TunnelDialer {
-    public let ssh: SSHConnection
+    let open: @Sendable (Int) async throws -> SSHByteStream
     public let port: Int
 
     public init(ssh: SSHConnection, port: Int) {
-        self.ssh = ssh
+        self.open = { try await ssh.openDirectTCPIP(host: "127.0.0.1", port: $0) }
+        self.port = port
+    }
+
+    /// Through an on-demand SSH link (connects if needed).
+    public init(ssh: SSHLink, port: Int) {
+        self.open = { try await ssh.openDirectTCPIP(host: "127.0.0.1", port: $0) }
         self.port = port
     }
 
     public func dial() async throws -> ByteDuplex {
-        try await ssh.openDirectTCPIP(host: "127.0.0.1", port: port)
+        try await open(port)
     }
 }

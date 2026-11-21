@@ -1,9 +1,34 @@
 // HTTP and WebSocket to `hermes serve` through SSH direct-tcpip channels. Nothing listens on
 // the PC: every request dials a fresh channel to the backend's loopback port on the server.
 import http from "node:http";
+import net from "node:net";
 import type { Duplex } from "node:stream";
 import WebSocket from "ws";
-import { SSHConnection } from "./ssh";
+
+/** Anything that opens a byte stream to a port on the server: an SSH connection (direct-tcpip
+ *  channel) or, in Tailscale mode, a plain TCP connection over the tailnet. */
+export interface PortForwarder { forward(port: number): Promise<Duplex> }
+
+/** Tailscale mode: Hermes is reached straight over the tailnet (WireGuard-encrypted); `tailscale
+ *  serve --tcp` forwards the port to Hermes on the server's 127.0.0.1. */
+export class DirectForwarder implements PortForwarder {
+  constructor(public readonly host: string, private readonly timeoutMs = 6000) {}
+  forward(port: number): Promise<Duplex> {
+    return new Promise((resolve, reject) => {
+      const socket = net.connect({ host: this.host, port, noDelay: true });
+      socket.setKeepAlive(true, 10_000);
+      const timer = setTimeout(() => { socket.destroy(); reject(new DirectError(this.host, port, "timed out")); }, this.timeoutMs);
+      socket.once("connect", () => { clearTimeout(timer); resolve(socket); });
+      socket.once("error", (err) => { clearTimeout(timer); reject(new DirectError(this.host, port, err.message)); });
+    });
+  }
+}
+
+export class DirectError extends Error {
+  constructor(public host: string, public port: number, public detail: string) {
+    super(`Can't reach Hermes at ${host}:${port} over Tailscale. Check that Tailscale is switched on (on this PC and on the server) and that the Brainbox service is running on the server.`);
+  }
+}
 
 export interface TunnelResponse {
   status: number;
@@ -42,7 +67,7 @@ function asSocket(channel: Duplex): Duplex {
 
 /** Dials the backend port through SSH, one channel per stream. */
 export class Tunnel {
-  constructor(public readonly ssh: SSHConnection, public readonly port: number, public readonly token: string) {}
+  constructor(public readonly ssh: PortForwarder, public readonly port: number, public readonly token: string) {}
 
   async request(method: string, path: string, opts: { body?: Buffer | string; headers?: Record<string, string>; timeoutMs?: number } = {}): Promise<TunnelResponse> {
     const channel = await this.ssh.forward(this.port);

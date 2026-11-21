@@ -29,6 +29,13 @@ Under the hood it is the phone's connection, ported: SSH (key auth only) → sta
 JSON-RPC gateway through an SSH tunnel. No port is opened on the server or the PC. After updating
 Hermes on the server, use **Connection › Restart backend** (the phone reconnects to the new one).
 
+## Tailscale mode (recommended)
+
+Settings → Connection → **Tailscale**: the PC talks straight to the `brainbox-hermes` service over
+your tailnet (see [CONNECT.md](CONNECT.md#recommended-tailscale-mode) for the one-time server
+setup; the app has a *Copy setup script* button). The terminal still uses SSH, opened on demand.
+The engine pings every 10 s and reconnects immediately when the PC's network comes back.
+
 ## One chat, every device
 
 The phone and every PC use **one shared backend** on the server

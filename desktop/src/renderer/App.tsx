@@ -126,10 +126,13 @@ export function App() {
         if (to.view === "screen") setDockOpen(true);
       }),
     ];
+    // The PC's network came back (Wi-Fi rejoined, cable plugged in): check the link right away.
+    const onOnline = () => { bb.invoke("ensureAlive").catch(() => {}); };
+    addEventListener("online", onOnline);
     const mq = matchMedia("(prefers-color-scheme: light)");
     const onScheme = () => setState((s) => { if (s) applyTheme(s.prefs.theme); return s; });
     mq.addEventListener("change", onScheme);
-    return () => { offs.forEach((off) => off()); mq.removeEventListener("change", onScheme); };
+    return () => { offs.forEach((off) => off()); mq.removeEventListener("change", onScheme); removeEventListener("online", onOnline); };
   }, [reload, refreshSessions, openChat, applyTheme]);
 
   // Lists refresh when any open chat finishes a turn (titles, previews) — including turns from the phone.

@@ -39,7 +39,27 @@ enum Keychain {
 /// The server the phone connects to.
 struct ServerProfile: Codable, Hashable {
     var name: String
+    /// SSH address (in Tailscale mode, the server's Tailscale address — also used for the terminal).
     var target: SSHTarget
+    /// Talk to Hermes straight over Tailscale (the Brainbox service on the server) instead of SSH.
+    var tailscale = false
+    /// The tailnet port `tailscale serve` forwards to Hermes.
+    var hermesPort = 8766
+
+    init(name: String, target: SSHTarget, tailscale: Bool = false, hermesPort: Int = 8766) {
+        self.name = name
+        self.target = target
+        self.tailscale = tailscale
+        self.hermesPort = hermesPort
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        target = try c.decode(SSHTarget.self, forKey: .target)
+        tailscale = try c.decodeIfPresent(Bool.self, forKey: .tailscale) ?? false
+        hermesPort = try c.decodeIfPresent(Int.self, forKey: .hermesPort) ?? 8766
+    }
 }
 
 /// Persists the phone's SSH key, pinned host keys and the backend it started.
@@ -78,6 +98,15 @@ final class AppStore: EnginePersistence, HostKeyStore, @unchecked Sendable {
     var profile: ServerProfile? {
         get { defaults.data(forKey: "server").flatMap { try? JSONDecoder().decode(ServerProfile.self, from: $0) } }
         set { defaults.set(newValue.flatMap { try? JSONEncoder().encode($0) }, forKey: "server") }
+    }
+
+    /// Hermes' access token for Tailscale mode (from the server's /etc/brainbox/token).
+    var hermesToken: String? {
+        get { Keychain.get("hermes-token").map { String(decoding: $0, as: UTF8.self) } }
+        set {
+            if let newValue, !newValue.isEmpty { Keychain.set(Data(newValue.utf8), for: "hermes-token") }
+            else { Keychain.delete("hermes-token") }
+        }
     }
 
     // MARK: HostKeyStore

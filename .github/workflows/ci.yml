@@ -29,6 +29,11 @@ jobs:
         run: |
           swift --version
           command -v python3 || (apt-get update -qq && apt-get install -y -qq python3 >/dev/null)
+      - name: Tailscale setup script is embedded up to date
+        run: |
+          command -v python3 || (apt-get update -qq && apt-get install -y -qq python3 >/dev/null)
+          python3 scripts/tailscale/embed.py --check
+          bash -n scripts/tailscale/setup-vps.sh
       - name: Build & test BrainboxCore
         working-directory: Packages/BrainboxCore
         run: |
@@ -129,6 +134,17 @@ jobs:
           echo "HERMES_E2E_SSH_HOST=127.0.0.1" >> "$GITHUB_ENV"
           echo "HERMES_E2E_SSH_PORT=2222" >> "$GITHUB_ENV"
           echo "HERMES_E2E_SSH_USER=$(whoami)" >> "$GITHUB_ENV"
+      - name: Hermes as the Tailscale-mode service (127.0.0.1, fixed token)
+        run: |
+          # What scripts/tailscale/setup-vps.sh sets up on a server (tailscale serve aside: the
+          # tests reach the loopback port directly, the way the tailnet forward does).
+          TOKEN=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
+          (cd ~ && HERMES_DASHBOARD_SESSION_TOKEN=$TOKEN nohup hermes serve --isolated --host 127.0.0.1 --port 8766 > "$RUNNER_TEMP/direct.log" 2>&1 &)
+          for i in $(seq 1 90); do curl -fs -m 2 -o /dev/null -H "X-Hermes-Session-Token: $TOKEN" http://127.0.0.1:8766/api/skills && break; sleep 1; done
+          curl -fs -m 2 -o /dev/null -H "X-Hermes-Session-Token: $TOKEN" http://127.0.0.1:8766/api/skills || { tail -n 30 "$RUNNER_TEMP/direct.log"; exit 1; }
+          echo "::add-mask::$TOKEN"
+          echo "HERMES_E2E_DIRECT_PORT=8766" >> "$GITHUB_ENV"
+          echo "HERMES_E2E_DIRECT_TOKEN=$TOKEN" >> "$GITHUB_ENV"
       - name: Swift toolchain
         id: swift
         run: echo "has=$(command -v swift >/dev/null && echo true || echo false)" >> "$GITHUB_OUTPUT"

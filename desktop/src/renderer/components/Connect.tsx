@@ -3,6 +3,9 @@ import { useState } from "react";
 import { AppState, bb, LinkState, Preferences, Profile } from "../api";
 import { Icon } from "../ui/icons";
 import { DialogSpec, Switch } from "../ui/kit";
+import { TAILSCALE_SETUP_SCRIPT } from "../../shared/tailscaleSetup";
+
+const TAILSCALE_INSTALL = "curl -fsSL https://tailscale.com/install.sh | sh && tailscale up";
 
 function useProfileForm(state: AppState) {
   const p = state.profile;
@@ -10,21 +13,41 @@ function useProfileForm(state: AppState) {
   const [user, setUser] = useState(p?.target.username ?? "root");
   const [port, setPort] = useState(String(p?.target.port ?? 22));
   const [name, setName] = useState(p?.name ?? "My VPS");
-  const profile = (): Profile => ({ name: name.trim() || host.trim(), target: { host: host.trim(), port: parseInt(port, 10) || 22, username: user.trim() || "root" } });
+  // New setups default to Tailscale; existing SSH setups stay on SSH until switched.
+  const [tailscale, setTailscale] = useState(p ? !!p.tailscale : true);
+  const [hermesPort, setHermesPort] = useState(String(p?.hermesPort ?? 8766));
+  const [token, setToken] = useState("");
+  const profile = (): Profile => ({
+    name: name.trim() || host.trim(), target: { host: host.trim(), port: parseInt(port, 10) || 22, username: user.trim() || "root" },
+    tailscale, hermesPort: parseInt(hermesPort, 10) || 8766,
+  });
+  const modePicker = (
+    <div className="tabs" style={{ alignSelf: "flex-start" }}>
+      <button className={"tab" + (tailscale ? " on" : "")} onClick={() => setTailscale(true)}>Tailscale</button>
+      <button className={"tab" + (!tailscale ? " on" : "")} onClick={() => setTailscale(false)}>SSH</button>
+    </div>
+  );
   const fields = (
     <>
       <div className="row">
-        <div className="field" style={{ flex: 2 }}><label>Server address</label>
-          <input className="input" value={host} onChange={(e) => setHost(e.target.value)} placeholder="203.0.113.10 or vps.example.com" autoFocus={!p} /></div>
+        <div className="field" style={{ flex: 2 }}><label>{tailscale ? "Tailscale address" : "Server address"}</label>
+          <input className="input" value={host} onChange={(e) => setHost(e.target.value)} placeholder={tailscale ? "100.101.102.103 or my-vps.tail1234.ts.net" : "203.0.113.10 or vps.example.com"} autoFocus={!p} /></div>
         <div className="field" style={{ maxWidth: 96 }}><label>SSH port</label><input className="input" value={port} onChange={(e) => setPort(e.target.value)} /></div>
       </div>
+      {tailscale && (
+        <div className="row">
+          <div className="field" style={{ flex: 2 }}><label>Access token (from the setup script)</label>
+            <input className="input" type="password" value={token} onChange={(e) => setToken(e.target.value)} placeholder={p?.tailscale ? "Saved — paste a new one to replace it" : "Paste the token"} autoComplete="off" /></div>
+          <div className="field" style={{ maxWidth: 96 }}><label>Hermes port</label><input className="input" value={hermesPort} onChange={(e) => setHermesPort(e.target.value)} /></div>
+        </div>
+      )}
       <div className="row">
         <div className="field"><label>User</label><input className="input" value={user} onChange={(e) => setUser(e.target.value)} /></div>
         <div className="field"><label>Name</label><input className="input" value={name} onChange={(e) => setName(e.target.value)} /></div>
       </div>
     </>
   );
-  return { host, user, profile, fields };
+  return { host, user, profile, fields, modePicker, tailscale, token };
 }
 
 export function Onboarding({ state, link, onDone, say }: { state: AppState; link: LinkState; onDone: () => void; say: (t: string) => void }) {
@@ -32,7 +55,7 @@ export function Onboarding({ state, link, onDone, say }: { state: AppState; link
   const [busy, setBusy] = useState(false);
   const connect = async () => {
     setBusy(true);
-    try { await bb.invoke("saveProfile", form.profile()); onDone(); await bb.invoke("connect"); }
+    try { await bb.invoke("saveProfile", form.profile(), form.tailscale ? form.token : undefined); onDone(); await bb.invoke("connect"); }
     catch (e) { say((e as Error).message); } finally { setBusy(false); }
   };
   return (
@@ -50,9 +73,12 @@ export function Onboarding({ state, link, onDone, say }: { state: AppState; link
       <div className="form">
         <div><h2 style={{ margin: 0, font: "600 22px/1.2 var(--font-display)" }}>Connect to your server</h2>
           <p className="muted" style={{ margin: "6px 0 0" }}>Two minutes, once. Brainbox starts (or reuses) Hermes on the server over SSH.</p></div>
+        <div className="step"><div className="n">0</div><div className="c"><strong>How should this PC reach it?</strong>{form.modePicker}
+          <span className="muted" style={{ fontSize: 13 }}>{form.tailscale ? "Recommended: Hermes over your private Tailscale network — fastest reconnects, nothing opened to the internet." : "An SSH tunnel to the server for everything (no Tailscale needed)."}</span></div></div>
+        {form.tailscale && <TailscaleSetupStep say={say} />}
         <div className="step"><div className="n">1</div><div className="c"><strong>Where is your server?</strong>{form.fields}</div></div>
         <div className="step"><div className="n">2</div><div className="c">
-          <strong>Let this PC in</strong>
+          <strong>{form.tailscale ? "Let this PC in (for the terminal)" : "Let this PC in"}</strong>
           <span className="muted" style={{ fontSize: 13 }}>Run this once on the server as {form.user || "root"}. It adds this PC's public key to <code>authorized_keys</code>. The private key never leaves this PC{state.encrypted ? " and is encrypted by Windows" : ""}.</span>
           <div className="codebox">{state.authorizedKeysCommand}</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -64,7 +90,7 @@ export function Onboarding({ state, link, onDone, say }: { state: AppState; link
           <strong>Connect</strong>
           {link.kind === "failed" && <div className="error-line"><Icon name="alert" size={16} />{link.message}</div>}
           {link.kind === "connecting" && <div className="working"><span className="dot volt pulse" />{link.step}</div>}
-          <div><button className="btn primary" disabled={!form.host.trim() || busy} onClick={connect}>Connect<Icon name="chevronRight" size={14} /></button></div>
+          <div><button className="btn primary" disabled={!form.host.trim() || busy || (form.tailscale && !form.token.trim())} onClick={connect}>Connect<Icon name="chevronRight" size={14} /></button></div>
         </div></div>
       </div>
     </div>
@@ -82,7 +108,7 @@ export function SettingsPage({ state, link, say, ask, onSaved }: { state: AppSta
     onSaved();
   };
   const reconnect = async () => {
-    try { await bb.invoke("saveProfile", form.profile()); onSaved(); await bb.invoke("connect"); say("Reconnecting"); }
+    try { await bb.invoke("saveProfile", form.profile(), form.tailscale && form.token ? form.token : undefined); onSaved(); await bb.invoke("connect"); say("Reconnecting"); }
     catch (e) { say((e as Error).message); }
   };
   const info = link.kind === "connected" ? link.info : undefined;
@@ -95,6 +121,7 @@ export function SettingsPage({ state, link, say, ask, onSaved }: { state: AppSta
         <div className="section">
           <h2>Connection</h2>
           <div className="card" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            {form.modePicker}
             {form.fields}
             <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
               <button className="btn primary" disabled={!form.host.trim()} onClick={reconnect}>Save and reconnect</button>
@@ -111,6 +138,7 @@ export function SettingsPage({ state, link, say, ask, onSaved }: { state: AppSta
             <div className="list">
               <Row t="Server" d={`${info.target} · ${info.hermesPath}`} />
               <Row t="Server key" d={info.hostFingerprint} />
+              <Row t="Connection" d={state.profile?.tailscale ? "Straight to Hermes over Tailscale (SSH only for the terminal)" : "SSH tunnel"} />
               <Row t="Shared with your phone" d={info.reusedBackend ? "This PC joined the Hermes backend your other devices use." : "This PC started the shared Hermes backend; your phone joins it."} />
             </div>
           )}
@@ -170,6 +198,20 @@ export function SettingsPage({ state, link, say, ask, onSaved }: { state: AppSta
         </div>
       </div>
     </div>
+  );
+}
+
+function TailscaleSetupStep({ say }: { say: (t: string) => void }) {
+  return (
+    <div className="step"><div className="n">✦</div><div className="c">
+      <strong>Set up the server (once)</strong>
+      <span className="muted" style={{ fontSize: 13 }}>On the server: install Tailscale and sign in, then run the Brainbox setup script as root. It runs Hermes as a service on 127.0.0.1 only, lets Tailscale reach it, and prints the address, port and token for the fields below. Install Tailscale on this PC too, same account.</span>
+      <div className="codebox">{TAILSCALE_INSTALL}</div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button className="btn" onClick={() => bb.invoke("copy", TAILSCALE_INSTALL).then(() => say("Copied"))}><Icon name="copy" size={14} />Copy install</button>
+        <button className="btn primary" onClick={() => bb.invoke("copy", TAILSCALE_SETUP_SCRIPT).then(() => say("Setup script copied — paste it into the server's terminal"))}><Icon name="terminal" size={14} />Copy setup script</button>
+      </div>
+    </div></div>
   );
 }
 

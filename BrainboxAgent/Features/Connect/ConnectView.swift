@@ -15,9 +15,13 @@ struct ConnectView: View {
     @State private var copiedCommand = false
     @State private var working = false
     @State private var confirmRegenerate = false
+    @State private var tailscale = true
+    @State private var hermesPort = "8766"
+    @State private var token = ""
+    @State private var copiedScript = false
     @FocusState private var focused: Field?
 
-    enum Field { case name, host, port, user }
+    enum Field { case name, host, port, user, hermesPort, token }
 
     private var keyLine: String { model.identity.authorizedKeysLine(comment: "brainbox-\(UIDevice.current.name.replacingOccurrences(of: " ", with: "-").lowercased())") }
 
@@ -33,12 +37,17 @@ struct ConnectView: View {
         })
     }
 
-    private var canConnect: Bool { !host.trimmingCharacters(in: .whitespaces).isEmpty && Int(port) != nil && !user.isEmpty }
+    private var canConnect: Bool {
+        !host.trimmingCharacters(in: .whitespaces).isEmpty && Int(port) != nil && !user.isEmpty
+            && (!tailscale || (Int(hermesPort) != nil && !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: DS.S.l) {
                 if isOnboarding { hero }
+                modePicker
+                if tailscale { setupCard }
                 serverCard
                 keyCard
                 statusCard
@@ -63,20 +72,86 @@ struct ConnectView: View {
         VStack(alignment: .leading, spacing: DS.S.m) {
             MascotView(style: .brainbox, mood: working ? .thinking : .idle, size: 72)
             Text("Connect to Hermes").font(DS.F.title).foregroundStyle(DS.C.ink)
-            Text("Brainbox talks to Hermes on your server over SSH, the same way Hermes Desktop does. Nothing is opened to the internet besides SSH.")
+            Text(tailscale
+                 ? "Brainbox talks to Hermes on your server over your private Tailscale network — nothing is opened to the internet, and it stays connected as you move between Wi-Fi and cellular."
+                 : "Brainbox talks to Hermes on your server over SSH, the same way Hermes Desktop does. Nothing is opened to the internet besides SSH.")
                 .font(DS.F.small).foregroundStyle(DS.C.ink2)
         }
         .padding(.top, DS.S.l)
     }
 
+    private var modePicker: some View {
+        VStack(alignment: .leading, spacing: DS.S.s) {
+            Picker("Connection", selection: $tailscale) {
+                Text("Tailscale").tag(true)
+                Text("SSH").tag(false)
+            }
+            .pickerStyle(.segmented)
+            Text(tailscale ? "Recommended: fastest reconnects, survives network changes. Needs the Tailscale app on this phone and the server."
+                           : "Works without Tailscale: Brainbox opens an SSH tunnel to the server for everything.")
+                .font(DS.F.caption).foregroundStyle(DS.C.ink3)
+        }
+    }
+
+    private var setupCard: some View {
+        VStack(alignment: .leading, spacing: DS.S.m) {
+            stepHeader(1, "Set up the server (once)")
+            Text("On the server: install Tailscale and sign in, then run the Brainbox setup script as root. It runs Hermes as a service on 127.0.0.1 only and lets Tailscale reach it — and prints the address, port and token to paste below.")
+                .font(DS.F.small).foregroundStyle(DS.C.ink2)
+            Text("curl -fsSL https://tailscale.com/install.sh | sh && tailscale up")
+                .font(DS.F.monoSmall).foregroundStyle(DS.C.ink)
+                .padding(DS.S.m).frame(maxWidth: .infinity, alignment: .leading)
+                .background(DS.C.raised, in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
+                .textSelection(.enabled)
+            HStack(spacing: DS.S.s) {
+                Button {
+                    UIPasteboard.general.string = "curl -fsSL https://tailscale.com/install.sh | sh && tailscale up"
+                    Haptic.tap()
+                } label: { Label("Copy install", systemImage: "doc.on.doc") }
+                .buttonStyle(SecondaryButtonStyle(tint: DS.C.ink2))
+                Button {
+                    UIPasteboard.general.string = TailscaleSetup.script
+                    copiedScript = true
+                    Haptic.success()
+                } label: { Label(copiedScript ? "Copied" : "Copy setup script", systemImage: copiedScript ? "checkmark" : "terminal") }
+                .buttonStyle(SecondaryButtonStyle())
+            }
+            Text("Paste the script into the server's terminal (or save it as setup.sh and run  bash setup.sh). Install the Tailscale app on this phone too and sign in with the same account.")
+                .font(DS.F.caption).foregroundStyle(DS.C.ink3)
+        }
+        .card()
+    }
+
     private var serverCard: some View {
         VStack(alignment: .leading, spacing: DS.S.m) {
-            stepHeader(1, "Your server")
+            stepHeader(tailscale ? 2 : 1, "Your server")
             field("Name", text: $name, field: .name, keyboard: .default, placeholder: "My VPS")
-            field("Host or IP", text: $host, field: .host, keyboard: .URL, placeholder: "203.0.113.10")
+            field(tailscale ? "Tailscale address" : "Host or IP", text: $host, field: .host, keyboard: .URL,
+                  placeholder: tailscale ? "100.101.102.103 or my-vps.tail1234.ts.net" : "203.0.113.10")
+            if tailscale {
+                HStack(alignment: .bottom, spacing: DS.S.s + 4) {
+                    VStack(alignment: .leading, spacing: DS.S.xs + 2) {
+                        Text("Access token").font(DS.F.caption).foregroundStyle(DS.C.ink3)
+                        SecureField("From the setup script", text: $token)
+                            .font(DS.F.body).textInputAutocapitalization(.never).autocorrectionDisabled()
+                            .focused($focused, equals: .token)
+                            .padding(.horizontal, DS.S.m).frame(minHeight: 48)
+                            .background(DS.C.raised, in: RoundedRectangle(cornerRadius: DS.R.control, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: DS.R.control, style: .continuous)
+                                .stroke(focused == .token ? DS.C.volt : DS.C.line, lineWidth: focused == .token ? 1.5 : 1))
+                    }
+                    Button {
+                        if let pasted = UIPasteboard.general.string { token = pasted.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        Haptic.tap()
+                    } label: { Image(systemName: "doc.on.clipboard").frame(width: 48, height: 48) }
+                    .buttonStyle(SecondaryButtonStyle(tint: DS.C.ink2))
+                    .accessibilityLabel("Paste token")
+                }
+                field("Hermes port", text: $hermesPort, field: .hermesPort, keyboard: .numberPad, placeholder: "8766")
+            }
             HStack(spacing: DS.S.s + 4) {
                 field("User", text: $user, field: .user, keyboard: .asciiCapable, placeholder: "root")
-                field("Port", text: $port, field: .port, keyboard: .numberPad, placeholder: "22").frame(width: 96)
+                field(tailscale ? "SSH port" : "Port", text: $port, field: .port, keyboard: .numberPad, placeholder: "22").frame(width: 96)
             }
             DisclosureGroup("Advanced") {
                 VStack(alignment: .leading, spacing: DS.S.s) {
@@ -94,8 +169,10 @@ struct ConnectView: View {
 
     private var keyCard: some View {
         VStack(alignment: .leading, spacing: DS.S.m) {
-            stepHeader(2, "Let this phone in")
-            Text("Run this once on the server (as \(user.isEmpty ? "root" : user)). It adds this phone's public key; the private key never leaves the phone.")
+            stepHeader(tailscale ? 3 : 2, tailscale ? "Let this phone in (terminal & files)" : "Let this phone in")
+            Text(tailscale
+                 ? "Chat works with just the token. For the terminal, file transfers and Hermes' browser, run this once on the server too — it adds this phone's public key; the private key never leaves the phone."
+                 : "Run this once on the server (as \(user.isEmpty ? "root" : user)). It adds this phone's public key; the private key never leaves the phone.")
                 .font(DS.F.small).foregroundStyle(DS.C.ink2)
             Text(installCommand)
                 .font(DS.F.monoSmall).foregroundStyle(DS.C.ink)
@@ -143,7 +220,8 @@ struct ConnectView: View {
                 infoRow("Server", info.target.display)
                 infoRow("Server key", info.hostFingerprint)
                 infoRow("Hermes", info.hermesPath)
-                infoRow("Backend", info.reusedBackend ? "Reused the one already running" : "Started a new one")
+                infoRow("Backend", model.profile?.tailscale == true ? "Brainbox service over Tailscale"
+                                   : info.reusedBackend ? "Reused the one already running" : "Started a new one")
                 HStack(spacing: DS.S.s) {
                     Button("Disconnect") { Task { await model.disconnect() } }.buttonStyle(SecondaryButtonStyle(tint: DS.C.ink2))
                     Button("Restart backend") { Task { await model.engine.stopBackend(); await model.connect() } }
@@ -192,8 +270,12 @@ struct ConnectView: View {
         focused = nil
         let profile = ServerProfile(name: name.isEmpty ? host : name,
                                     target: SSHTarget(host: host.trimmingCharacters(in: .whitespaces), port: Int(port) ?? 22,
-                                                      username: user.trimmingCharacters(in: .whitespaces)))
-        if model.isConnected, profile == model.profile {
+                                                      username: user.trimmingCharacters(in: .whitespaces)),
+                                    tailscale: tailscale, hermesPort: Int(hermesPort) ?? 8766)
+        let cleanToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let tokenChanged = tailscale && cleanToken != (AppStore.shared.hermesToken ?? "")
+        if tailscale { AppStore.shared.hermesToken = cleanToken }
+        if model.isConnected, profile == model.profile, !tokenChanged {
             if !isOnboarding { dismiss() }
             return
         }
@@ -219,6 +301,9 @@ struct ConnectView: View {
         host = p.target.host
         port = String(p.target.port)
         user = p.target.username
+        tailscale = p.tailscale
+        hermesPort = String(p.hermesPort)
+        token = AppStore.shared.hermesToken ?? ""
     }
 
     private func stepHeader(_ n: Int, _ title: String) -> some View {
