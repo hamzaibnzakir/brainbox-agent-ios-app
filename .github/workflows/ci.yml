@@ -195,6 +195,9 @@ jobs:
           grep -E "✓|×|Test Files|Tests " vitest.log | tail -n 40
           if grep -q "↓\|skipped" vitest.log; then echo "::warning::some desktop tests were skipped"; fi
           if [ "$STATUS" != "0" ]; then tail -n 80 vitest.log; echo "::error title=Desktop live tests::failed (${{ matrix.label }})"; exit $STATUS; fi
+          # The Tailscale-mode service is done; on a real server only one Hermes runs, so don't
+          # leave a second one beside the SSH backend the UI smoke uses (it reaps the idle screen).
+          pkill -f -- '--port 8766' || true
           npm run build
           xvfb-run -a -s "-screen 0 1600x1000x24" node test/ui-smoke.mjs 2>&1 | grep -vE "Fontconfig|dbus|GPU process|gpu_" | tail -n 40
           test "${PIPESTATUS[0]}" = "0" || { echo "::error title=Desktop UI smoke::failed (${{ matrix.label }})"; exit 1; }
